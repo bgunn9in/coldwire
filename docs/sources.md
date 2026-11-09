@@ -4,8 +4,9 @@ English | [Русский](ru/sources.md)
 
 Documentation was checked against the toolkit code and AmneziaVPN 5.1.0.6.
 Supported server releases are **Ubuntu 22.04, 24.04 and 26.04 LTS amd64**.
-Other releases and architectures are not supported. `amnezia-awg2` in `.vpn` is a client
-format identifier, not a requirement for Docker or protocol version 2.
+Other releases and architectures are not supported. The `amnezia-awg2`
+identifier in `.vpn` belongs to the client file format. It does not require
+Docker or mean protocol version 2.
 
 ## Primary sources
 

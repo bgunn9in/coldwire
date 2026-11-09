@@ -35,8 +35,9 @@ distinguishes application routing through AdGuard from filtering itself.
 ## One default for all client OSes
 
 **32497/UDP is the common default** for Windows, macOS, Android and iPhone.
-Neither converter nor deploy detects the OS or AdGuard. This keeps one server
-design and AWG parameters without special AdGuard rules in the tested setup.
+Neither converter nor deploy detects the OS or AdGuard. The tested setup uses
+one server configuration and the same AWG parameters, with no special
+AdGuard rules.
 
 It does not promise compatibility with every filter/operator. Conversion
 preserves obfuscation settings; port 443 does not turn AWG into HTTPS. If

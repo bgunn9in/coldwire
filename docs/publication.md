@@ -2,9 +2,8 @@
 
 English | [Русский](ru/publication.md)
 
-The public project is **COLDWIRE**. It starts from a verified source tree and
-new Git history; the previous private repository and its objects are not
-transferred. MIT covers original scripts, tests, documentation and branding.
+COLDWIRE was published from a verified source tree with new Git history.
+The previous private repository and its objects were not transferred. MIT covers original scripts, tests, documentation and branding.
 Third-party software and address-data terms are described in
 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
@@ -74,8 +73,7 @@ A later documentation edit does not imply that the full VM cycle was rerun.
 ## Initial public release
 
 At the initial release, runtime scripts, tests, address data, binary bundles
-and both JSON files were
-copied unchanged from the verified archive. That edition added branding, MIT
+and both JSON files were copied unchanged from the verified archive. That edition added branding, MIT
 and English documentation while retaining internal identifiers. All 44/44
 unit tests and offline list reproduction passed again. Commands, checksums,
 language navigation and local links were checked for all 13 RU/EN document
@@ -91,10 +89,10 @@ apply to the unchanged scripts documented in the [protocol report](validation-pr
 
 The main documentation paths are `README.md` and `docs/`. Russian translations
 are in `README.ru.md` and `docs/ru/`, with language links on each page.
-Commands and diagrams from the original 13 language pairs are preserved; a
-fourteenth pair records the [LTS results](validation-lts.md). Binary bundles,
-address data, the PNG logo and both RU JSON files are unchanged. Only the
-platform caption changed in the SVG. Links, hashes and absence of private
+That update preserved commands and diagrams from the original 13 language
+pairs and added a fourteenth pair with the [LTS results](validation-lts.md).
+Binary bundles, address data, the PNG logo and both RU JSON files were
+unchanged. The SVG header received a new platform caption. Links, hashes and absence of private
 data were checked. All 47 unit tests passed on Windows and guest Python
 3.12/3.14. Support for the new OS releases was verified in the six VM cycles
 listed in the LTS report.
@@ -102,3 +100,8 @@ listed in the LTS report.
 On 10 November, a separate [ordinary-reboot follow-up](validation-lts.md#ordinary-reboots)
 added six fresh VM cycles and 24 guest reboots with a locally patched QEMU/WHPX
 test build. VPN scripts and released bundles remained unchanged.
+
+The later prose review retained English as the default and the Russian
+translations. The README topology now uses matching English and Russian
+SVGs. Scripts, commands, address data, binary bundles and both RU JSON files
+were unchanged; the VM cycle was not rerun for these documentation changes.

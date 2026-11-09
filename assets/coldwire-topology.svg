@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="600" viewBox="0 0 1280 600" role="img" aria-labelledby="title desc" xml:lang="en">
+<title id="title">COLDWIRE // ROUTING MAP</title>
+<desc id="desc">The client reaches entry A over AWG UDP or REALITY TCP. The DNAT/SNAT relay forwards encrypted traffic to exit B; websites see B’s address. The client sends selected Russian destinations directly through its ISP.</desc>
+<defs>
+  <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="#76dcff" stroke-opacity=".055"/></pattern>
+  <pattern id="scan" width="4" height="4" patternUnits="userSpaceOnUse"><path d="M0 .5H4" stroke="#000" stroke-opacity=".16"/></pattern>
+  <filter id="glow" x="-30%" y="-40%" width="160%" height="180%"><feGaussianBlur stdDeviation="2"/></filter>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke="#76dcff" stroke-width="1.5"/></marker>
+  <marker id="direct" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke="#f2bd73" stroke-width="1.5"/></marker>
+</defs>
+<rect width="1280" height="600" fill="#060c12"/>
+<rect width="1280" height="600" fill="url(#grid)"/>
+<path d="M18 44V18H1262V582H18V556" fill="none" stroke="#314b58"/>
+<path d="M18 62V18H62M1218 582H1262V538" fill="none" stroke="#78f2bf" stroke-width="2"/>
+<path d="M40 122H1240M40 554H1240" stroke="#314b58"/>
+<rect x="40" y="45" width="8" height="8" fill="#78f2bf"/>
+<g font-family="Consolas, Liberation Mono, Menlo, monospace">
+<text x="62" y="57" fill="#78f2bf" font-size="17" letter-spacing="2">COLDWIRE // ROUTING MAP</text>
+<text x="40" y="98" fill="#e7f5f3" font-size="25" letter-spacing="3">AWG / REALITY</text>
+<text x="1240" y="57" text-anchor="end" fill="#91a9b6" font-size="15" letter-spacing="1">TWO SERVER RELAY / IPv4</text>
+<path d="M260 305H360M580 305H680M900 305H1000" fill="none" stroke="#76dcff" stroke-width="7" stroke-opacity=".22" filter="url(#glow)"/>
+<path d="M260 305H355" fill="none" stroke="#76dcff" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M580 305H675" fill="none" stroke="#76dcff" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M900 305H995" fill="none" stroke="#76dcff" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M150 380V486H960" fill="none" stroke="#f2bd73" stroke-width="6" stroke-opacity=".18" filter="url(#glow)"/>
+<path d="M150 380V486H960" fill="none" stroke="#f2bd73" stroke-width="2" stroke-dasharray="8 5" marker-end="url(#direct)"/>
+<g fill="#76dcff" font-size="16" text-anchor="middle">
+ <text x="310" y="199">AWG / UDP</text><text x="310" y="221">REALITY / TCP</text>
+ <text x="630" y="199">ORIGINAL</text><text x="630" y="221">ENCRYPTION</text>
+ <text x="950" y="221" font-size="15">EXIT IP: B</text>
+</g>
+<g>
+ <path d="M40 242L52 230H260V368L248 380H40Z" fill="#0b171f" stroke="#78f2bf" stroke-opacity=".7"/>
+ <path d="M44 246V376H244" fill="none" stroke="#c27be8" stroke-opacity=".27"/>
+ <path d="M41 271H259" stroke="#314b58"/>
+ <text x="58" y="256" fill="#78f2bf" font-size="14" letter-spacing="1">00 // CLIENT</text>
+ <text x="58" y="309" fill="#e7f5f3" font-size="28" font-weight="bold" letter-spacing="1">CLIENT</text>
+ <text x="58" y="339" fill="#78f2bf" font-size="18">Your device</text>
+ <text x="58" y="362" fill="#a4b9c3" font-size="16">Local route policy</text>
+</g>
+<g>
+ <path d="M360 242L372 230H580V368L568 380H360Z" fill="#0b171f" stroke="#76dcff" stroke-opacity=".7"/>
+ <path d="M364 246V376H564" fill="none" stroke="#c27be8" stroke-opacity=".27"/>
+ <path d="M361 271H579" stroke="#314b58"/>
+ <text x="378" y="256" fill="#76dcff" font-size="14" letter-spacing="1">01 // RELAY</text>
+ <text x="378" y="309" fill="#e7f5f3" font-size="28" font-weight="bold" letter-spacing="1">ENTRY A</text>
+ <text x="378" y="339" fill="#76dcff" font-size="18">nftables</text>
+ <text x="378" y="362" fill="#a4b9c3" font-size="16">DNAT + SNAT</text>
+</g>
+<g>
+ <path d="M680 242L692 230H900V368L888 380H680Z" fill="#0b171f" stroke="#76dcff" stroke-opacity=".7"/>
+ <path d="M684 246V376H884" fill="none" stroke="#c27be8" stroke-opacity=".27"/>
+ <path d="M681 271H899" stroke="#314b58"/>
+ <text x="698" y="256" fill="#76dcff" font-size="14" letter-spacing="1">02 // VPN EXIT</text>
+ <text x="698" y="309" fill="#e7f5f3" font-size="28" font-weight="bold" letter-spacing="1">EXIT B</text>
+ <text x="698" y="339" fill="#76dcff" font-size="18">VPN services</text>
+ <text x="698" y="362" fill="#a4b9c3" font-size="16">Selected protocol</text>
+</g>
+<g>
+ <path d="M1000 242L1012 230H1240V368L1228 380H1000Z" fill="#0b171f" stroke="#76dcff" stroke-opacity=".7"/>
+ <path d="M1004 246V376H1224" fill="none" stroke="#c27be8" stroke-opacity=".27"/>
+ <path d="M1001 271H1239" stroke="#314b58"/>
+ <text x="1018" y="256" fill="#76dcff" font-size="14" letter-spacing="1">03 // PUBLIC NET</text>
+ <text x="1018" y="309" fill="#e7f5f3" font-size="28" font-weight="bold" letter-spacing="1">INTERNET</text>
+ <text x="1018" y="339" fill="#76dcff" font-size="18">Visible address:</text>
+ <text x="1018" y="362" fill="#a4b9c3" font-size="16">Exit B</text>
+</g>
+<circle cx="150" cy="380" r="4" fill="#f2bd73"/>
+<rect x="288" y="424" width="625" height="58" fill="#060c12"/>
+<text x="308" y="449" fill="#f2bd73" font-size="16" letter-spacing="1">CLIENT SPLIT ROUTING</text>
+<text x="308" y="475" fill="#a4b9c3" font-size="17">Direct, selected bypass list</text>
+<g>
+ <path d="M960 434L972 422H1240V538L1228 550H960Z" fill="#1a1918" stroke="#f2bd73" stroke-opacity=".75"/>
+ <text x="980" y="446" fill="#f2bd73" font-size="14" letter-spacing="1">04 // DIRECT</text>
+ <text x="980" y="479" fill="#f8dfbd" font-size="24" letter-spacing="1">RUSSIAN</text>
+ <text x="980" y="508" fill="#f8dfbd" font-size="24" letter-spacing="1">DESTINATIONS</text>
+ <text x="980" y="535" fill="#bda990" font-size="16">ISP address</text>
+</g>
+<text x="40" y="580" fill="#91a9b6" font-size="14" letter-spacing="1">COLDWIRE // ENTRY + EXIT</text>
+<path d="M1190 569H1240M1206 575H1240M1224 581H1240" stroke="#78f2bf"/>
+</g>
+<rect x="20" y="20" width="1240" height="560" fill="url(#scan)" pointer-events="none"/>
+</svg>

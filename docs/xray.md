@@ -17,7 +17,7 @@ sudo bash servers/install-xray.sh --endpoint EXIT_IPV4 --entry ENTRY_IPV4 --clie
 ```
 
 Manual execution needs Python 3, iproute2, OpenSSL and CA certificates; the
-wizard bootstraps missing packages. Replace the address placeholders. Installing
+wizard installs missing packages. Replace the address placeholders. Installing
 B does not configure A. For a manual TCP-only relay on clean A:
 
 ```bash
@@ -26,9 +26,9 @@ sudo bash servers/install-entry.sh ENTRY_IPV4 EXIT_IPV4 - 32497 443 443
 
 `-` disables UDP and the final argument is B's TCP port. Confirm A after
 testing as described in the [relay guide](servers.md). For both protocols use
-the wizard to coordinate preflight and installation order. Backend `--with-awg`
-allows only a recognized healthy native installation of this toolkit, not
-an arbitrary VPN or firewall.
+the wizard to coordinate checks and installation order. The `--with-awg`
+option accepts only a recognized, healthy native AWG installation of this
+toolkit. It refuses other VPNs and firewalls.
 
 ## Keys, target and camouflage
 
@@ -71,7 +71,8 @@ NET_BIND_SERVICE permits low TCP ports. New executable directories explicitly
 use 0755, private directories 0700 and secret files 0600. Access logging and
 verbose debug logging are disabled by default.
 
-GOMAXPROCS=1 and GOMEMLIMIT=96MiB are a soft GC goal, not a hard RSS cap.
+The service sets GOMAXPROCS=1 and a soft GC goal of GOMEMLIMIT=96MiB.
+The latter is not a hard RSS cap.
 No geosite/geoip databases are required. DNS/egress use IPv4; IPv6 destinations
 and private service destinations are blocked. RU lists are client routing,
 not server GeoIP. Use the same two JSON alternatives for split tunneling.
@@ -85,8 +86,8 @@ journalctl -u awg-relay-kit-xray.service -n 30 --no-pager
 ```
 
 The wizard creates `/opt/awg-relay-kit`; manual deployments use their own
-source directory. Adding a client validates configuration and **restarts
-Xray**, whose sessions reconnect. AWG is not restarted. Automated revocation
+source directory. Adding a client validates the configuration and briefly
+restarts Xray, so its sessions reconnect. AWG keeps running. Automated revocation
 or target changes are not implemented; manual changes require a private
 backup and consistent state/config edits.
 
@@ -112,8 +113,8 @@ sudo python3 install_xray.py restore --backup /root/private/xray-backup --endpoi
 ```
 
 The output directory must be new. Backup contains private keys and client
-exports. For `both`, make separate AWG/Xray backups; these are not one atomic
-transaction, so do not change clients while copying. Restore AWG first,
+exports. For `both`, back up AWG and Xray separately. There is no shared
+snapshot, so do not change clients while copying. Restore AWG first,
 then Xray with `--with-awg`. Keys/identities survive, but OS SSH accounts and
 provider firewall do not transfer. If IP changes, update direct JSON/URI
 and the relay destination. Existing via-entry profiles may remain valid

@@ -2,9 +2,9 @@
 
 English | [Русский](ru/validation-protocols.md)
 
-Test date: **9 November 2026**. No changes were made to working external VPS instances, the operator's
-VPN or Windows routes. Each mode used fresh
-VM disks instead of switching protocols over a prior installation.
+Test date: **9 November 2026**. Each mode was installed on fresh VM disks.
+Working external VPS instances, the operator's VPN and Windows routes
+were unchanged.
 
 ## Lab
 
@@ -25,9 +25,9 @@ Minimal](https://cloud-images.ubuntu.com/minimal/releases/jammy/release/).
 VM network/SSH provisioning are lab prerequisites, not hidden manual VPN setup.
 
 All VMs share one external NAT. Matching ipify output alone cannot establish
-B as the exit. Evidence also includes genuine encrypted exchange, a B peer/
-socket seeing A, the private client path, independent services and identity
-preservation across B's relocation. C uses AWG netns or local Xray SOCKS;
+B as the exit. The tests also checked encrypted traffic, A's source address at B,
+the client's path through the private network, independent services
+and preserved client identities after moving B. C uses AWG netns or local Xray SOCKS;
 the Windows default route is unchanged.
 
 ## Checks
@@ -97,7 +97,7 @@ modes is not directly comparable. Go GOMEMLIMIT is a soft GC goal.
 
 The two processes' observed peaks sum to about **43 MiB**, excluding OS,
 nftables, page cache and test-fixture memory. A/B had no persistent Docker,
-Go SDK or compiler. A uses kernel forwarding and an oneshot service without
+Go SDK or compiler. A uses kernel forwarding and a oneshot service without
 a resident proxy process.
 
 `tests/observe_server_vm.py` temporarily serves a bounded HTTP body on a

@@ -8,16 +8,17 @@ Servers need password-based SSH, root or sudo, assigned public IPv4 addresses
 and APT access. TUN is required on B only for AWG. Additional provider-side NAT
 is unsupported in normal mode; the private-address flag is for the lab.
 
-Existing VPNs and foreign rules are not migrated. Installation refuses existing
-toolkit state, Docker, forwarding, active UFW or foreign nftables tables. It
-does not enable a VPN or change routes on the operator computer.
+Use clean servers: the installer refuses an existing toolkit installation,
+Docker, enabled forwarding, active UFW or nftables tables from other software.
+It does not migrate existing VPNs or firewall rules, enable a VPN on your
+computer or change your computer's routes.
 
 ## Start the wizard
 
-The operator computer needs Python **3.10+** with venv/pip. The launcher creates
-`.venv` and installs the pinned operator dependency. It does not install Python
-itself if Python is absent. After checking the OS and existing state on both servers, it installs any
-missing Python, iproute2, OpenSSL and CA-certificate packages.
+Install Python **3.10+** with venv/pip on your computer first. The launcher
+creates `.venv` and installs the pinned dependency. On the servers, the wizard
+installs missing Python, iproute2, OpenSSL and CA-certificate packages after
+checking the OS and existing state of both machines.
 
 Windows PowerShell, from the repository root:
 
@@ -38,16 +39,17 @@ The wizard asks for:
 3. The same SSH details for B.
 
 The installer generates keys, UUIDs and shortIds, detects interfaces and
-selects a REALITY target/SNI. You can override ports and the target if needed. Results appear in a new private directory
-`private/deployment-<UTC-time>-<suffix>/`. Passwords are not stored in the report
+selects a REALITY target/SNI. You can set the ports and target yourself.
+It saves the results in a new private directory,
+`private/deployment-<UTC-time>-<suffix>/`, without SSH passwords in the report
 or VPN profiles.
 
 ## SSH identity and initial trust
 
 The interactive wizard uses TOFU: the first SSH key is saved in
-`private/known_hosts`. A changed known key is rejected **before sending a
-password**. This does not independently authenticate the first key; use
-`--entry-fingerprint` and `--exit-fingerprint` with known fingerprints for that.
+`private/known_hosts`. It rejects a changed key before sending a password.
+To verify the first key independently, supply known fingerprints through
+`--entry-fingerprint` and `--exit-fingerprint`.
 `--strict-host-keys` disables automatic first-contact trust in the wizard.
 After reinstalling a VPS, verify its new key through the provider console
 rather than disabling identity checking.
@@ -132,14 +134,15 @@ The AWG probe creates a temporary peer; the Xray probe starts a temporary
 local client. Neither changes the operator's routes or server default routes.
 Temporary processes and the probe peer are removed on completion.
 
-An unconfirmed A rolls back independently of SSH. B and downloaded profiles
-remain. A repeated install is **not a resume operation**: existing directories
-and keys are not overwritten. Partial state is retained for diagnosis instead
-of automatically deleted. The transient timer does not survive reboot; do
-not reboot A before confirmation.
+If setup is not confirmed, A rolls back even if SSH disconnects. B and
+downloaded profiles remain available. Running the installer again does not
+resume setup: it refuses to overwrite existing directories and keys. Inspect
+the retained files to diagnose a partial installation. The transient timer
+does not survive reboot, so do not reboot A before confirmation.
 
-Errors suppress private configuration. Xray reports a safe phase code such as
-`XRAY_TLS_TARGET` or `XRAY_ACTIVATION`; see [troubleshooting](troubleshooting.md).
+Error messages omit private configuration. Xray identifies the failed step
+with a code such as `XRAY_TLS_TARGET` or `XRAY_ACTIVATION`; see
+[troubleshooting](troubleshooting.md).
 
 ## Results
 
@@ -165,8 +168,8 @@ substitute for Windows ACLs. Keep exports out of the public source tree.
 
 ## Lab verification
 
-All three modes, reboot/restore, service independence, authorization and resource
-measurements are documented in [validation-protocols.md](validation-protocols.md).
+The [Ubuntu 22.04 report](validation-protocols.md) covers all three modes,
+reboots, restore, service independence, authorization and resource use.
 AWG also passed an [earlier full cycle](validation-native.md). The lab requires
 explicit `--allow-private-endpoint`; it does not bypass foreign firewalls or
 permit installing over an existing VPN.

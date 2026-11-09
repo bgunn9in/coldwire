@@ -132,7 +132,7 @@ Follow-up date: **10 November 2026**. All six OS/protocol combinations now pass
 ordinary `sudo -n systemctl reboot` on A and B. Each case used fresh VM disks,
 1 vCPU and 1024 MiB per guest, plus a separate client C. The VPN scripts and
 released bundles are byte-for-byte unchanged from the initial LTS checks.
-No working external servers, the operator's VPN or Windows routes were changed.
+Working external servers, the operator's VPN and Windows routes were unchanged.
 
 ### WHPX diagnosis and local repair
 
@@ -183,7 +183,7 @@ firmware.
 | Applied patch, normalized LF and final newline | `aa659609ea554908252d8e609aa87147c330454827c742109fe6da172cd1db5b` |
 | Tested patched executable | `2fe0a473a1071cf0a776a61b657677aa21b3813b03f16676e4b390ecd10e6edc` |
 
-### What proves an ordinary reboot
+### Reboot verification
 
 For each case, the test first verified client traffic, then rebooted A alone,
 B alone, and A/B back-to-back without waiting for A to return. This is four

@@ -21,8 +21,8 @@ external VPS instances were not used for installation or diagnosis.
 | Build VM | Separate Ubuntu 22.04 amd64, 2 vCPU / 2 GiB; compilers not copied to exits |
 | Bundle | 1,671,834 bytes; SHA256 `44c066267291dcfbf493725f00d28ce65fd7722097a434927efa18c9e3b90749` |
 
-New qcow2 overlays were created over the verified base disk. After fixes, the
-final cycle used **fresh overlays again**, not existing installations.
+Each run used a new qcow2 overlay over the verified base disk. After fixes,
+the final cycle started again from fresh overlays.
 Docker, Go compiler and build tools were absent on exit VMs before and after.
 
 An Ubuntu HTTP mirror once returned a Hash Sum mismatch. The lab switched

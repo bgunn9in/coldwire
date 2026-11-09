@@ -11,17 +11,11 @@ entry A, and websites see exit B's IP address. You can install AmneziaWG 3.1,
 VLESS with REALITY and XTLS Vision, or both.
 
 The entry server forwards encrypted traffic with nftables. The VPN services
-run on the exit server under systemd. The exit uses prebuilt binaries;
-the installer adds no Docker, Go SDK or control panel. AWG and Xray have
-separate services, keys and configuration files.
+run on the exit server under systemd, using prebuilt binaries. The installer
+adds no Docker, Go SDK or control panel. AWG and Xray have separate services,
+keys and configuration files.
 
-```mermaid
-flowchart LR
-    C[Client] -->|AWG UDP / REALITY TCP| A[A: entry, DNAT + SNAT]
-    A -->|Original encryption| B[B: selected VPN services]
-    B --> I[Internet, exit IP B]
-    C -->|Direct, selected client bypass list| R[Russian destinations]
-```
+![COLDWIRE routing: client to entry A, encrypted relay to exit B and the Internet; selected Russian destinations go directly through the ISP.](assets/coldwire-topology.svg)
 
 ## Installation
 
@@ -78,9 +72,10 @@ report. The report and profiles do not contain SSH passwords.
 
 Import `client-via-entry.vpn` for AWG or `xray-client-via-entry.json` for
 REALITY. Xray also has a TXT export containing a `vless://` URI. Keep the
-direct profile as a fallback. Each device needs its own access; direct and
-via-entry files for one protocol use the same client identity. In both mode,
-import the protocols as separate connections and choose one in your client.
+direct profile as a fallback. Give each device its own client identity.
+The direct and via-entry files for one protocol share that identity. When
+you install both protocols, import them as separate connections and choose
+one in your client.
 
 A five-minute timer rolls back the entry if setup is not confirmed. The
 wizard confirms it after all selected protocol checks pass. If Xray setup
@@ -132,9 +127,10 @@ one of these files using **Replace list**. Do not merge them.
 | `ru-direct.amnezia.json` | 1097 | 2004 | All source RU/local networks, plus 111,284,160 addresses outside that set |
 | `ru-services.amnezia.json` | 77 | 751 | RU allocations for selected services, plus local networks |
 
-The compact `ru-direct` list deliberately sends some foreign addresses outside
-the VPN. A user reported it working on a phone, but the imported file's hash
-was not checked. The supplied files contain no configured VPN nodes.
+The compact `ru-direct` list deliberately sends some foreign addresses
+through the ISP. A user confirmed that the list worked on a phone; the
+imported file's hash was not checked. The supplied files contain no
+preconfigured VPN-node addresses.
 
 To fetch current data or reproduce the supplied lists offline:
 
@@ -156,10 +152,11 @@ Each command creates exactly two JSON files in a new folder. Optional
 All three modes were tested on Ubuntu **22.04, 24.04 and 26.04 LTS** VMs
 with 1 vCPU and 1 GiB RAM. The [24.04/26.04 report](docs/validation-lts.md)
 covers SSH installation, traffic, service independence, cold boots, ordinary
-A/B reboots, restore and memory use. The [22.04 report](docs/validation-protocols.md) also records
-guest reboots and full five-minute rollback expiry; the [earlier AWG report](docs/validation-native.md)
-records a separate load test. These short runs do not establish the maximum
-speed or number of clients a VPS can handle.
+A/B reboots, restore and memory use. The [22.04 report](docs/validation-protocols.md)
+also covers guest reboots and full five-minute rollback expiry. The
+[earlier AWG report](docs/validation-native.md) includes a separate load test.
+These short runs do not establish the maximum speed or number of clients
+a VPS can handle.
 
 The relay separates entry and exit IPs and keeps the protocol's encryption.
 It adds no second tunnel layer and does not prevent traffic correlation.

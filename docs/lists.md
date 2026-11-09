@@ -5,8 +5,8 @@ English | [Русский](ru/lists.md)
 ## Two alternative files
 
 `ru-direct.amnezia.json` sends all RU IPv4 networks from the RIPE snapshot
-and local networks directly through the ISP. To reduce the routing table, it also bypasses
-some addresses outside that source set. The supplied generic snapshot adds
+and local networks directly through the ISP. To reduce the routing table,
+it also bypasses some addresses outside that source set. The supplied generic snapshot adds
 **111,284,160 addresses**, approximately **2.591% of all IPv4**. Do not use this
 policy if every foreign address must go through the VPN.
 
@@ -28,9 +28,9 @@ the number of routes.
 The generic `ru-direct` was rebuilt without preconfigured VPN-node addresses.
 Automated checks reproduce the files offline and verify coverage and route
 counts.
-A user reported `ru-direct` working on a phone; the imported file's SHA256 was
-not independently verified. Optimized lists worked on Android 9/10, which is
-not a guarantee for every device or AmneziaVPN version.
+A user confirmed that `ru-direct` worked on a phone; the imported file's
+SHA256 was not independently verified. Optimized lists also worked on Android
+9/10. Other devices and AmneziaVPN versions may handle these routes differently.
 
 ## Why the routing table matters
 
@@ -50,8 +50,8 @@ The `ru-direct` algorithm:
 3. Fill a budget of 2000 VPN prefixes with the largest remaining prefixes.
 4. Take the complement: smaller foreign gaps become bypass destinations.
 
-This selects from the given CIDR partition; it is not a proven global optimum.
-Source RU coverage is preserved. Provider ranges are protected only outside
+The algorithm preserves source RU coverage by selecting from this CIDR
+partition. A global optimum has not been proved. Provider ranges are protected only outside
 the RU/local source set. If a **specific** protected IP conflicts with that
 set, generation fails without changing existing files. Without `--entry` or
 `--exit`, the algorithm contains no deployment-node addresses.

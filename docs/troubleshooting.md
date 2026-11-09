@@ -63,9 +63,9 @@ and a short header capture; tcpdump is installed separately:
 sudo timeout 20 tcpdump -ni ens3 -nn 'udp and (port 443 or port 32497)'
 ```
 
-Adapt the filter for other ports or TCP. Traffic reaching A but not forwarded
-to B indicates rules/routes to inspect. No traffic at A means checking the
-client Endpoint/filter, local router/network and provider firewall. No relay
+Adapt the filter for other ports or TCP. If traffic reaches A but is not
+forwarded to B, inspect A's rules and routes. If nothing reaches A, check
+the client Endpoint and filter, local router and network, and provider firewall. No relay
 listener in `ss -lunp` is normal.
 
 ## Exit B

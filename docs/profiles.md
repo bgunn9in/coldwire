@@ -80,8 +80,9 @@ python .\convert_profile.py "C:\secure\admin.vpn" "C:\secure\admin-via-entry.vpn
 
 The converter checks the B address and server container/protocol parameters,
 then takes client keys from the second file. Use access assigned to this
-device, not an active phone. Test the original client directly: its files cannot show whether the peer
-is still registered on B.
+device; an active phone needs its own identity. Test the original client
+directly because the files cannot show whether its peer is still registered
+on B.
 
 The administrator's top-level address remains **your B** and its original
 SSH port. SSH on A reaches the relay, not the AWG server. Only the nested
@@ -130,8 +131,8 @@ python .\convert_xray.py "C:\secure\xray-client.json" "C:\secure\xray-via-entry.
 Only the address/port of one VLESS REALITY outbound changes. UUID, shortId,
 SNI, REALITY client credential and remaining fields are preserved. The
 converter does not handle URI or `.vpn` and never overwrites files. A's TCP
-relay must match the endpoint. Direct and via-entry copies are alternatives
-for one access; they do not replace separate access for different devices.
+relay must match the endpoint. Direct and via-entry copies belong to the same
+client. Give each device separate access.
 
 In `both`, import AWG and REALITY as different connections. RU lists remain
 client routing settings, not server Xray routing rules. [Xray maintenance](xray.md).

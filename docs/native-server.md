@@ -49,10 +49,11 @@ provides a virtual network separately. Normal mode requires a public address.
 
 ## What installation does
 
-Before changing the server, it checks the OS, architecture, systemd, address
-and port. It refuses an existing deployment, Docker, active UFW, nftables
-tables, forwarding, VPN interfaces or conflicting routes to 10.8.1.0/24. Do not bypass refusal by
-disabling networking on a working server; use a clean VPS.
+Before changing the server, the installer checks the OS, architecture,
+systemd, address and port. It refuses an existing deployment, Docker, active
+UFW, nftables tables, enabled forwarding, VPN interfaces or conflicting routes
+to 10.8.1.0/24. Use a clean VPS if any check fails; disabling networking
+on a working server can disconnect its users.
 
 The `dist/awg-native-linux-amd64.tar.gz` checksum must match the pin in code.
 Allowed filenames/types, pinned commits and internal hashes are also checked.
@@ -152,11 +153,12 @@ sudo install -d -m 700 /root/private
 sudo bash servers/backup-exit.sh /root/private/exit-backup
 ```
 
-The parent directory must exist, but the output must be new. Backup saves
-private state/clients and the verified bundle from installed BIN, so another
-backup works after restore without the original dist directory. Backup and
-add-client share a lock; avoid manual edits while copying. Store the secret
-backup encrypted and outside Git. Backup does not restart the service.
+The parent directory must exist, but the output directory must be new.
+The backup includes private state, clients and the verified installed bundle.
+This lets a restored server make another backup without the original dist
+directory. Backup and add-client share a lock; avoid manual edits while
+copying. Store the backup encrypted and outside Git. Creating a backup
+does not restart the service.
 
 On **another clean Ubuntu VPS** with this repository and a trusted backup:
 
