@@ -1,38 +1,36 @@
-# Подготовка исходников к передаче
+# Preparing source for publication
 
-**Русский** · [English](en/publication.md)
+English | [Русский](ru/publication.md)
 
-Публичный проект — **COLDWIRE**. Он создаётся из проверенного дерева исходников
-с новой историей Git; прежний приватный репозиторий и его объекты не переносятся.
-Лицензия MIT относится к оригинальным скриптам, тестам, документации и оформлению проекта.
-Лицензии сторонних компонентов и адресных данных описаны в
+The public project is **COLDWIRE**. It starts from a verified source tree and
+new Git history; the previous private repository and its objects are not
+transferred. MIT covers original scripts, tests, documentation and branding.
+Third-party software and address-data terms are described in
 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
-Передавайте только дерево исходников с готовым публичным бинарным пакетом
-из `dist/`. Папки `private/`, `generated/`, `.venv/`, профили, ключи,
-журналы, образы VM и backup в комплект не входят.
+Distribute only the source tree and public binary bundles under `dist/`.
+Exclude `private/`, `generated/`, `.venv/`, profiles, keys, logs, VM disks and
+backups. Supply your deployment addresses as command options rather than
+embedding them in defaults/examples. Deployment reports, SSH fingerprints,
+profiles and backups are private operational data.
 
-Используйте адреса своих серверов в параметрах запуска, а не правьте defaults
-и примеры под рабочую установку. Адреса и SSH-отпечатки отчётов deploy,
-экспорты профилей и резервные копии относятся к закрытым данным установки.
+## Files and history need separate checks
 
-## Файлы и история — разные проверки
+A normal commit deleting an address does not erase earlier commits. If a
+previous history contained deployment details, start from a separate clean
+tree with one reviewed initial commit. Do not publish old history, branches,
+tags or the working checkout's `.git`. This does not delete copies already
+held by other people.
 
-Обычный коммит с удалением адреса не удаляет его из прежних коммитов.
-Если прежняя история содержала сведения об установке, для передачи исходников
-предпочтительна новая копия с одним проверенным начальным коммитом.
-Не публикуйте старую историю, ветки, теги или `.git` из рабочего каталога.
-Уже опубликованные сторонние копии истории такой подготовкой не удаляются.
-
-После проверки содержимого можно получить архив только текущего дерева:
+After reviewing content, archive the current tree only:
 
 ```bash
 git archive --format=zip --output=../coldwire-source.zip HEAD
 ```
 
-Архив не содержит `.git`, но **его содержимое всё равно нужно проверить**:
-`git archive` включает закоммиченные файлы, даже если они затем попали в `.gitignore`.
-Для отдельного репозитория распакуйте проверенный архив в новую пустую папку:
+The archive has no `.git`, but **review its contents anyway**: `git archive`
+includes committed files even if a later `.gitignore` rule matches them.
+For a separate repository, extract the reviewed archive to a new empty directory:
 
 ```bash
 git init -b main
@@ -40,49 +38,63 @@ git add .
 git commit -m "Initial source release"
 ```
 
-Не копируйте старый `.git` и не добавляйте старые refs. Создание удалённого
-репозитория, выдача доступа коллегам и смена публичности — отдельные действия.
-Локальная чистая копия сама по себе не очищает историю исходного GitHub-репозитория.
+Do not copy old `.git` or add old refs. Creating a remote, granting colleagues
+access and changing visibility are distinct operations. A local clean copy
+does not clean the original GitHub repository's storage.
 
-После переписывания опубликованной истории старые клоны нужно заменить
-свежими, не сливать их обратно. GitHub также может сохранять старые объекты
-по SHA в кэше; force-push не гарантирует их физическое удаление.
-Это отдельно описано в [инструкции GitHub](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository).
+After rewriting published history, replace old clones rather than merging
+them back. GitHub can retain old objects accessible by SHA in cached views;
+force-push does not guarantee physical removal. See [GitHub's guidance](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository).
 
-## Проверка выпуска
+## Release checks
 
-Из корня исходников:
+From the repository root:
 
 ```bash
 python -m pip install -r requirements-deploy.txt
 python -m unittest discover -s tests -v
 ```
 
-Paramiko нужен для SSH-тестов; без него один тест host keys будет пропущен.
-Проверьте Bash syntax на всех `servers/*.sh`, локальные ссылки Markdown,
-соответствие хешей и чисел JSON документации и офлайн-воспроизведение снимков.
-Проверьте дерево и вложенные архивы на реальные доступы, адреса установки
-и локальные пути. Тестовые ключи в unit fixtures синтетические; они не должны
-совпадать с выданными доступами. Сохраняйте лицензии и исходники компонентов
-в `dist/awg-native-linux-amd64.tar.gz` и `dist/xray-native-linux-amd64.tar.gz`.
-Xray-пакет содержит лицензию и manifest со ссылкой на исходники закреплённой версии.
+SSH host-key tests require Paramiko; without it, that test is skipped. Check
+Bash syntax for `servers/*.sh`, local Markdown links, list hashes/counts and
+offline reproduction of both JSON files. Review source and nested archives
+for real credentials, node addresses and personal local paths. Synthetic
+unit-test keys must not match issued credentials.
 
-Публикация не меняет список проверенных платформ: **поддерживается Ubuntu
-22.04 amd64**, другие версии не тестировались. Полный VM-тест не следует
-приписывать каждой последующей правке: результаты конкретного стенда и
-границы приведены в [validation-protocols.md](validation-protocols.md) и
-[более раннем отчёте AWG](validation-native.md).
+Preserve licenses and corresponding source in
+`dist/awg-native-linux-amd64.tar.gz` and `dist/xray-native-linux-amd64.tar.gz`.
+Xray's bundle includes its license and a manifest pointing to the pinned
+source version. The project's MIT license does not replace upstream licenses.
 
-## Проверка публичной редакции COLDWIRE
+Supported server releases are Ubuntu 22.04, 24.04 and 26.04 LTS amd64.
+The [LTS report](validation-lts.md), [Ubuntu 22.04 three-mode report](validation-protocols.md)
+and [earlier AWG report](validation-native.md) record the tests performed.
+A later documentation edit does not imply that the full VM cycle was rerun.
 
-Исполняемые скрипты, тесты, адресные данные, бинарные пакеты и два JSON перенесены
-из проверенного архива без изменений. В этой редакции добавлены название,
-оформление, MIT и английский перевод; служебные имена не менялись.
-Повторно прошли 44/44 unit-теста и офлайн-воспроизведение списков. Для 13 пар
-RU/EN проверены команды, контрольные хеши, переключение языка и локальные ссылки.
-SVG-шапка отрисована и визуально проверена; встроенный логотип совпадает
-с оригинальным PNG. Дерево и вложенные архивы проверены на рабочие доступы,
-адреса узлов и личные пути до публикации новой истории.
+## Initial public release
 
-Полный VM-цикл в этом редакционном этапе не повторялся: его результаты
-относятся к неизменённым скриптам из [отчёта протоколов](validation-protocols.md).
+At the initial release, runtime scripts, tests, address data, binary bundles
+and both JSON files were
+copied unchanged from the verified archive. That edition added branding, MIT
+and English documentation while retaining internal identifiers. All 44/44
+unit tests and offline list reproduction passed again. Commands, checksums,
+language navigation and local links were checked for all 13 RU/EN document
+pairs. The SVG header was rendered and visually inspected; its embedded logo
+matches the original PNG. The tree and nested archives were checked for
+operational credentials, node addresses and personal paths before publishing
+the new history.
+
+The full VM cycle was not rerun for these editorial changes: its results
+apply to the unchanged scripts documented in the [protocol report](validation-protocols.md).
+
+## English default and additional LTS releases
+
+The main documentation paths are `README.md` and `docs/`. Russian translations
+are in `README.ru.md` and `docs/ru/`, with language links on each page.
+Commands and diagrams from the original 13 language pairs are preserved; a
+fourteenth pair records the [LTS results](validation-lts.md). Binary bundles,
+address data, the PNG logo and both RU JSON files are unchanged. Only the
+platform caption changed in the SVG. Links, hashes and absence of private
+data were checked. All 47 unit tests passed on Windows and guest Python
+3.12/3.14. Support for the new OS releases was verified in the six VM cycles
+listed in the LTS report.

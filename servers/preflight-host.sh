@@ -4,7 +4,7 @@ set -euo pipefail
 export LC_ALL=C
 [[ $EUID == 0 ]] || { echo 'Root/sudo required'; exit 1; }
 source /etc/os-release
-[[ $ID == ubuntu && $VERSION_ID == 22.04 && $(uname -m) == x86_64 && -d /run/systemd/system ]] || { echo 'Only Ubuntu 22.04 amd64 with systemd is supported'; exit 1; }
+[[ $ID == ubuntu && ( $VERSION_ID == 22.04 || $VERSION_ID == 24.04 || $VERSION_ID == 26.04 ) && $(uname -m) == x86_64 && -d /run/systemd/system ]] || { echo 'Ubuntu 22.04, 24.04 or 26.04 LTS amd64 with systemd required'; exit 1; }
 for path in /opt/awg-relay-kit /opt/amnezia /etc/awg-relay-kit-exit /etc/awg-relay-kit-xray /var/lib/awg-relay-kit /usr/local/libexec/awg-relay-kit /usr/local/libexec/awg-relay-kit-xray /root/awg-relay-kit-clients /root/awg-relay-kit-xray-clients /etc/blackice-relay.nft /etc/systemd/system/blackice-relay.service; do
     [[ ! -e $path ]] || { echo 'Existing installation/output detected'; exit 1; }
 done

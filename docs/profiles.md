@@ -1,139 +1,137 @@
-# Клиентские и администраторские профили
+# Client and administrator profiles
 
-**Русский** · [English](en/profiles.md)
+English | [Русский](ru/profiles.md)
 
-## Что изменяет конвертер
+## What the converter changes
 
-Этот раздел относится к `convert_profile.py` и AWG. Для REALITY ниже описаны
-отдельный нативный JSON и `convert_xray.py`.
+Use `convert_profile.py` for AWG `.vpn` exports. For REALITY JSON, use
+`convert_xray.py`; see [REALITY profiles](#reality-profiles).
 
-Формат экспорта: `vpn://` → Base64URL → Qt `qCompress`
-(4 байта исходной длины big-endian + zlib) → UTF-8 JSON.
-Скрипт ограничивает размер, проверяет заголовок/окончание потока и повторное декодирование.
-Декодированный JSON не печатается и не записывается на диск.
+A `.vpn` export contains compressed JSON, not encrypted storage. Decoding
+follows `vpn://` → Base64URL → Qt `qCompress` (four-byte big-endian original
+length plus zlib) → UTF-8 JSON. The script limits size, checks the
+header and stream ending, and decodes its result again. Decoded JSON is not
+printed or written to disk.
 
-Поддерживается `.vpn` с одним контейнером **amnezia-awg2**. Резервная копия
-всех настроек Amnezia, QR-изображения, нативные `.conf`, другие протоколы и профили
-с несколькими контейнерами не поддерживаются. Для них сначала экспортируйте
-отдельный доступ AmneziaWG из приложения. Python 3.10+, Windows/macOS/Linux.
+It supports `.vpn` with one **amnezia-awg2** container. Full application
+backups, QR images, native `.conf`, other protocols and multiple-container
+profiles are unsupported. First export a separate AmneziaWG access profile
+for those cases. The converter needs Python 3.10+ on Windows/macOS/Linux.
 
-| Поле | Клиентский экспорт | Администраторский экспорт |
+| Field | Client export | Administrator export |
 |---|---|---|
-| Верхний `hostName` | A | **B**, адрес SSH/управления |
-| Верхний SSH `port`, учётные данные | Без изменений | **Без изменений** |
-| `containers[0].awg.port` | Входной порт A | **Реальный порт AWG на B**, сохраняется |
-| `last_config.hostName` / `port` | A / входной порт | A / входной порт |
-| `last_config.config` → `Endpoint` | A:входной порт | A:входной порт |
-| `description` | Подпись с новым адресом входа | Подпись с новым адресом входа |
-| Ключи, peer IP, PSK, H/S/J и прочие параметры | Без изменений | Без изменений |
+| Top-level `hostName` | A | **B**, SSH/management address |
+| Top-level SSH `port` and credentials | Preserved | **Preserved** |
+| `containers[0].awg.port` | A's entry port | **Real AWG port on B**, preserved |
+| `last_config.hostName` / `port` | A / entry port | A / entry port |
+| `last_config.config` → `Endpoint` | A:entry-port | A:entry-port |
+| `description` | Label with new entry address | Label with new entry address |
+| Keys, peer IP, PSK, H/S/J and other parameters | Preserved | Preserved |
 
-Реле прозрачно для AWG: прежний клиентский ключ остаётся зарегистрирован на B.
-Конвертер не создаёт пользователей и не подключается к серверам.
-`--entry` обязателен: укажите свой IPv4 входа вместо `ENTRY_IPV4` в примерах.
-`--port` по умолчанию 32497. Заранее настроенных серверов в скрипте нет.
+The relay is transparent to AWG: the existing client key remains registered
+on B. Conversion does not create users or connect to servers. `--entry` is
+required; replace `ENTRY_IPV4` with your entry address. `--port` defaults to
+32497. No server addresses are preconfigured.
 
-## Обычный новый клиент
+## A normal new client
 
-1. В административном подключении B создайте **отдельного клиента для нового устройства**.
-2. Сохраните оригинальный экспорт в закрытую папку вне репозитория.
-3. Проверьте исходный доступ напрямую через B на запасном устройстве.
-4. Создайте новую копию:
+1. In the application's administrator connection to B, create a **separate
+   client for the new device**.
+2. Save the original export in a private directory outside the repository.
+3. Test original direct access to B on a spare device.
+4. Create a new copy:
 
 ```powershell
 python .\convert_profile.py "C:\secure\phone.vpn" "C:\secure\phone-via-entry.vpn" --entry ENTRY_IPV4 --port 32497
 ```
 
-5. Импортируйте отдельным подключением, не удаляя старое. Проверьте сайты и внешний IP.
-6. Сохраните/экспортируйте прежний список исключений, затем импортируйте выбранный новый JSON.
+5. Import as a separate connection without deleting the old one. Test websites
+   and external IP.
+6. Save/export the previous bypass list, then import one selected new JSON.
 
-Папка назначения уже должна существовать, выходного файла ещё не должно быть.
-Скрипт отказывается перезаписывать существующий файл, в том числе исходник.
-На Unix выходной файл создаётся с режимом 0600; на Windows используйте папку,
-к которой не имеют доступа другие пользователи: режим 0600 не заменяет NTFS ACL.
-Файл не предназначен для отправки в GitHub, даже приватный.
+The output parent directory must exist; the output file must not. Existing
+files, including the input file, are never overwritten. Unix output mode is
+0600. On Windows use a directory restricted to the intended user: chmod 0600
+does not replace NTFS ACLs. Never upload profiles to GitHub, even a private repo.
 
-Для нового выхода, установленного `servers/install-exit.sh`, приложение для
-экспорта не нужно: `python3 install_exit.py add-client --name phone` создаёт
-готовые `.vpn`/`.conf`. Они уже зарегистрированы на новом сервере;
-при заданном `--entry` дополнительно создаётся вариант через A.
-Это клиентские профили, административной роли Amnezia у такой CLI-установки нет.
-CLI нативного установщика не импортирует административный доступ другого B.
+For a native exit installed with `servers/install-exit.sh`, no application is
+needed for export: `python3 install_exit.py add-client --name phone` generates
+registered `.vpn`/`.conf` access, including a via-entry variant if `--entry`
+was configured. These are client profiles without an Amnezia administrator
+role. The native CLI does not import administrator access for another exit.
 
-Один peer не используйте одновременно на двух устройствах: сервер может
-переключать его Endpoint между ними. Создайте разные клиентские доступы.
+Do not run one AWG peer concurrently on two devices: its Endpoint may move
+between them. Issue separate access instead.
 
-## Администраторский экспорт
+## Administrator export
 
-Администраторский экспорт часто содержит SSH-доступ и параметры сервера,
-но **не содержит клиентского `last_config`**. По такому файлу нельзя восстановить
-закрытый клиентский ключ. Конвертер в этом случае завершится без создания результата.
+Administrator exports often contain SSH credentials and server parameters
+but **no client `last_config`**. Such a file cannot recover a private client
+key. The converter then stops without creating an output.
 
-Есть два варианта:
+Two supported cases:
 
-- Если экспорт уже содержит полноценный рабочий `last_config`, обычной команды достаточно.
-- Если его нет, передайте отдельный **свежий прямой клиентский экспорт того же B**:
+- If a complete working `last_config` is present, the normal command suffices.
+- Otherwise supply a separate **fresh direct client export for the same B**:
 
 ```powershell
 python .\convert_profile.py "C:\secure\admin.vpn" "C:\secure\admin-via-entry.vpn" --entry ENTRY_IPV4 --client-profile "C:\secure\this-device-direct.vpn" --port 32497
 ```
 
-Скрипт проверяет совпадение адреса B и серверных параметров контейнера/протокола
-и берёт клиентские ключи из второго файла. Используйте доступ, выделенный
-этому устройству, а не активному телефону. По файлам нельзя доказать,
-что peer всё ещё зарегистрирован на сервере: исходный клиент должен работать напрямую.
+The converter checks the B address and server container/protocol parameters,
+then takes client keys from the second file. Use access assigned to this
+device, not an active phone. Test the original client directly: its files cannot show whether the peer
+is still registered on B.
 
-Верхний адрес администратора остаётся адресом **вашего B**, SSH-порт — прежним.
-Это необходимо: SSH на A ведёт на реле, где контейнера AWG нет. Только вложенный
-клиентский Endpoint указывает на **ваш A и выбранный входной порт**.
-Поэтому в интерфейсе административного подключения может отображаться адрес B.
+The administrator's top-level address remains **your B** and its original
+SSH port. SSH on A reaches the relay, not the AWG server. Only the nested
+client Endpoint points to **your A and entry port**. Consequently, the
+administrator connection's UI may still display B's address.
 
-В проверенной версии AmneziaVPN 5.1.0.6 подключение использует существующий
-клиентский кэш. Очистка/пересоздание конфигурации, переустановка протокола,
-смена его параметров или поведение другой версии приложения могут создать
-Endpoint B заново. После таких действий экспортируйте актуальный профиль,
-повторите конвертацию и проверьте вход. Новые доступы, созданные приложением
-для B, тоже нужно конвертировать отдельно.
+The checked AmneziaVPN 5.1.0.6 uses an existing client cache. Clearing or
+regenerating configuration, reinstalling the protocol, changing protocol
+settings or using a different application version may recreate Endpoint B.
+After such changes, export the current profile, reconvert and verify the
+entry. New access issued by the application for B also needs conversion.
 
-Замена верхнего B на A направит административное управление на реле,
-где AWG не установлен. Административная роль не исправляет недоступность UDP.
-32497 принят как общий порт по умолчанию для всех ОС, без отдельного режима
-Windows. [Наблюдение о совместимости AdGuard](windows-admin-port-diagnosis.md).
+Replacing top-level B with A sends administration to the relay, where AWG is
+not installed. Administrator status does not fix UDP reachability. Port 32497
+is the common default for all OS clients; there is no Windows-specific mode.
+[AdGuard compatibility observation](windows-admin-port-diagnosis.md).
 
-## Импорт на устройствах
+## Import on devices
 
-В AmneziaVPN выберите добавление подключения из файла/ключа и откройте
-новую `.vpn`. Название пункта зависит от версии; не выбирайте восстановление
-полной резервной копии настроек вместо импорта отдельного подключения.
-Старый профиль оставьте отдельным подключением для возврата.
+In AmneziaVPN, add a connection from a file/key and select the new `.vpn`.
+Exact menu names vary; importing one connection is different from restoring
+the complete settings backup. Keep the old connection as a separate fallback.
 
-Для исключений: Настройки → Раздельное туннелирование → сайты/IP → режим
-**«Адреса из списка НЕ должны открываться через VPN»** → импорт JSON →
-**«Заменить список»**. Выберите один из двух вариантов. При необходимости
-сначала отключите тестовый VPN, измените список, затем подключитесь снова.
-Интерфейс macOS/iOS работает с IP/подсетями; эти JSON уже содержат такие значения.
-На Windows/Android список IP также влияет на приложения, которые обращаются к этим IP.
+For bypass: Settings → Split tunneling → websites/IPs → **addresses in the
+list must NOT use the VPN** → import JSON → **Replace list**. Select one
+variant. If necessary, disconnect only the test VPN while changing its list.
+macOS/iOS work with IPs/subnets, already present in these files. On
+Windows/Android an IP exclusion also affects applications accessing that IP.
 
-После включения: Яндекс Интернетометр — адрес провайдера; `https://api.ipify.org`
-— **IPv4 вашего B**. Проверяйте без другого прокси, Private Relay или браузерного
-VPN, иначе проверяется другая цепочка. Подробнее: [диагностика](troubleshooting.md).
+After connecting, Yandex Internetometer should see the ISP address and
+`https://api.ipify.org` should see **your B's IPv4**. Disable other browser
+proxies, Private Relay or browser VPNs for the check so they do not add a
+different path. [Troubleshooting](troubleshooting.md).
 
-## Профили REALITY
+## REALITY profiles
 
-Мастер и `install_xray.py add-client` создают прямой и via-entry нативные JSON,
-а также TXT с `vless://`. В AmneziaVPN импортируйте нативный JSON как стороннюю
-конфигурацию Xray; URI предназначен для клиента, который поддерживает VLESS
-REALITY / XTLS Vision. Серверный приватный ключ не экспортируется.
+The wizard and `install_xray.py add-client` export direct and via-entry native
+JSON plus TXT files containing `vless://`. Import native JSON as a third-party
+Xray configuration in AmneziaVPN. URI use requires a client supporting VLESS
+REALITY / XTLS Vision. The private server key is never exported.
 
 ```powershell
 python .\convert_xray.py "C:\secure\xray-client.json" "C:\secure\xray-via-entry.json" --entry ENTRY_IPV4 --port 443
 ```
 
-Меняются только address/port единственного VLESS REALITY outbound; UUID,
-shortId, SNI, клиентский материал REALITY и остальные поля сохраняются.
-Конвертер не обрабатывает URI или `.vpn` и не перезаписывает файлы.
-Адрес/порт должны соответствовать TCP-реле A. Прямой и via-entry файлы одного
-доступа не заменяют выдачу отдельных доступов разным устройствам.
+Only the address/port of one VLESS REALITY outbound changes. UUID, shortId,
+SNI, REALITY client credential and remaining fields are preserved. The
+converter does not handle URI or `.vpn` and never overwrites files. A's TCP
+relay must match the endpoint. Direct and via-entry copies are alternatives
+for one access; they do not replace separate access for different devices.
 
-В режиме `both` AWG и REALITY импортируются как разные подключения.
-Списки `ru-direct`/`ru-services` остаются клиентской настройкой маршрутов,
-они не встроены в серверный Xray routing. [Установка и обслуживание Xray](xray.md).
+In `both`, import AWG and REALITY as different connections. RU lists remain
+client routing settings, not server Xray routing rules. [Xray maintenance](xray.md).

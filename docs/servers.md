@@ -1,73 +1,72 @@
-# Серверы: установка реле и нативного выхода
+# Servers: relay and native exit deployment
 
-**Русский** · [English](en/servers.md)
+English | [Русский](ru/servers.md)
 
-Поддерживается **Ubuntu 22.04**; стенд проверен на amd64. Другие версии
-Ubuntu не тестировались и отклоняются установщиками. Нативный бинарный пакет
-выхода предназначен только для amd64.
+Supported releases are **Ubuntu 22.04, 24.04 and 26.04 LTS amd64**.
+The installers reject other releases and architectures.
 
-A — вход с nftables-реле, B — выход с AWG 3.1 и/или Xray REALITY под systemd.
-Клиент отправляет зашифрованные пакеты A; DNAT меняет назначение на B,
-SNAT/masquerade обеспечивает ответы через A. Расшифрование выполняется на B.
-На A нет ключей VPN и постоянного userspace-процесса туннеля.
+A forwards traffic with nftables; B runs AWG 3.1, Xray REALITY or both under
+systemd. Clients send encrypted traffic to A. DNAT changes its destination to
+B and SNAT/masquerade makes replies return through A. Decryption happens on
+B. A holds no VPN keys and runs no persistent userspace tunnel process.
 
-`ENTRY_IPV4` / `EXIT_IPV4` во всех командах замените своими адресами.
-Для установки сразу двух серверов используйте [deploy](deploy.md).
-Ниже — альтернативная ручная установка из копии всего репозитория.
+Replace `ENTRY_IPV4`/`EXIT_IPV4` with your own addresses. To deploy both servers
+automatically, use [deploy](deploy.md). The following is the manual alternative
+from a complete repository copy.
 
-## Выход B
+## Exit B
 
-Для AWG нужен чистый Ubuntu 22.04 amd64 с systemd, Python 3.10+, TUN и IPv4
-на интерфейсе. Docker и компилятор Go на выход не устанавливаются.
+AWG requires a clean supported Ubuntu release with systemd, Python 3.10+,
+TUN and an assigned IPv4. No Docker or Go compiler is installed on the exit.
 
 ```bash
 sudo bash servers/install-exit.sh --endpoint EXIT_IPV4 --entry ENTRY_IPV4 --client client1
 ```
 
-Профили выдаются в `/root/awg-relay-kit-clients/client1/`.
-Сначала проверьте прямой профиль; флаг `--entry` создаёт альтернативные
-экспорты и не настраивает A. [Подробности выхода](native-server.md).
+Exports are placed in `/root/awg-relay-kit-clients/client1/`. Test the direct
+profile first. `--entry` creates alternative exports but does not configure A.
+[Native AWG details](native-server.md).
 
-Для REALITY используйте [отдельную инструкцию](xray.md). Для обоих протоколов
-предпочтителен мастер: он проверяет их до установки и согласует порядок запуска.
+For REALITY see [its guide](xray.md). For both protocols use the wizard, which
+coordinates checks and installation order.
 
-## Вход A
+## Entry A
 
-IPv4 A должен быть назначен внешнему интерфейсу; маршрут к B должен идти
-через него. Требуются root, Python 3, iproute2/ss, systemd, доступ к APT.
-До установки forwarding должен быть 0, nftables — без таблиц, UFW — неактивен.
-Скрипт отказывается работать при запущенных контейнерах или существующем реле.
-VPS за дополнительным NAT не поддерживаются этим установщиком.
+A's IPv4 must be assigned to the external interface, and the route to B must
+use that interface. Requirements: root, Python 3, iproute2/ss, systemd and APT
+access. Before installation forwarding must be 0, nftables must have no
+tables, and UFW must be inactive. Running containers or an existing relay
+cause refusal. Additional provider-side NAT is unsupported.
 
 ```bash
 sudo bash servers/install-entry.sh ENTRY_IPV4 EXIT_IPV4
-# Необязательно: другие входные и выходной UDP-порты:
+# Optional: different input and destination UDP ports:
 # sudo bash servers/install-entry.sh ENTRY_IPV4 EXIT_IPV4 443,32497 32497
-# Только REALITY TCP443:
+# REALITY TCP443 only:
 # sudo bash servers/install-entry.sh ENTRY_IPV4 EXIT_IPV4 - 32497 443 443
-# Оба: AWG UDP32497 и REALITY TCP443:
+# Both: AWG UDP32497 and REALITY TCP443:
 # sudo bash servers/install-entry.sh ENTRY_IPV4 EXIT_IPV4 32497 32497 443 443
 ```
 
-По умолчанию открывается **один входной UDP-порт 32497**, назначение — B:32497.
-Firewall хостера должен разрешать выбранный вход и исходящий TCP/UDP к B.
-Установщик не управляет внешним firewall. Пятый аргумент задаёт входной TCP-порт
-(0 отключает TCP), шестой — TCP-порт B. `-` в третьем аргументе отключает UDP.
-TCP и UDP одного номера — разные порты и проверяются отдельно.
+By default, **one UDP entry port 32497** forwards to B:32497. The provider
+firewall must allow selected incoming ports and outbound TCP/UDP to B. The
+installer does not manage that firewall. The fifth argument selects the TCP
+entry port (0 disables TCP), the sixth B's TCP port. `-` as the third argument
+disables UDP. TCP and UDP with the same number are distinct ports.
 
-Создаётся собственная таблица `ip blackice_relay`: DNAT, masquerade только
-для DNAT-соединений и FORWARD с политикой drop, допускающей выбранные потоки и ответы.
-При выборе TCP добавляются аналогичные правила пересылки для REALITY.
-INPUT/OUTPUT и SSH не изменяются; `flush ruleset` не используется.
-Реле должно быть выделенным: другие VPN/маршрутизируемые сети требуют
-согласования FORWARD. Порт может отсутствовать в `ss -lunp`, поскольку
-реле работает в ядре, без слушающего TCP/UDP-сокета на A.
+The owned `ip blackice_relay` table contains DNAT, masquerade only for DNAT
+connections, and a drop-policy FORWARD chain permitting selected flows and
+replies. TCP selection adds analogous REALITY forwarding rules. INPUT/OUTPUT
+and SSH are unchanged; there is no `flush ruleset`. Use a dedicated relay:
+other routed VPNs/networks require coordinated FORWARD policy. No listener
+on A is required in `ss -lunp` or the TCP equivalent, because forwarding runs
+in the kernel without a listening TCP/UDP socket.
 
-## Проверка и подтверждение A
+## Verify and confirm A
 
-Перед включением реле назначается независимый systemd-таймер на **5 минут**.
-Проверьте профиль через A на отдельном устройстве с отдельным peer:
-сайты открываются, внешний IPv4 равен B. Затем на A:
+Before enabling the relay, an independent **five-minute** systemd timer is
+armed. Test via A on a separate device with separate access: websites work
+and external IPv4 equals B. Then run on A:
 
 ```bash
 sudo bash /var/lib/awg-relay-kit/confirm-entry.sh
@@ -76,48 +75,50 @@ systemctl is-enabled blackice-relay.service
 systemctl is-active blackice-relay-safety.timer
 ```
 
-После подтверждения сервис active/enabled, таймер inactive. Deploy выполняет
-подтверждение автоматически после аутентифицированного серверного probe;
-это не заменяет отдельную проверку подключения с устройства.
+After confirmation, the relay is active/enabled and the timer inactive.
+Deploy confirms automatically after authenticated server-side probes, which
+do not replace a separate device-network check.
 
-При неудаче таймер откатывает A, либо можно вызвать:
+If verification fails, wait for the timer or invoke:
 
 ```bash
 sudo bash /var/lib/awg-relay-kit/rollback-entry.sh
 ```
 
-Удаляются только файлы/таблица реле, forwarding возвращается в сохранённое
-значение; B не затрагивается. Каталог `/var/lib/awg-relay-kit` остаётся для
-диагностики, повторный install откажется работать поверх него.
-Откат разрывает подключения через A; прямой профиль B сохраните заранее.
+Only relay files/table are removed and the previous forwarding value is
+restored; B is untouched. `/var/lib/awg-relay-kit` remains for diagnosis and
+blocks installation over retained state. Rollback disconnects clients through
+A; save a direct B profile first.
 
-Транзитный таймер **не переживает reboot**: не перезагружайте A до подтверждения.
-После подтверждения реле включается при загрузке через systemd.
+The transient timer **does not survive reboot**. Do not reboot A before
+confirmation. Once confirmed, the relay starts at boot through systemd.
 
-| Путь A | Назначение |
+| Path on A | Purpose |
 |---|---|
-| `/etc/blackice-relay.nft` | Собственные правила |
-| `/etc/systemd/system/blackice-relay.service` | Сервис реле |
-| `/etc/sysctl.d/90-blackice-relay.conf` | Постоянное IPv4 forwarding |
-| `/var/lib/awg-relay-kit/` | Подтверждение, откат и сохранённое состояние |
+| `/etc/blackice-relay.nft` | Owned rules |
+| `/etc/systemd/system/blackice-relay.service` | Relay service |
+| `/etc/sysctl.d/90-blackice-relay.conf` | Persistent IPv4 forwarding |
+| `/var/lib/awg-relay-kit/` | Confirmation, rollback and saved state |
 
-Не применяйте `nft -f` повторно поверх существующей таблицы: возможны дубликаты.
-Изменения работающего реле требуют закрытой копии правил и плана возврата.
+Do not reapply `nft -f` over an existing table: it may duplicate rules.
+Changes to a running relay need a private rules backup and rollback plan.
 
-## Backup/restore выхода
+## Exit backup/restore
 
 ```bash
 sudo install -d -m 700 /root/private
 sudo bash servers/backup-exit.sh /root/private/exit-backup
-# На другом чистом B:
+# On a different clean B:
 sudo bash servers/restore-exit.sh --backup /root/private/exit-backup --endpoint EXIT_IPV4
 ```
 
-Копия содержит секреты, храните её вне Git. Restore сохраняет VPN-ключи и peers,
-но не переносит учётные записи/SSH-ключи ОС или внешний firewall.
-При смене B обновите Endpoint прямых профилей и назначение A отдельно.
-Установщик не мигрирует серверы, установленные приложением Amnezia или Docker.
+Backups contain secrets and belong outside Git. Restore preserves VPN keys
+and peers, not OS users/SSH keys or the external firewall. If B changes,
+update direct profile Endpoints and A's destination separately. Servers
+installed by the Amnezia application or Docker are not migrated.
 
-Эти wrapper-команды относятся только к AWG. Для Xray — отдельный backup/restore
-из [xray.md](xray.md). В режиме обоих протоколов сначала восстанавливается AWG,
-затем Xray с `--with-awg`; реле A хранится и обслуживается отдельно.
+These wrappers cover AWG only. Xray has separate [backup/restore commands](xray.md).
+For both protocols, restore AWG first, then Xray with `--with-awg`. A's relay
+is maintained separately.
+
+Ubuntu 24.04/26.04 checks and CPU-image requirements: [LTS report](validation-lts.md).

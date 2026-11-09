@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Native Xray/REALITY for clean Ubuntu 22.04 amd64; no Docker or compiler."""
+"""Install native Xray/REALITY on clean Ubuntu 22.04, 24.04 or 26.04 LTS amd64."""
 import argparse
 import hashlib
 import ipaddress
 import json
 import os
 from pathlib import Path
-import platform
 import re
 import secrets
 import shutil
@@ -69,11 +68,7 @@ def choose_target(requested=None):
 
 
 def preflight(args):
-    release = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
-    if release.get('ID', '').strip('"') != 'ubuntu' or release.get('VERSION_ID', '').strip('"') != '22.04':
-        raise ValueError('Only Ubuntu 22.04 is supported; other versions are untested')
-    if platform.machine() != 'x86_64' or not Path('/run/systemd/system').is_dir():
-        raise ValueError('Ubuntu amd64 with systemd required')
+    awg.require_supported_ubuntu()
     address = ipaddress.IPv4Address(args.endpoint)
     private = args.allow_private_endpoint and any(address in ipaddress.IPv4Network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
     if (not address.is_global or address.is_multicast) and not private:

@@ -1,28 +1,29 @@
-# Проверка и решение проблем
+# Verification and troubleshooting
 
-**Русский** · [English](en/troubleshooting.md)
+English | [Русский](ru/troubleshooting.md)
 
-В командах замените `ENTRY_IPV4` и `EXIT_IPV4` своими адресами; интерфейс `ens3`
-замените интерфейсом VPS. Не переключайте единственный работающий VPN ради
-диагностики. Для испытаний используйте отдельное устройство и отдельный peer,
-сохраняя прямой профиль B. Установщики предназначены для чистых Ubuntu 22.04,
-а не ремонта существующей установки; другие версии Ubuntu не тестировались.
+Replace `ENTRY_IPV4`/`EXIT_IPV4` and example interface `ens3` with your own.
+Do not switch the only working VPN for diagnosis. Use a spare device with
+separate access and retain a direct B profile. The installers require clean
+Ubuntu 22.04, 24.04 or 26.04 LTS amd64 servers. They do not repair existing
+deployments.
 
-## По симптомам
+## Symptoms
 
-| Наблюдение | Проверка |
+| Observation | Check |
 |---|---|
-| Напрямую B работает, через A нет | Endpoint A, нужный TCP/UDP-порт, firewall хостера, capture/forwarding/NAT A |
-| Без исключений подключается, со списком нет | Режим «без VPN», «Заменить список», число маршрутов; попробовать `ru-services` |
-| UDP443 не работает с локальным фильтром | Сравнить на тестовом устройстве с 32497; ключи менять не требуется |
-| Подключено, сайты не открываются | Handshake/transfer, DNS, MTU, маршруты и IPv6 клиента |
-| Нет административных функций | Тип экспорта и сохранённый верхний SSH host B |
-| После изменения настроек подключение идёт напрямую | Приложение пересоздало `last_config`; повторить конвертацию актуального экспорта |
+| Ubuntu 26.04 image cannot boot / illegal instruction | Check amd64 versus amd64v3 and the virtual CPU features; see [LTS report](validation-lts.md) |
+| Direct B works, A does not | A's Endpoint, selected TCP/UDP port, provider firewall, forwarding/NAT and capture on A |
+| Works without exclusions, fails with list | Bypass mode, Replace list, route count; try `ru-services` |
+| UDP443 fails with a local filter | Compare 32497 on a test device; do not regenerate keys |
+| Connected but websites fail | Handshake/transfer, DNS, MTU, client routes and IPv6 |
+| Administrator functions missing | Export type and preserved top-level B management host |
+| Configuration changes produce a direct connection | Application recreated `last_config`; convert a fresh export again |
 
-Один peer на двух устройствах вызывает смену его Endpoint. Выдавайте отдельный
-доступ каждому устройству. Перегенерация ключей B ломает ранее выданные профили.
+Using one peer on two devices moves its Endpoint. Issue separate access.
+Regenerating B's keys invalidates previously issued profiles.
 
-## Windows и клиентские проверки
+## Windows and client checks
 
 ```powershell
 Find-NetRoute -RemoteIPAddress ENTRY_IPV4
@@ -30,19 +31,18 @@ Find-NetRoute -RemoteIPAddress 77.88.55.88
 Test-NetConnection EXIT_IPV4 -Port 22
 ```
 
-Маршрут к A должен идти через физическое подключение. В режиме российских
-исключений маршрут к проверяемому адресу Яндекса тоже должен быть прямым.
-`Test-NetConnection -Port` проверяет **TCP**, не UDP AWG: успешный SSH не
-доказывает доступность VPN, проверка TCP32497 также не проверяет AWG.
+The route to A must use the physical connection. With RU exclusions, the
+checked Yandex address should also route directly. `Test-NetConnection -Port`
+checks **TCP**, not AWG UDP. Working SSH or a TCP32497 check does not prove AWG.
 
-Откройте `https://api.ipify.org` без другого прокси: ожидается IPv4 B.
-Яндекс Интернетометр при попадании его адресов в исключения должен показывать
-провайдера клиента. Проверяйте результат, а не только статус «Подключено».
-[Совместимость AdGuard и сравнение портов](windows-admin-port-diagnosis.md).
+Open `https://api.ipify.org` without another proxy: expect B's IPv4. Yandex
+Internetometer should see the ISP address when its destination is excluded.
+Check actual traffic, not only the Connected indicator.
+[AdGuard and port comparison](windows-admin-port-diagnosis.md).
 
-## Вход A
+## Entry A
 
-Команды чтения, не меняющие правила:
+Read-only commands:
 
 ```bash
 sysctl net.ipv4.ip_forward
@@ -54,22 +54,23 @@ journalctl -u blackice-relay.service -n 40 --no-pager
 systemctl list-timers --all --no-pager
 ```
 
-Ожидаются forwarding=1, active/exited и enabled, DNAT на выбранный порт B
-и masquerade только DNAT. Счётчик NAT обычно учитывает первый пакет нового
-conntrack-соединения, а не каждый пакет потока. Для потока смотрите FORWARD
-и короткий захват заголовков (tcpdump устанавливается отдельно):
+Expect forwarding=1, active/exited and enabled, DNAT to the selected B port,
+and masquerade for DNAT only. A NAT counter normally records the first
+packet of a new conntrack flow, not every packet. Inspect FORWARD counters
+and a short header capture; tcpdump is installed separately:
 
 ```bash
 sudo timeout 20 tcpdump -ni ens3 -nn 'udp and (port 443 or port 32497)'
 ```
 
-При других портах исправьте фильтр. Есть вход A, нет пересылки B — проверяйте
-правила и маршрут. Нет входа A — проверяйте Endpoint, клиентский фильтр,
-роутер/сеть и firewall хостера. Отсутствие реле в `ss -lunp` нормально.
+Adapt the filter for other ports or TCP. Traffic reaching A but not forwarded
+to B indicates rules/routes to inspect. No traffic at A means checking the
+client Endpoint/filter, local router/network and provider firewall. No relay
+listener in `ss -lunp` is normal.
 
-## Выход B
+## Exit B
 
-Для нативного AWG этого комплекта:
+For this toolkit's native AWG:
 
 ```bash
 systemctl status awg-relay-kit-exit.service --no-pager
@@ -80,39 +81,38 @@ sudo /usr/local/libexec/awg-relay-kit/awg show awg0 transfer
 sudo nft list table ip awg_exit
 ```
 
-Ожидаются свежий handshake и двусторонняя передача. Через реле B должен видеть
-Endpoint peer с IP A; NAT-порт источника может быть произвольным. Реальный IP
-клиента означает прямое подключение. Нет handshake при доставленных пакетах —
-сверьте регистрацию peer, ключи/PSK и параметры AWG с рабочим прямым профилем.
+Expect a fresh handshake and bidirectional transfer. Via the relay, B sees A
+as the peer Endpoint; the NAT source port can vary. Seeing the real client
+address means direct access. If packets arrive but no handshake occurs,
+compare registered peer, keys/PSK and AWG parameters with a working direct profile.
 
-Не публикуйте `showconf`, `dump`, server.json, `.vpn` и pcap с payload:
-они могут раскрывать секреты. Публичные peer-ключи и сетевые адреса тоже
-сокращайте при публикации логов. [Устройство нативного сервиса](native-server.md).
+Do not publish `showconf`, `dump`, server.json, `.vpn` or payload captures:
+they can expose secrets. Redact public peer keys and deployment addresses in
+shared logs too. [Native service design](native-server.md).
 
-## DNS, IPv6 и MTU
+## DNS, IPv6 and MTU
 
-Обычный DNS и браузерный DoH проверяйте отдельно. DNS-запросы не становятся
-прямыми только из-за включения сайта в исключения. Снимки защищают
-1.1.1.1, 1.0.0.1 и 8.8.8.8 от попадания в bypass.
+Check ordinary DNS and browser DoH separately. A website bypass does not
+automatically bypass its DNS queries. Snapshots protect 1.1.1.1, 1.0.0.1 and
+8.8.8.8 from bypass.
 
 ```bash
 curl --noproxy '*' -4 https://api.ipify.org
 curl --noproxy '*' -6 --max-time 10 https://api64.ipify.org
 ```
 
-IPv4 должен совпасть с B. IPv6-выход комплект не реализует. Если второй запрос
-показывает адрес провайдера, проверьте политику IPv6/KillSwitch клиента.
-Виртуальный IPv6 в клиентском интерфейсе не доказывает IPv6-доступ через B.
+IPv4 should match B. IPv6 egress is not implemented. If the second request
+shows the ISP address, inspect client IPv6/KillSwitch policy. A virtual IPv6
+address alone does not prove IPv6 connectivity through B.
 
-Если короткие запросы проходят, а большие страницы зависают, проверяйте MTU
-на тестовом клиенте, начиная со значения его профиля. Нативный установщик
-выдаёт MTU1280; конвертер сохраняет MTU исходного экспорта.
+If short requests succeed but large pages hang, check MTU on a test client,
+starting with its profile value. Native exports use MTU1280; conversion
+preserves the source export's MTU.
 
-Часть российского сервиса может использовать зарубежный CDN, отсутствующий
-в `ru-services`. `ru-direct` охватывает RU шире, но намеренно добавляет иностранный
-bypass. Выбирайте список с учётом этой политики, а не объединяйте оба.
-Логи сохраняйте [штатным способом Amnezia](https://docs.amnezia.org/ru/documentation/instructions/logging/)
-и перед публикацией удаляйте доступы, адреса узлов и данные пользователей.
+Russian services may use foreign CDNs absent from `ru-services`. `ru-direct`
+covers RU more broadly but deliberately adds foreign bypass. Choose a policy
+instead of merging them. Save logs using the [official Amnezia procedure](https://docs.amnezia.org/ru/documentation/instructions/logging/)
+and remove access credentials, node addresses and user data before sharing.
 
 ## REALITY
 
@@ -122,34 +122,34 @@ journalctl -u awg-relay-kit-xray.service -n 40 --no-pager
 sudo ss -ltnp
 ```
 
-На B ожидается TCP-listener выбранного порта, на A listener не нужен. Через A
-установленное TCP-соединение на B имеет источник A. Обычный TLS-handshake и
-открытый TCP-порт ещё не доказывают работу VLESS: нужен запрос через настоящий
-клиент с правильными UUID, shortId, SNI, ключом REALITY и Vision.
+B needs a listener on the selected TCP port; A needs none. Via A, established
+connections on B show source A. An ordinary TLS handshake or open TCP port
+does not prove VLESS egress: test an actual client with correct UUID, shortId,
+SNI, REALITY key and Vision.
 
-| Код/симптом | Что проверить |
+| Phase/symptom | Check |
 |---|---|
-| `XRAY_PREFLIGHT` | Ubuntu 22.04 amd64, назначенный IP, свободный TCP-порт, чистый сервер |
-| `XRAY_TLS_TARGET` | Доступ B к выбранному target, корректный сертификат, TLS1.3/h2/X25519; при необходимости задать `--reality-target` |
-| `XRAY_BINARY_INSTALL` | Пакет/закреплённый SHA, свободное место, права `/usr/local/libexec` |
-| `XRAY_ACTIVATION` | Journal systemd, права бинарника, TCP-порт, LoadCredential и готовность listener |
-| Сервис активен, клиент не работает | Согласованность SNI/UUID/shortId/ключа/порта, часы, firewall, сеть клиента |
-| Часть dual-stack сайтов не открывается | Сохранены ли серверные DNS `UseIPv4` и freedom sockopt `domainStrategy: UseIPv4` |
+| `XRAY_PREFLIGHT` | Supported Ubuntu LTS amd64, assigned IP, free TCP port, clean server |
+| `XRAY_TLS_TARGET` | B can reach target, valid certificate and TLS1.3/h2/X25519; optionally use `--reality-target` |
+| `XRAY_BINARY_INSTALL` | Bundle/pinned SHA, disk space, `/usr/local/libexec` permissions |
+| `XRAY_ACTIVATION` | systemd journal, executable permissions, TCP port, LoadCredential and listener readiness |
+| Active service, failing client | Matching SNI/UUID/shortId/key/port, clocks, firewall and client network |
+| Some dual-stack sites fail | Preserve server DNS `UseIPv4` and freedom sockopt `domainStrategy: UseIPv4` |
 
-На Ubuntu 22.04 systemd 249 путь к credential передаётся через
-`${CREDENTIALS_DIRECTORY}`, а не `%d`. DynamicUser должен иметь право прохода
-через `/usr/local/libexec` и чтения бинарников, но не серверного state. Установщик
-создаёт новые бинарные каталоги 0755; существующий закрытый общий каталог не
-ослабляет, а отклоняет. Не выдавайте всем чтение `/etc/awg-relay-kit-xray`.
+Ubuntu 22.04's systemd 249 receives the credential path using
+`${CREDENTIALS_DIRECTORY}`, not `%d`. DynamicUser needs traversal of
+`/usr/local/libexec` and executable reads, not direct access to private state.
+New binary directories are 0755; an existing private shared parent is rejected
+instead of weakened. Never make `/etc/awg-relay-kit-xray` world-readable.
 
-REALITY использует X25519; Python 3.10 `ssl.set_ecdh_curve('X25519')` на штатной
-Ubuntu 22.04 непригоден для проверки этой группы. Используется OpenSSL:
+REALITY uses X25519. Python 3.10 `ssl.set_ecdh_curve('X25519')` is unsuitable
+for testing that group on stock Ubuntu 22.04; use OpenSSL:
 
 ```bash
 openssl s_client -4 -connect TARGET_HOST:443 -servername TARGET_HOST -tls1_3 -groups X25519 -alpn h2 -verify_hostname TARGET_HOST -verify_return_error -no_ign_eof </dev/null
 ```
 
-Не публикуйте закрытый config/server.json или клиентские JSON/URI. Проверка
-`xray run -test -config ...` от root проверяет синтаксис, но не права DynamicUser
-и не доступ клиента. В режиме `both` диагностируйте каждую службу отдельно;
-перезапуск Xray не требует перезапуска AWG. [Обслуживание Xray](xray.md).
+Do not publish private config/server.json or client JSON/URI. Running
+`xray run -test -config ...` as root checks syntax, not DynamicUser access or
+client connectivity. Diagnose services independently in `both`; Xray restart
+does not require AWG restart. [Xray maintenance](xray.md).

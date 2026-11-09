@@ -1,61 +1,61 @@
-# Совместимость Windows, AdGuard и UDP-портов
+# Windows, AdGuard and UDP-port compatibility
 
-**Русский** · [English](en/windows-admin-port-diagnosis.md)
+English | [Русский](ru/windows-admin-port-diagnosis.md)
 
-Эта заметка описывает наблюдение на одной конфигурации, а не гарантированную
-совместимость всех версий AdGuard и AmneziaVPN. Адресов узлов, экспортов,
-логов и сведений о действующих установках в ней нет.
+In one tested setup, AdGuard prevented an AWG connection on UDP443, while
+UDP32497 worked. This result does not establish compatibility for every
+AdGuard or AmneziaVPN version.
 
-## Наблюдавшийся конфликт
+## Observed conflict
 
-При ручной проверке AmneziaVPN 5.1.0.6 и AdGuard для Windows 8.0.4
-исходный администраторский AWG-профиль дал следующие результаты:
+A manual test with AmneziaVPN 5.1.0.6 and AdGuard for Windows 8.0.4 gave these
+results for the original administrator AWG profile:
 
-| Входной UDP-порт | Защита AdGuard | Результат |
+| Entry UDP port | AdGuard protection | Result |
 |---|---|---|
-| 443 | Включена | Не подключается |
-| 443 | Выключена | Подключается тем же профилем |
-| 32497 | Включена | Подключается |
+| 443 | On | Does not connect |
+| 443 | Off | The same profile connects |
+| 32497 | On | Connects |
 
-Телефон в той же сети подключался через 443. Административные профили
-на 443/32497 имели одинаковые ключи, параметры AWG и SSH-доступ; отличались
-клиентские поля порта и название. Это указывает на конфликт локальной
-фильтрации при использовании 443, а не на необходимость менять роль или ключи.
+A phone on the same network connected through 443. Administrator profiles
+for 443/32497 had identical keys, AWG parameters and SSH access; only client
+port fields and labels differed. This points to a local filtering conflict
+on 443, not a requirement to change profile role or keys.
 
-Конкретная функция AdGuard не определена. Связь с обработкой UDP443/QUIC —
-гипотеза; одновременного захвата до/после фильтра нет. Не следует объявлять
-любой сбой на 443 блокировкой провайдера или ошибкой AdGuard без сравнения.
+The particular AdGuard feature was not identified. UDP443/QUIC processing is
+a hypothesis; no simultaneous before/after-filter capture was collected.
+A failure on 443 needs the same comparison before attributing it to the
+ISP or AdGuard.
 
-Служба и драйвер AdGuard могут оставаться Running при выключенной защите.
-Сам этот статус не показывает, включена ли обработка трафика.
-По [документации AdGuard](https://adguard.com/kb/adguard-for-windows/app-management/),
-маршрутизация приложения через AdGuard и собственно фильтрация — разные настройки.
+AdGuard's service/driver may remain Running with protection disabled. That
+status does not show whether traffic processing is enabled. The [AdGuard
+documentation](https://adguard.com/kb/adguard-for-windows/app-management/)
+distinguishes application routing through AdGuard from filtering itself.
 
-## Единый вариант для всех ОС
+## One default for all client OSes
 
-В комплекте **32497/UDP — общий порт по умолчанию** для Windows, macOS,
-Android и iPhone. В конвертере и deploy нет определения ОС или AdGuard.
-Так можно сохранить общую серверную схему и параметры AWG, обходясь без
-отдельных правил AdGuard в проверенной конфигурации.
+**32497/UDP is the common default** for Windows, macOS, Android and iPhone.
+Neither converter nor deploy detects the OS or AdGuard. This keeps one server
+design and AWG parameters without special AdGuard rules in the tested setup.
 
-Это не обещание работы с любым фильтром или оператором. Параметры обфускации
-при конвертации сохраняются; 443 сам по себе не превращает AWG в HTTPS.
-Если 443 обязателен, потребуется отдельная проверка совместимости фильтра
-и VPN-процессов на клиенте. Правка сервера не исправит локально отброшенный пакет.
+It does not promise compatibility with every filter/operator. Conversion
+preserves obfuscation settings; port 443 does not turn AWG into HTTPS. If
+443 is mandatory, separately test client filters and VPN processes. A server
+change cannot recover a packet discarded by a local filter.
 
-## Как проверять повторение
+## Reproducing the comparison
 
-Сохраните рабочий профиль. Используйте тестовое устройство с отдельным peer;
-один peer нельзя одновременно запускать на основном и тестовом устройстве.
-Сравните два профиля, отличающихся только портом, в одной сети, с одинаковыми
-исключениями и настройками защиты. Соберите журнал за тот же интервал
-и короткий захват заголовков UDP на клиенте и входе.
+Retain a working profile. Use a test device with a separate peer; never run
+one peer on the main and test devices simultaneously. Compare two profiles
+differing only in port, on one network with identical bypass/protection
+settings. Collect logs for the same interval and short UDP header captures
+on the client and entry.
 
-`Test-NetConnection -Port` проверяет TCP, а не UDP. Случайный UDP-пакет
-не проверяет handshake: AWG молча отбрасывает пакеты без аутентификации.
+`Test-NetConnection -Port` checks TCP, not UDP. A random UDP packet does not
+test an AWG handshake, because unauthenticated packets are silently discarded.
 
-Отдельно опубликован [конфликт SockFilter и Winsock 10014](https://github.com/amnezia-vpn/amnezia-client/issues/3048).
-Он описывает другой драйвер (`adgnetworksockdrv.sys`) и ошибки
-`wsasendmsg`/`wsarecvmsg`. В рассмотренной конфигурации использовался WFP
-(`adgnetworkwfpdrv.sys`), этих ошибок не было. Не переносите чужой диагноз
-и рекомендации по смене драйвера без совпадения признаков.
+A separately reported [SockFilter / Winsock 10014 conflict](https://github.com/amnezia-vpn/amnezia-client/issues/3048)
+involves another driver, `adgnetworksockdrv.sys`, and `wsasendmsg`/`wsarecvmsg`
+errors. This observation used WFP (`adgnetworkwfpdrv.sys`) without those errors.
+Do not transfer another setup's diagnosis or driver-switching advice without
+matching symptoms.

@@ -1,173 +1,174 @@
-# Автоматическая установка AWG, REALITY или обоих протоколов
+# Automated AWG, REALITY or dual-protocol deployment
 
-**Русский** · [English](en/deploy.md)
+English | [Русский](ru/deploy.md)
 
-`deploy.py` работает на компьютере оператора и настраивает **два разных новых
-сервера Ubuntu 22.04 amd64**. Другие версии ОС не тестировались и отклоняются.
-Нужны SSH с парольным входом, root либо sudo, публичные IPv4 на интерфейсах
-и доступ к APT. TUN требуется на B только при выборе AWG. VPS за дополнительным
-NAT не поддерживаются обычным режимом; private-флаг предназначен для стенда.
+`deploy.py` runs on your computer and configures two separate clean servers
+running **Ubuntu 22.04, 24.04 or 26.04 LTS amd64**. Other OS releases are rejected.
+Servers need password-based SSH, root or sudo, assigned public IPv4 addresses
+and APT access. TUN is required on B only for AWG. Additional provider-side NAT
+is unsupported in normal mode; the private-address flag is for the lab.
 
-Работающие VPN и чужие правила не мигрируются. Скрипт отказывается работать
-поверх установленного комплекта, Docker, включённого forwarding, активного UFW
-или чужих таблиц nftables. На компьютере оператора он не включает VPN и не меняет маршруты.
+Existing VPNs and foreign rules are not migrated. Installation refuses existing
+toolkit state, Docker, forwarding, active UFW or foreign nftables tables. It
+does not enable a VPN or change routes on the operator computer.
 
-## Запуск мастера
+## Start the wizard
 
-На компьютере нужен Python **3.10+** с venv/pip. Лаунчер сам создаёт `.venv`
-и устанавливает закреплённые зависимости оператора. Python, отсутствующий
-на самом компьютере, лаунчер не устанавливает; это начальная предпосылка.
-На серверах недостающие Python/iproute2/OpenSSL/CA устанавливаются автоматически
-после проверки ОС и чистоты **обоих** узлов.
+The operator computer needs Python **3.10+** with venv/pip. The launcher creates
+`.venv` and installs the pinned operator dependency. It does not install Python
+itself if Python is absent. After checking the OS and existing state on both servers, it installs any
+missing Python, iproute2, OpenSSL and CA-certificate packages.
 
-Windows PowerShell, из корня репозитория:
+Windows PowerShell, from the repository root:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-ExecutionPolicy здесь задаётся только запускаемому процессу. Для macOS/Linux:
+This ExecutionPolicy setting applies only to the launched process. macOS/Linux:
 
 ```bash
 bash setup.sh
 ```
 
-Мастер спрашивает:
+The wizard asks for:
 
-1. Протокол: AWG 3.1, REALITY или оба.
-2. Для A: IPv4, SSH-порт (Enter = 22), логин (Enter = root), скрытый пароль.
-3. Те же данные для B.
+1. Protocol: AWG 3.1, REALITY or both.
+2. A's IPv4, SSH port (Enter = 22), login (Enter = root) and hidden password.
+3. The same SSH details for B.
 
-Остальные параметры рассчитываются автоматически. Вводить VPN-ключи, UUID,
-shortId, интерфейсы или SNI в обычном режиме не нужно. По результату появится
-новая закрытая папка `private/deployment-<UTC-время>-<суффикс>/`.
-Локальные пароли не сохраняются в отчёт или VPN-профили.
+The installer generates keys, UUIDs and shortIds, detects interfaces and
+selects a REALITY target/SNI. You can override ports and the target if needed. Results appear in a new private directory
+`private/deployment-<UTC-time>-<suffix>/`. Passwords are not stored in the report
+or VPN profiles.
 
-## SSH и первое доверие
+## SSH identity and initial trust
 
-Интерактивный мастер использует TOFU: первый полученный ключ SSH сохраняется
-в `private/known_hosts`. Изменившийся известный ключ отвергается **до передачи
-пароля**. Это не независимая проверка первого ключа; для неё задайте известные
-отпечатки через `--entry-fingerprint` и `--exit-fingerprint`.
-`--strict-host-keys` отключает автоматическое первое доверие мастера.
-После переустановки VPS проверяйте новый ключ через консоль хостера,
-а не отключайте проверку подмены.
+The interactive wizard uses TOFU: the first SSH key is saved in
+`private/known_hosts`. A changed known key is rejected **before sending a
+password**. This does not independently authenticate the first key; use
+`--entry-fingerprint` and `--exit-fingerprint` with known fingerprints for that.
+`--strict-host-keys` disables automatic first-contact trust in the wizard.
+After reinstalling a VPS, verify its new key through the provider console
+rather than disabling identity checking.
 
-В неинтерактивном режиме первое доверие требует явного `--accept-new-host-keys`
-либо проверенных отпечатков. Существующие SSH-ключи/настройки серверов не меняются.
+Non-interactive first contact requires explicit `--accept-new-host-keys` or
+known fingerprints. Existing server SSH keys and settings are not changed.
 
-## Режимы и порты
+## Modes and ports
 
-| Выбор | На A | На B |
+| Selection | A | B |
 |---|---|---|
-| `awg` | UDP-реле, по умолчанию 32497 | AWG 3.1 / systemd |
-| `reality` | TCP-реле, по умолчанию 443 | VLESS + REALITY + XTLS Vision |
-| `both` | Оба правила в одной таблице реле | Две независимые службы |
+| `awg` | UDP relay, default 32497 | AWG 3.1 / systemd |
+| `reality` | TCP relay, default 443 | VLESS + REALITY + XTLS Vision |
+| `both` | Both protocols in one relay table | Two independent services |
 
-Параметры можно передать заранее, остальные мастер спросит:
+Supply options in advance; the wizard asks for missing inputs:
 
 ```powershell
 .\.venv\Scripts\python.exe deploy.py --protocol both --entry ENTRY_IPV4 --exit EXIT_IPV4 --entry-user root --exit-user ubuntu --entry-ssh-port 22 --exit-ssh-port 2222
 ```
 
-`ENTRY_IPV4`/`EXIT_IPV4` замените своими публичными адресами.
-`--entry-port`/`--exit-port` относятся к **UDP AWG**; значения по умолчанию 32497.
-`--reality-entry-port`/`--reality-exit-port` относятся к **TCP REALITY**.
-Без явного выбора используется 443. Если этот порт занят SSH на том же
-адресе, мастер может выбрать свободный 8443; SSH не перенастраивается.
-Другой занятый или явно выбранный конфликтующий порт приводит к отказу.
-TCP и UDP проверяются отдельно; Xray не резервирует UDP443.
+Replace `ENTRY_IPV4`/`EXIT_IPV4` with your public addresses.
+`--entry-port`/`--exit-port` select **AWG UDP** ports, default 32497.
+`--reality-entry-port`/`--reality-exit-port` select **REALITY TCP** ports, default
+443 when not explicitly supplied. If SSH occupies that port on the same
+address, the wizard may select free 8443; SSH is never reconfigured. Other
+occupied ports, or conflicts with an explicitly requested port, cause failure.
+TCP and UDP are checked separately; Xray does not reserve UDP443.
 
-`--entry-ssh-host`/`--exit-ssh-host` задают отдельный адрес транспорта SSH,
-например localhost при пробросе портов VM. IPv4 VPN всё равно должен быть
-назначен интерфейсу сервера. VPN-порты и SSH-порты — разные параметры.
+`--entry-ssh-host`/`--exit-ssh-host` override the SSH transport address, for
+example localhost for VM port forwarding. The VPN IPv4 must still be assigned
+to the server. SSH ports and VPN ports are independent options.
 
-Для REALITY `--reality-target HOST[:PORT]` необязательно задаёт сайт-цель.
-Иначе выбирается подходящий кандидат: проверяются TLS1.3, h2, X25519 и сертификат.
-Выбранный SNI сохраняется в клиентских файлах и отчёте. Цель не меняется при
-перезагрузке или восстановлении. [Настройки и ограничения REALITY](xray.md).
+Optional `--reality-target HOST[:PORT]` selects a REALITY target website.
+Otherwise a candidate is selected after checking TLS1.3, h2, X25519 and the
+certificate. Its SNI is saved in profiles and the report. Reboot and restore
+do not change it. [REALITY configuration and limits](xray.md).
 
-Откройте выбранные VPN-порты в firewall хостера, сохранив SSH. По SSH скрипт
-не может управлять внешним firewall без API провайдера. Автоматический probe
-проверяет серверный путь, но не доказывает доступность из каждой клиентской сети.
+Allow the selected VPN ports in your provider firewall while preserving SSH.
+SSH alone cannot manage that external firewall without a provider API. The
+automatic probe checks the server path, not every possible client network.
 
-## Без вопросов
+## Non-interactive execution
 
-Передайте пароли из менеджера секретов через переменные окружения:
+Supply passwords through environment variables from a secret manager:
 
-| Переменная | Назначение |
+| Variable | Purpose |
 |---|---|
-| `AWG_ENTRY_PASSWORD` | SSH-пароль A, для всех трёх режимов |
-| `AWG_EXIT_PASSWORD` | SSH-пароль B, для всех трёх режимов |
-| `AWG_ENTRY_SUDO_PASSWORD` | Необязательно: отдельный sudo-пароль A |
-| `AWG_EXIT_SUDO_PASSWORD` | Необязательно: отдельный sudo-пароль B |
+| `AWG_ENTRY_PASSWORD` | A's SSH password, all three modes |
+| `AWG_EXIT_PASSWORD` | B's SSH password, all three modes |
+| `AWG_ENTRY_SUDO_PASSWORD` | Optional separate sudo password on A |
+| `AWG_EXIT_SUDO_PASSWORD` | Optional separate sudo password on B |
 
-Префикс AWG сохранён для совместимости прежних сценариев. Другие имена переменных
-можно выбрать через `--entry-password-env`/`--exit-password-env`.
-Значения паролей не следует писать в командную строку или историю терминала.
+The AWG prefix is retained for compatibility. Choose other password variable
+names with `--entry-password-env`/`--exit-password-env`. Do not place password
+values in command-line arguments or shell history.
 
 ```powershell
 .\.venv\Scripts\python.exe deploy.py --protocol both --entry ENTRY_IPV4 --exit EXIT_IPV4 --entry-user root --exit-user root --non-interactive --accept-new-host-keys
 ```
 
-Без `--protocol` неинтерактивный режим выбирает AWG для совместимости.
-Root не требует sudo; NOPASSWD распознаётся. Пароль sudo передаётся только
-в stdin sudo, дочерний установщик его не наследует. MFA, `requiretty`
-и принудительная смена пароля этим способом не поддерживаются.
+Without `--protocol`, non-interactive mode defaults to AWG for compatibility.
+Root does not need sudo; NOPASSWD is detected. A sudo password is sent only to
+sudo's stdin, not inherited as input by the installer. MFA, `requiretty` and
+mandatory password-change flows are unsupported.
 
-## Порядок и отказоустойчивость
+## Sequence and failure handling
 
-1. Проверка аргументов, идентичности SSH, root/sudo и разных machine-id.
-2. Загрузка явно перечисленных публичных файлов в временные закрытые папки.
-3. Shell-проверка обоих узлов, затем bootstrap недостающих зависимостей.
-4. Проверка портов, пакетов и условий выбранных протоколов до установки.
-5. Установка B. В `both` сначала AWG и немедленное скачивание его профилей,
-   затем Xray и его профилей. При сбое Xray уже скачанный AWG сохраняется.
-6. Установка A с независимым пятиминутным таймером отката.
-7. Аутентифицированные проверки всех выбранных протоколов через A.
-   Для Xray проверяется также HTTPS-ответ и адрес A на входе B.
-8. Отмена таймера только после успеха всех проверок, запись отчёта,
-   очистка временной загрузки и закрытие SSH.
+1. Validate arguments, SSH identity, root/sudo and different machine IDs.
+2. Upload an explicit allowlist of public toolkit files to private staging directories.
+3. Check both servers, then install missing dependencies.
+4. Check ports, binary bundles and the requirements of the selected protocols.
+5. Install B. In `both`, install AWG and download its profiles immediately,
+   then install Xray and download its profiles. Xray failure retains downloaded AWG access.
+6. Install A and arm an independent five-minute rollback timer.
+7. Run authenticated probes of every selected protocol through A. Xray also
+   checks an HTTPS response and A's address as seen by B.
+8. Cancel the timer only after all probes pass, write the report, remove
+   temporary staging files and close SSH connections.
 
-AWG-probe создаёт отдельный временный peer; Xray-probe запускает временный
-локальный клиент. Маршруты компьютера оператора и default route серверов
-при этом не меняются. Временные процессы/peer удаляются при завершении.
+The AWG probe creates a temporary peer; the Xray probe starts a temporary
+local client. Neither changes the operator's routes or server default routes.
+Temporary processes and the probe peer are removed on completion.
 
-Если A не подтверждён, его таймер действует независимо от SSH. B и доступные
-скачанные профили остаются. Повторный install — **не resume**: он отказывается
-перезаписывать существующие каталоги и ключи. Частичное состояние сохраняется
-для диагностики, а не автоматически удаляется. Таймер не переживает reboot;
-не перезагружайте A до подтверждения.
+An unconfirmed A rolls back independently of SSH. B and downloaded profiles
+remain. A repeated install is **not a resume operation**: existing directories
+and keys are not overwritten. Partial state is retained for diagnosis instead
+of automatically deleted. The transient timer does not survive reboot; do
+not reboot A before confirmation.
 
-Ошибки не печатают закрытые конфигурации. Для Xray выводится безопасный код
-этапа, например `XRAY_TLS_TARGET` или `XRAY_ACTIVATION`; разбор — в [диагностике](troubleshooting.md).
+Errors suppress private configuration. Xray reports a safe phase code such as
+`XRAY_TLS_TARGET` or `XRAY_ACTIVATION`; see [troubleshooting](troubleshooting.md).
 
-## Результаты
+## Results
 
-| Файлы | Назначение |
+| Files | Purpose |
 |---|---|
-| `client.vpn` / `client.conf` | Прямой AWG к B |
-| `client-via-entry.vpn` / `.conf` | AWG через A |
-| `xray-client.json` / `.txt` | Прямой REALITY; TXT содержит vless URI |
-| `xray-client-via-entry.json` / `.txt` | REALITY через A |
-| Два `ru-*.amnezia.json` | Альтернативные списки сайтов без VPN |
-| `deployment.md` | Режим, адреса, порты, SNI, SSH-отпечатки, результат; без паролей |
+| `client.vpn` / `client.conf` | Direct AWG to B |
+| `client-via-entry.vpn` / `.conf` | AWG through A |
+| `xray-client.json` / `.txt` | Direct REALITY; TXT contains a VLESS URI |
+| `xray-client-via-entry.json` / `.txt` | REALITY through A |
+| Two `ru-*.amnezia.json` files | Alternative client bypass lists |
+| `deployment.md` | Mode, addresses, ports, SNI, SSH fingerprints and result, without passwords |
 
-Выдаются файлы только выбранных протоколов. Прямой и via-entry варианты одного
-протокола — один клиент, а не доступы для разных устройств. В `both` выданы
-два независимых подключения; пользователь выбирает протокол в приложении.
-Нативными серверами управляют CLI/SSH, административная роль Amnezia не создаётся.
+Only selected protocols are exported. Direct and via-entry files for one
+protocol represent one client, not separate access for different devices.
+In `both`, users choose between two independent client connections. Native
+servers are administered through CLI/SSH; no Amnezia administrator role is created.
 
-JSON исключений — общие снимки. Они не обновляются по сети и не импортируются
-в приложение автоматически. Выберите один список и импортируйте через
-«Заменить список» в режиме «без VPN». [Обновление](lists.md).
-Профили содержат секреты; на Windows закрывайте папку результата NTFS ACL.
-Unix chmod не заменяет ACL Windows. Публичную папку репозитория ими не заполняйте.
+The RU files are generic snapshots: deployment neither refreshes them online
+nor imports them into the application. Select one and use Replace list in
+the bypass-VPN mode. [Updating lists](lists.md). Profiles contain secrets;
+restrict the output folder with NTFS ACLs on Windows. Unix chmod is not a
+substitute for Windows ACLs. Keep exports out of the public source tree.
 
-## Проверка на стенде
+## Lab verification
 
-Методика и результаты трёх режимов, reboot/restore, независимости служб,
-проверок авторизации и использования ресурсов — [validation-protocols.md](validation-protocols.md).
-Нативный AWG также ранее проходил [отдельный полный цикл](validation-native.md).
-Для private-стенда используется явный `--allow-private-endpoint`; это не
-обход чужих firewall или разрешение устанавливать поверх действующего VPN.
+All three modes, reboot/restore, service independence, authorization and resource
+measurements are documented in [validation-protocols.md](validation-protocols.md).
+AWG also passed an [earlier full cycle](validation-native.md). The lab requires
+explicit `--allow-private-endpoint`; it does not bypass foreign firewalls or
+permit installing over an existing VPN.
+
+Ubuntu 24.04/26.04 checks and CPU-image requirements: [LTS report](validation-lts.md).

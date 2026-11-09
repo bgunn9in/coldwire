@@ -1,127 +1,123 @@
-# Полная проверка нативного выхода в Ubuntu VM
+# Full native-exit verification in Ubuntu VMs
 
-**Русский** · [English](en/validation-native.md)
+English | [Русский](ru/validation-native.md)
 
-9 ноября 2026 года проверен **полный установщик с нуля**, включая APT,
-готовые бинарники, systemd, реальные ключи AWG, интерфейс и NAT.
-Действующие VPS не использовались для установки или диагностики.
+On **9 November 2026**, the complete installer was tested from scratch:
+APT, bundled binaries, systemd, real AWG keys, interface and NAT. Working
+external VPS instances were not used for installation or diagnosis.
 
-## Стенд
+## Lab
 
-| Параметр | Значение |
+| Parameter | Value |
 |---|---|
-| Виртуализация | QEMU 11.1.0 development build, WHPX, Windows host |
-| Гостевая ОС | Официальный Ubuntu 22.04.5 LTS Minimal Cloud Image amd64 |
-| SHA256 исходного диска | `7ccdeb8161d7993be8c10ba8ab234cb329b947ac59f2882a8a4eccc781a2710c` |
-| Источник | `https://cloud-images.ubuntu.com/minimal/releases/jammy/release/ubuntu-22.04-minimal-cloudimg-amd64.img` |
-| Ядро | 5.15.0-1112-kvm |
-| VM выхода / VM восстановления | По **1 vCPU**, 1024 МиБ RAM; Linux MemTotal 1 008 512 КиБ |
-| Сеть | QEMU user networking, private IPv4; управления Windows-маршрутами/адаптерами не было |
-| Допуск адреса | Явный `--allow-private-endpoint`, адрес VM 10.0.2.15 |
-| Сборочная VM | Отдельная Ubuntu 22.04 amd64, 2 vCPU / 2 ГБ; её компиляторы на выход не переносились |
-| Пакет | 1 671 834 байта; SHA256 `44c066267291dcfbf493725f00d28ce65fd7722097a434927efa18c9e3b90749` |
+| Virtualization | QEMU 11.1.0 development build, WHPX, Windows host |
+| Guest OS | Official Ubuntu 22.04.5 LTS Minimal Cloud Image amd64 |
+| Base disk SHA256 | `7ccdeb8161d7993be8c10ba8ab234cb329b947ac59f2882a8a4eccc781a2710c` |
+| Source | `https://cloud-images.ubuntu.com/minimal/releases/jammy/release/ubuntu-22.04-minimal-cloudimg-amd64.img` |
+| Kernel | 5.15.0-1112-kvm |
+| Exit / restore VM | **1 vCPU**, 1024 MiB each; Linux MemTotal 1,008,512 KiB |
+| Network | QEMU user networking, private IPv4; Windows adapters/routes unchanged |
+| Address option | Explicit `--allow-private-endpoint`, VM address 10.0.2.15 |
+| Build VM | Separate Ubuntu 22.04 amd64, 2 vCPU / 2 GiB; compilers not copied to exits |
+| Bundle | 1,671,834 bytes; SHA256 `44c066267291dcfbf493725f00d28ce65fd7722097a434927efa18c9e3b90749` |
 
-Создавались новые qcow2 overlays поверх проверенного исходного диска.
-После исправлений финальный цикл повторён на **снова чистых** overlays,
-а не поверх установленного сервера. Docker, компилятор Go и сборочные пакеты
-в VM выхода отсутствовали до и после установки.
+New qcow2 overlays were created over the verified base disk. After fixes, the
+final cycle used **fresh overlays again**, not existing installations.
+Docker, Go compiler and build tools were absent on exit VMs before and after.
 
-HTTP-зеркало Ubuntu однажды вернуло индекс с Hash Sum mismatch. Для стенда
-стандартные `archive.ubuntu.com`/`security.ubuntu.com` переведены на HTTPS.
-Проверка подписей/хешей APT не отключалась. Это настройка транспорта зеркала
-в одноразовой VM, не изменение действующих серверов или Windows.
+An Ubuntu HTTP mirror once returned a Hash Sum mismatch. The lab switched
+standard archive.ubuntu.com/security.ubuntu.com mirrors to HTTPS without
+disabling APT signatures/hashes. This changed transport only in disposable
+VMs, not working servers or Windows.
 
-## Проверенный цикл
+## Tested cycle
 
-1. Установка одной командой на чистую VM: APT ставит nftables/iproute2/kmod,
-   установщик проверяет пакет, создаёт все ключи, первый peer и systemd-сервис.
-2. Проверка active/running и enabled, отсутствие Docker/Go toolchain,
-   слушающий UDP-порт AWG и закрытые профили.
-3. Реальный клиент в отдельной Linux network namespace: сгенерированный `.conf`
-   передан официальной `awg`, поднят userspace-туннель, выполнен TCP-обмен
-   с 10.8.1.1 и HTTPS-запрос в Интернет через VPN/NAT. DNS клиента тоже шёл
-   через туннель к 1.1.1.1/1.0.0.1. Python служил тестовым приложением, а
-   шифрование выполняли настоящие процессы AWG на обоих концах.
-4. `add-client` зарегистрировал второго peer, PID сервера не изменился,
-   первый клиент сохранил работающую сессию, второй тоже вышел в Интернет.
-5. Десятисекундная передача TCP через зашифрованный туннель с выборкой RSS
-   и CPU серверного процесса каждые 100 мс. Никакого iperf/Docker на выход не ставилось.
-6. Полная перезагрузка **гостевой Ubuntu**, смена boot_id, автоматический
-   запуск AWG, сохранение SHA256 server.json, awg0.conf и обоих `.vpn`.
-   Повторный сетевой тест после reboot прошёл.
-7. Повторный install правильно отказался работать поверх установки;
-   постоянный конфиг и рабочие клиенты сохранились.
-8. Создание закрытого backup без остановки сервиса; восстановление на другой
-   чистой VM с 1 vCPU/1 ГБ; серверный конфиг совпал с backup побайтово,
-   оба клиента снова получили свежие handshake и Интернет.
-9. Backup восстановленного сервера прошёл **без исходной папки dist**:
-   использован проверенный пакет из установленного каталога BIN.
-10. Набор `unittest` на этапе проверки нативного выхода: **24/24** как на Windows, так и
-    внутри настоящей Ubuntu VM; Bash syntax и Python compilation проходят.
-11. Stop/start в исходной и восстановленной VM: собственная таблица nft/TUN
-    удаляются, forwarding становится 0, после старта возвращается в 1,
-    ключи сохраняются и дубликатов nft-правил нет. Права 0700/0600 проверены.
-    Исходники стенда сверялись с вариантом кода того этапа на уровне Python AST.
+1. One-command installation on a clean VM: APT installs nftables/iproute2/kmod;
+   the installer verifies the bundle, generates keys, first peer and systemd service.
+2. Verify active/running and enabled, no Docker/Go toolchain, an AWG UDP
+   listener and private exports.
+3. Use a real client in a separate Linux network namespace: supply generated
+   `.conf` to official `awg`, start userspace AWG, exchange TCP with 10.8.1.1
+   and perform Internet HTTPS through the tunnel/NAT. Client DNS to
+   1.1.1.1/1.0.0.1 also crosses the tunnel. Python is the test application;
+   actual AWG processes encrypt both ends.
+4. Add a second peer without changing the server PID; both first and second
+   clients retain Internet connectivity.
+5. Transfer TCP for ten seconds through the encrypted tunnel, sampling server
+   process RSS/CPU every 100 ms. No iperf or Docker is installed on the exit.
+6. Reboot **guest Ubuntu**, verify changed boot_id, automatic AWG startup and
+   preserved SHA256 of server.json, awg0.conf and both `.vpn` files. Network
+   checks pass again after reboot.
+7. Repeated install refuses existing state while preserving configuration
+   and working clients.
+8. Create a private backup without stopping service, restore to a fresh
+   1 vCPU / 1 GiB VM, verify byte-identical server config and fresh handshakes/
+   Internet for both clients.
+9. Back up the restored exit **without the original dist directory**, using
+   its verified installed bundle.
+10. At this native-exit stage **24/24** unit tests passed on Windows and
+    Ubuntu. Bash syntax and Python compilation passed.
+11. Stop/start on original and restored VMs removes the owned nft table/TUN
+    and returns forwarding to 0. Startup restores forwarding=1 without key
+    changes or duplicated nft rules. Modes 0700/0600 were checked. Lab
+    sources were compared with that stage's code using Python AST.
 
-Повторяемый сетевой сценарий включён в `tests/smoke_native_vm.py`.
-Он требует root в одноразовой VM с частным Endpoint и явный `--vm-test`;
-создаёт/удаляет временные сетевые namespaces и добавляет тестового peer.
-Серверные SSH/VPN-ключи стенда и образы VM в Git не включены.
+`tests/smoke_native_vm.py` contains a repeatable network scenario. It requires
+root in a disposable VM with a private Endpoint and explicit `--vm-test`.
+It creates/removes namespaces and adds a test peer. Lab SSH/VPN keys and VM
+images are not in Git.
 
-## Измерения финального цикла
+## Final-cycle measurements
 
-| Этап | RSS перед трафиком | Максимальный измеренный RSS | TCP | CPU процесса сервера |
+| Stage | RSS before traffic | Peak sampled RSS | TCP | Server process CPU |
 |---|---:|---:|---:|---:|
-| Чистая установка | 4796 КиБ | 24 788 КиБ | 70,21 Мбит/с | 36,30% |
-| После reboot | 4324 КиБ | 22 376 КиБ | 64,14 Мбит/с | 35,76% |
-| Восстановленная VM | 4988 КиБ | 26 948 КиБ | 67,48 Мбит/с | 33,94% |
+| Clean install | 4796 KiB | 24,788 KiB | 70.21 Mbit/s | 36.30% |
+| After reboot | 4324 KiB | 22,376 KiB | 64.14 Mbit/s | 35.76% |
+| Restored VM | 4988 KiB | 26,948 KiB | 67.48 Mbit/s | 33.94% |
 
-Сразу после запуска, до трафика, systemd MemoryCurrent составлял около
-2,6 МиБ; RSS около 4–5 МиБ. Эти виды учёта различаются, в частности по
-разделяемым страницам. Под тестовой нагрузкой RSS процесса был примерно
-22–27 МиБ; в ранних прогонах до 28–29 МиБ. GOMEMLIMIT=96MiB — мягкая цель GC,
-а не обещание такого же RSS/жёсткий предел при любом числе клиентов.
+Immediately after startup systemd MemoryCurrent was about 2.6 MiB and RSS
+4–5 MiB. They account for shared pages differently. Loaded process RSS was
+about 22–27 MiB, reaching 28–29 MiB in earlier runs. GOMEMLIMIT=96MiB is a soft
+GC goal, not a promise of matching RSS or a hard limit for any client count.
 
-Сервер, оба тестовых клиента и тестовое приложение **делили один vCPU VM**.
-Поэтому TCP-результат — функциональный тест с измерением, а не предел реального
-VPS или гарантия скорости через провайдера. Не проверялись сотни одновременных
-клиентов, длительный многосуточный трафик и поведение DPI.
+The server, both clients and test application **shared one VM vCPU**. TCP
+results are functional measurements, not a real VPS/provider speed limit or
+guarantee. Hundreds of clients, multi-day traffic and DPI were not tested.
 
-## Найденное и исправленное
+## Issues found and fixed
 
-- Нативный CLI получил реальный исполняемый entry point: успешный exit сам по
-  себе не считается установкой; проверяются активный сервис и реальный обмен.
-- Из теста убрана зависимость от отсутствующего в Minimal Ubuntu `ping`:
-  используется проверяемый TCP-ответ и настоящий HTTPS.
-- Forwarding привязан к lifecycle сервиса, без лишнего постоянного override:
-  включается после собственных правил и возвращается в 0 при остановке.
-- При неудачной активации сервис отключается, forwarding восстанавливается;
-  частные файлы остаются для диагностики, переустановка поверх них запрещена.
-- Backup использует установленный пакет, работает после restore и не зависит
-  от наличия первоначального `dist`; lock берётся до чтения состояния.
-- Проверяются хеши и состав архива до установки; повреждённые пакеты,
-  traversal-имена, неявный private Endpoint и multicast-адреса отклоняются.
+- The native CLI gained an executable entry point. Successful exit status
+  alone is not deployment evidence; active service and real traffic are checked.
+- Minimal Ubuntu's missing `ping` is no longer a test dependency; use a
+  verified TCP response and real HTTPS.
+- Forwarding follows service lifecycle without an unnecessary permanent
+  override: enable after owned rules and return to 0 on stop.
+- Failed activation disables service and restores forwarding. Private
+  files remain for diagnosis and block installation over partial state.
+- Backup uses the installed bundle and works after restore without original
+  dist. Lock acquisition precedes reading state.
+- Bundle hashes/member allowlists are checked first; corruption, traversal
+  filenames, implicit private endpoints and multicast addresses are rejected.
 
-## Границы проверки
+## Boundaries
 
-Поддерживается Ubuntu **22.04**. Остальные версии Ubuntu не тестировались;
-установщики отклоняют версии, отличные от 22.04. Совместимость glibc сама
-по себе не считается проверкой всей установки. Измерения выше относятся
-к описанному стенду и не являются повторным измерением каждого изменения кода.
-Новые `.vpn` проверены по официальной схеме и encode/decode; импорт именно
-этих новых экспортов в Windows/macOS/Android/iOS отдельно не выполнялся.
-Нативный `.conf` реально подключался. IPv6-выход и все варианты DNS клиента
-на физических устройствах не проверялись. Рабочие внешние VPS в этот тест не входили.
+This cycle tested Ubuntu **22.04**. The later [LTS report](validation-lts.md)
+covers 24.04 and 26.04. glibc compatibility alone does not validate an
+installation. These measurements belong to this cycle and were not repeated
+for every later code change.
+New `.vpn` schema/encode-decode were checked; these exact new exports were
+not imported separately on physical Windows/macOS/Android/iOS at this stage.
+Native `.conf` carried actual traffic. IPv6 egress and all physical-client
+DNS variants were not tested. Working external VPS instances were excluded.
 
-## Проверка универсального комплекта
+## Generic toolkit verification
 
-При подготовке обезличенной редакции 9 ноября 2026 года на Windows прошли
-**33/33 unit-теста**, включая обязательный адрес входа в CLI конвертера,
-необязательные защищённые IP генератора списков и отказ на непроверенных ОС.
-Проверены синтаксис всех текущих Bash-скриптов, компиляция Python,
-локальные ссылки Markdown, хеши/числа списков и офлайн-воспроизведение двух JSON.
-Полный цикл установки/reboot/restore VM для этой редакционной правки
-повторно не выполнялся; сетевые результаты выше относятся к описанному стенду.
+The anonymized revision prepared on 9 November 2026 passed **33/33 unit tests**
+on Windows, including mandatory converter entry address, optional protected
+list-generation IPs and refusal of untested OS releases. Bash syntax, Python
+compilation, local Markdown links, list hashes/counts and offline JSON
+reproduction were checked. The full VM install/reboot/restore cycle was not
+rerun for that editorial change; network results above belong to the stated lab.
 
-После добавления REALITY выполнена новая проверка всех трёх режимов.
-Текущие результаты и ограничения — в [validation-protocols.md](validation-protocols.md).
+After REALITY was added, a new three-mode cycle was completed.
+[Ubuntu 22.04 results and limitations](validation-protocols.md).

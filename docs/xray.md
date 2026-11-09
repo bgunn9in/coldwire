@@ -1,84 +1,82 @@
-# Нативный VLESS + REALITY + XTLS Vision
+# Native VLESS + REALITY + XTLS Vision
 
-**Русский** · [English](en/xray.md)
+English | [Русский](ru/xray.md)
 
-Поддерживается Ubuntu **22.04 amd64**; остальные версии не тестировались.
-На A работает TCP-пересылка ядром, на B — отдельная служба Xray. Клиент видит
-вход A, выходной адрес приложений — B. Docker, Go SDK и панель управления
-на VPS не устанавливаются. Для режима REALITY без AWG серверу не нужен TUN.
+Supported servers run **Ubuntu 22.04, 24.04 or 26.04 LTS amd64**. A forwards
+TCP in the kernel; B runs Xray as a separate service. Clients connect to A,
+and websites see B's address. No Docker, Go SDK or control
+panel is installed on the VPS. REALITY-only mode does not need TUN.
 
-## Установка
+## Installation
 
-Основной способ — [мастер](deploy.md), режим `reality` или `both`.
-На чистом B можно отдельно запустить из копии всего репозитория:
+Use the [wizard](deploy.md), selecting `reality` or `both`. A clean B can also
+be installed manually from a complete repository copy:
 
 ```bash
 sudo bash servers/install-xray.sh --endpoint EXIT_IPV4 --entry ENTRY_IPV4 --client client1
 ```
 
-Для ручного запуска нужны Python 3, iproute2, OpenSSL и CA; мастер устанавливает
-недостающее сам. Адреса замените своими. Команда B не настраивает A.
-Ручная установка TCP-реле на чистом A:
+Manual execution needs Python 3, iproute2, OpenSSL and CA certificates; the
+wizard bootstraps missing packages. Replace the address placeholders. Installing
+B does not configure A. For a manual TCP-only relay on clean A:
 
 ```bash
 sudo bash servers/install-entry.sh ENTRY_IPV4 EXIT_IPV4 - 32497 443 443
 ```
 
-`-` отключает UDP-пересылку, последний аргумент — TCP-порт B. После проверки
-нужно подтвердить A командой из [инструкции реле](servers.md).
-При выборе обоих протоколов используйте мастер, который согласует проверки
-и порядок установки. `--with-awg` в backend допускает только распознанную
-здоровую нативную установку этого комплекта, а не чужой VPN или произвольный firewall.
+`-` disables UDP and the final argument is B's TCP port. Confirm A after
+testing as described in the [relay guide](servers.md). For both protocols use
+the wizard to coordinate preflight and installation order. Backend `--with-awg`
+allows only a recognized healthy native installation of this toolkit, not
+an arbitrary VPN or firewall.
 
-## Ключи, цель и маскировка
+## Keys, target and camouflage
 
-Генерируются серверная пара X25519 и отдельные UUID/shortId клиентов.
-SNI и target выбираются один раз при установке либо задаются через `--target`.
-Проверка OpenSSL требует TLS1.3/h2/X25519 и действующий сертификат нужного имени.
-Клиент использует REALITY и fingerprint Chrome; отключение проверки TLS
-через `allowInsecure` не применяется. Часы клиента/сервера должны быть корректны:
-в конфигурации REALITY ограничена допустимая разница времени.
+Installation generates a server X25519 pair and separate client UUIDs/shortIds.
+Target/SNI are selected once or supplied with `--target`. The OpenSSL check
+requires TLS1.3/h2/X25519 and a valid certificate for the target hostname.
+The client uses REALITY and the Chrome fingerprint, without `allowInsecure`.
+Client/server clocks must be correct: the configuration limits tolerated skew.
 
-Случайный TLS-запрос получает обработку сайта-цели; ошибочный VPN-доступ
-не должен давать VPN-выход. Это поведение проверяется отдельно от обычной
-авторизованной передачи. REALITY не гарантирует необнаружимость для любого DPI.
-Автоматическая проверка сайта с B не доказывает его доступность в сети клиента.
-Цель не переключается автоматически при сбое: произвольная смена target/SNI
-может нарушить маскировку и потребовать согласованного обновления клиентов.
+An ordinary TLS request is handled through the target website; invalid VPN
+access must not provide Internet egress. This behavior is tested separately
+from authenticated traffic. REALITY does not guarantee invisibility to all DPI.
+Checking a target from B does not prove reachability from every client network.
+Targets are not automatically changed on failure: arbitrary target/SNI changes
+can break camouflage and require coordinated client updates.
 
-Выбирайте осмысленную цель; универсального идеального сайта нет. Официальные
-материалы REALITY отдельно обсуждают выбор цели и злоупотребления fallback
-на публичные CDN. Этот комплект не добавляет публичные SOCKS/API-порты,
-Nginx или общедоступную панель. [Документация REALITY](https://xtls.github.io/en/config/transports/reality.html).
+Choose a meaningful target; there is no universally ideal site. Official
+REALITY materials discuss target selection and public-CDN fallback abuse.
+The toolkit adds no public SOCKS/API listeners, Nginx or web panel.
+[Official REALITY documentation](https://xtls.github.io/en/config/transports/reality.html).
 
-В клиентский JSON/URI попадают UUID, shortId и клиентский материал REALITY,
-но не приватный серверный ключ. Весь клиентский экспорт храните как секрет,
-несмотря на историческое название поля `publicKey`. Новые клиенты не меняют
-серверную пару или доступы ранее выданных клиентов.
+Client JSON/URI contain UUID, shortId and the REALITY client credential, but
+not the private server key. Treat the complete export as secret despite the
+historical `publicKey` field name. Adding clients preserves the server key
+pair and previously issued identities.
 
-## Служба и файлы
+## Service and files
 
-| Путь | Назначение |
+| Path | Purpose |
 |---|---|
-| `/usr/local/libexec/awg-relay-kit-xray/` | Проверенный бинарник, manifest, лицензия и пакет для backup |
-| `/etc/awg-relay-kit-xray/server.json` | Закрытое состояние и реестр клиентов |
-| `/etc/awg-relay-kit-xray/config.json` | Закрытая конфигурация сервера |
-| `awg-relay-kit-xray.service` | Отдельная служба systemd |
-| `/root/awg-relay-kit-xray-clients/NAME/` | Клиентские JSON/URI |
+| `/usr/local/libexec/awg-relay-kit-xray/` | Verified binary, manifest, license and backup bundle |
+| `/etc/awg-relay-kit-xray/server.json` | Private state and client registry |
+| `/etc/awg-relay-kit-xray/config.json` | Private server configuration |
+| `awg-relay-kit-xray.service` | Independent systemd service |
+| `/root/awg-relay-kit-xray-clients/NAME/` | Client JSON/URI exports |
 
-Служба использует DynamicUser и LoadCredential: конфигурацию передаёт systemd,
-исходные секретные каталоги остаются root-only. Возможность NET_ADMIN службе
-не выдаётся; для низкого TCP-порта используется NET_BIND_SERVICE.
-Новые каталоги бинарников получают 0755 явно, секретные каталоги — 0700,
-секретные файлы — 0600. Access-log выключен, подробный debug по умолчанию выключен.
+The service uses systemd's DynamicUser and LoadCredential to read its
+configuration. The original files remain accessible only to root. Xray receives no NET_ADMIN;
+NET_BIND_SERVICE permits low TCP ports. New executable directories explicitly
+use 0755, private directories 0700 and secret files 0600. Access logging and
+verbose debug logging are disabled by default.
 
-GOMAXPROCS=1, GOMEMLIMIT=96MiB — мягкая цель GC, не жёсткий лимит RSS.
-Географические базы geosite/geoip для этой конфигурации не нужны.
-DNS/выход настроены на IPv4; IPv6-направления и служебные приватные назначения
-закрыты. Списки RU обрабатывает клиент, не серверный GeoIP.
-Для раздельного туннелирования используйте прежние два JSON и настройки клиента.
+GOMAXPROCS=1 and GOMEMLIMIT=96MiB are a soft GC goal, not a hard RSS cap.
+No geosite/geoip databases are required. DNS/egress use IPv4; IPv6 destinations
+and private service destinations are blocked. RU lists are client routing,
+not server GeoIP. Use the same two JSON alternatives for split tunneling.
 
-## Клиенты и управление
+## Clients and administration
 
 ```bash
 sudo python3 /opt/awg-relay-kit/install_xray.py add-client --name phone
@@ -86,52 +84,55 @@ systemctl status awg-relay-kit-xray.service --no-pager
 journalctl -u awg-relay-kit-xray.service -n 30 --no-pager
 ```
 
-`/opt/awg-relay-kit` создаётся мастером; при ручной установке используйте свою
-папку. Добавление клиента проверяет конфигурацию и **перезапускает Xray**,
-его соединения переподключаются. AWG не перезапускается. Автоматического
-отзыва клиента/смены target сейчас нет: для ручного обслуживания нужны
-согласованные правки состояния/конфигурации и закрытая резервная копия.
+The wizard creates `/opt/awg-relay-kit`; manual deployments use their own
+source directory. Adding a client validates configuration and **restarts
+Xray**, whose sessions reconnect. AWG is not restarted. Automated revocation
+or target changes are not implemented; manual changes require a private
+backup and consistent state/config edits.
 
-Нативный JSON импортируется в AmneziaVPN; TXT содержит `vless://` для
-совместимого клиента. Это клиентские доступы, управление сервером остаётся
-через SSH/CLI. Для изменения адреса уже выданного нативного JSON:
+Native JSON imports into AmneziaVPN; TXT contains `vless://` for compatible
+clients. These are client exports, with server administration through SSH/CLI.
+To change an already issued native JSON endpoint:
 
 ```powershell
 python .\convert_xray.py "C:\secure\client.json" "C:\secure\client-via-entry.json" --entry ENTRY_IPV4 --port 443
 ```
 
-Конвертер меняет только адрес/порт одного VLESS REALITY outbound, сохраняет
-остальные поля и отказывается перезаписывать исходник. `.vpn`/URI этим
-конвертером не обрабатываются; для AWG есть отдельный `convert_profile.py`.
+Only one VLESS REALITY outbound address/port changes. Other fields are preserved,
+and existing files are never overwritten. This converter does not handle
+`.vpn` or URI; AWG uses `convert_profile.py`.
 
-## Резервная копия и восстановление
+## Backup and restore
 
 ```bash
 sudo install -d -m700 /root/private
 sudo python3 /opt/awg-relay-kit/install_xray.py backup --output /root/private/xray-backup
-# На другом чистом B с копией исходников:
+# On a different clean B with a source checkout:
 sudo python3 install_xray.py restore --backup /root/private/xray-backup --endpoint EXIT_IPV4
 ```
 
-Backup содержит ключи и клиентские файлы. Папка результата должна быть новой.
-При `both` снимите отдельные AWG и Xray backup; они не образуют общей транзакции,
-поэтому на время копирования не меняйте клиентов. Восстанавливайте сначала AWG,
-затем Xray с `--with-awg`. Сохраняются ключи и идентификаторы, но не SSH-учётные
-записи ОС или firewall хостинга. При смене IP обновите прямые JSON/URI и назначение
-реле. Профили через прежний A могут остаться прежними при сохранённых ключах/SNI.
-Сохранённые прямые экспорты автоматически не переписываются.
+The output directory must be new. Backup contains private keys and client
+exports. For `both`, make separate AWG/Xray backups; these are not one atomic
+transaction, so do not change clients while copying. Restore AWG first,
+then Xray with `--with-awg`. Keys/identities survive, but OS SSH accounts and
+provider firewall do not transfer. If IP changes, update direct JSON/URI
+and the relay destination. Existing via-entry profiles may remain valid
+with the same A, keys and SNI. Saved direct exports are not rewritten automatically.
 
-Бинарный пакет закреплён: Xray **26.10.21**, upstream ZIP SHA256
+Pinned binary: Xray **26.10.21**. Upstream ZIP SHA256:
 `0eec3ed4163c273d8c8bf821f7d219e257921cf584aa3fb970715e458e631978`.
-Пакет комплекта SHA256
+Toolkit bundle SHA256:
 `874e6b0a6e2283777083ec49ee98d0c13f39c7e7694e1ebd1fbc4e93ce61bba2`.
-Проверяются закреплённый хеш, manifest, состав и внутренние хеши; одной
-подмены `.sha256` недостаточно. Пересоздание в отдельной копии без пакета:
+The installer checks the code pin, manifest, member allowlist and internal
+hashes. Replacing `.sha256` alone does not bypass verification. To reproduce
+in a separate checkout without the existing bundle:
 
 ```bash
 python3 servers/fetch-xray.py
 ```
 
-Скрипт проверяет официальный ZIP и сохраняет бинарник, лицензию и provenance.
-Обновление версии требует проверки совместимости и явного обновления pins,
-а не автоматического скачивания `latest`. [Источники](sources.md).
+The script verifies the official ZIP and retains the executable, license and
+provenance. Upgrading requires compatibility checks and explicit pin changes,
+not downloading `latest` automatically. [Sources](sources.md).
+
+Ubuntu 24.04/26.04 checks and CPU-image requirements: [LTS report](validation-lts.md).

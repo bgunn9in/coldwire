@@ -1,68 +1,68 @@
-# Исключения российских адресов
+# Russian-address bypass lists
 
-**Русский** · [English](en/lists.md)
+English | [Русский](ru/lists.md)
 
-## Два альтернативных файла
+## Two alternative files
 
-`ru-direct.amnezia.json` сохраняет все IPv4 RU-ресурсы исходного снимка RIPE
-и локальные сети. Для сокращения таблицы маршрутов часть адресов за пределами
-этого набора также направляется без VPN. В приложенном универсальном снимке
-это **111 284 160 дополнительных адресов**, около **2,591% всего IPv4**.
-Не используйте этот вариант, если каждый зарубежный адрес должен идти через VPN.
+`ru-direct.amnezia.json` sends all RU IPv4 networks from the RIPE snapshot
+and local networks directly through the ISP. To reduce the routing table, it also bypasses
+some addresses outside that source set. The supplied generic snapshot adds
+**111,284,160 addresses**, approximately **2.591% of all IPv4**. Do not use this
+policy if every foreign address must go through the VPN.
 
-`ru-services.amnezia.json` выбирает RU-выделения с адресами крупных российских
-сервисов из 86 доменных семейств: Яндекс, VK/Mail, Госуслуги, банки, магазины,
-транспорт, операторы, медицина и образование. Полный перечень —
-`data/service-roots.txt`. Зарубежные адреса выбранных сервисов не добавляются.
-Это не полный каталог всех российских сайтов или адресов CDN.
+`ru-services.amnezia.json` selects RU allocations containing addresses of major
+Russian services from 86 domain families: Yandex, VK/Mail, public services,
+banks, shops, transport, operators, healthcare and education. The complete
+selection is in `data/service-roots.txt`. Foreign addresses of those services
+are not added. This is not a complete catalog of Russian websites or CDN addresses.
 
-Оба варианта включают локальные сети `10.0.0.0/8`, `172.16.0.0/12`,
-`192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`.
-Файлы альтернативные; их объединение меняет политику и число маршрутов.
+Both include `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`
+and `100.64.0.0/10`. Import one file. Merging them changes which traffic bypasses the VPN and
+the number of routes.
 
-| Снимок | Подсетей | Расчёт маршрутов Android <13 | SHA256 |
+| Snapshot | Prefixes | Calculated Android <13 routes | SHA256 |
 |---|---:|---:|---|
 | `ru-direct` | 1097 | 2004 | `10706c300dbd4122bdaacb166ecb301377bca9734a29aa901923699b29dd4a51` |
 | `ru-services` | 77 | 751 | `7ecaa6a95b8e12ffe72b5442723606b7b65cd1f2d6e4638cfc6be3a65e015bb1` |
 
-Универсальный `ru-direct` пересобран без заранее заданных адресов VPN-узлов.
-Его офлайн-воспроизведение, покрытие и маршруты проверены автоматически.
-Работа `ru-direct` на телефоне подтверждена ручной проверкой пользователя;
-SHA256 импортированного файла отдельно не сверялся. Оптимизированные списки
-работали на Android 9/10, но это не гарантия для каждого устройства
-и каждой версии AmneziaVPN.
+The generic `ru-direct` was rebuilt without preconfigured VPN-node addresses.
+Automated checks reproduce the files offline and verify coverage and route
+counts.
+A user reported `ru-direct` working on a phone; the imported file's SHA256 was
+not independently verified. Optimized lists worked on Android 9/10, which is
+not a guarantee for every device or AmneziaVPN version.
 
-## Почему важна таблица маршрутов
+## Why the routing table matters
 
-8678 исходных RU/локальных префиксов дают 21 751 IPv4-префикс дополнения.
-С учётом исключения loopback и IPv6 default расчёт старого Android даёт
-21 755 маршрутов. Старые реализации Amnezia на Android строят положительный
-список VPN-маршрутов и передают большую конфигурацию через Binder.
-Наблюдался отказ подключения с большим списком и работа после его сокращения;
-конкретная ошибка TransactionTooLarge в журнале тогда не была подтверждена.
+The 8678 collapsed source RU/local prefixes produce 21,751 complement IPv4
+prefixes. Including loopback exclusion and IPv6 default, the older Android
+calculation gives 21,755 routes. Older Amnezia Android implementations build
+a positive VPN-route list and send the large configuration through Binder.
+Connection failed with a large list and worked after reduction; a specific
+TransactionTooLarge error was not confirmed in the logs.
 
-Алгоритм `ru-direct`:
+The `ru-direct` algorithm:
 
-1. Свернуть точный RU/локальный набор и построить его IPv4-дополнение.
-2. Сохранить VPN-префиксы с DNS 1.1.1.1/1.0.0.1/8.8.8.8 и необязательно
-   заданными `--entry`/`--exit`, а также зарубежные части диапазонов Google,
-   Cloudflare и Telegram.
-3. До бюджета 2000 VPN-префиксов сохранить самые большие оставшиеся префиксы.
-4. Взять дополнение: малые иностранные промежутки станут частью bypass.
+1. Collapse the exact RU/local set and compute its IPv4 complement.
+2. Keep VPN prefixes containing DNS 1.1.1.1/1.0.0.1/8.8.8.8 and optional
+   `--entry`/`--exit` addresses, plus foreign portions of Google, Cloudflare
+   and Telegram ranges.
+3. Fill a budget of 2000 VPN prefixes with the largest remaining prefixes.
+4. Take the complement: smaller foreign gaps become bypass destinations.
 
-Это выбор на данном разбиении CIDR, а не доказанный глобальный оптимум.
-Исходное RU-покрытие не сокращается. Диапазоны провайдеров защищаются только
-вне исходного RU/локального набора; при конфликте **конкретного** защищённого
-IP с этим набором генератор откажется работать, не меняя прежние файлы.
-Без `--entry`/`--exit` адресов VPN-узлов в алгоритме нет.
+This selects from the given CIDR partition; it is not a proven global optimum.
+Source RU coverage is preserved. Provider ranges are protected only outside
+the RU/local source set. If a **specific** protected IP conflicts with that
+set, generation fails without changing existing files. Without `--entry` or
+`--exit`, the algorithm contains no deployment-node addresses.
 
-Для сервисного списка выбираются содержащие адреса сервисов RU-выделения,
-добавляются локальные сети и сворачиваются пересечения. При расчёте более
-1000 маршрутов старого Android генерация завершается ошибкой.
-Для полного варианта защитный предел — 2010 маршрутов; в снимке их 2004.
-Это расчёт для способа настройки Android <13, а не универсальный лимит ОС.
+The services variant selects RU allocations containing service addresses,
+adds local networks and collapses overlaps. Generation fails above 1000
+calculated older-Android routes. The full variant has a 2010-route guard;
+the supplied snapshot uses 2004. This models Android <13 configuration behavior,
+not a universal OS limit.
 
-## Формат импорта
+## Import format
 
 ```json
 [
@@ -73,20 +73,20 @@ IP с этим набором генератор откажется работа
 ]
 ```
 
-Маршрутизируемая сеть находится в `ip`. Уникальная метка `.invalid` обходит
-поведение старых клиентов, терявших маску при CIDR в `hostname`.
-Метки не нужно разрешать в DNS; не заменяйте формат произвольным JSON.
-Файлы — UTF-8 без BOM, отступ 2 пробела, LF и завершающий перевод строки.
+The routed network is in `ip`. Unique `.invalid` labels work around older
+clients losing a mask when a CIDR is put in `hostname`. These labels need no
+DNS lookup. Do not replace this schema with arbitrary JSON. Files use UTF-8
+without BOM, two-space indentation, LF and a final newline.
 
-В AmneziaVPN выберите режим **«Адреса из списка НЕ должны открываться через VPN»**,
-затем импорт через **«Заменить список»**. Подписи меню зависят от версии клиента.
-Проверьте на отдельном устройстве: Яндекс видит провайдера, внешний IP через
-ipify равен B. Отсутствие handshake после импорта — повод сначала выключить
-только список сайтов, а не переустанавливать сервер.
+Select **addresses from the list must NOT use the VPN** in AmneziaVPN, then
+import using **Replace list**. Menu wording varies by client version. On a
+separate device, verify that Yandex sees the device's ISP and ipify sees B.
+If import prevents a handshake, first disable only the website split list
+rather than reinstalling the server.
 
-## Обновление
+## Updating
 
-Из корня репозитория, Python 3.10+, сторонние пакеты не нужны:
+From the repository root, Python 3.10+; no third-party Python packages are needed:
 
 ```powershell
 python .\update_lists.py --output .\generated\fresh-lists
@@ -94,21 +94,19 @@ python .\update_lists.py --entry ENTRY_IPV4 --exit EXIT_IPV4 --output .\generate
 python .\update_lists.py --offline --output .\generated\snapshot
 ```
 
-Каждая команда — отдельный вариант. `ENTRY_IPV4`/`EXIT_IPV4` замените своими
-IPv4, если нужна защита этих адресов от bypass. Папка `--output` должна быть новой.
-Результат — ровно два импортируемых JSON. При ошибке существующие списки
-не перезаписываются. Консоль показывает происхождение свежих данных,
-число подсетей/маршрутов, дополнительный bypass и SHA256.
+These commands are separate alternatives. Replace `ENTRY_IPV4`/`EXIT_IPV4`
+with your addresses if they need explicit bypass protection. The output
+directory must be new. Exactly two importable JSON files are produced;
+existing lists are never overwritten on failure. Console output identifies
+data provenance, prefixes/routes, additional bypass and SHA256.
 
-Без `--offline` используются RIPEstat, Google/Cloudflare/Telegram,
-каталог `lib4u/amnezia-tunneling-ru` и Google DNS-over-HTTPS для недостающих
-семейств. `--offline` использует только файлы `data/`; без дополнительных
-защищённых IP он побайтово воспроизводит приложенные JSON.
-Свежий запуск не обязан выдавать прежние подсети и хеши. Для сохранения новых
-исходных снимков отдельной команды нет: онлайн-режим создаёт только JSON.
-Происхождение данных — [sources.md](sources.md).
+Online mode uses RIPEstat, Google/Cloudflare/Telegram, the
+`lib4u/amnezia-tunneling-ru` catalog and Google DNS-over-HTTPS for missing
+families. `--offline` uses only `data/`; without extra protected IPs it
+reproduces the supplied JSON byte for byte. Fresh online output may have
+different prefixes and hashes. There is no separate command to save new
+source snapshots: online mode writes only JSON. [Data provenance](sources.md).
 
-Deploy копирует общие снимки из репозитория; он не обновляет их по сети
-и не применяет исключения на клиенте. Для дополнительных защищённых IP
-запустите генератор отдельно и импортируйте его результат.
-DNS/DoH, IPv6 и зарубежные CDN требуют отдельной проверки на клиенте.
+Deploy copies the repository snapshots without refreshing them or applying
+client exclusions. Generate and import a separate result for extra protected
+IPs. Check DNS/DoH, IPv6 and foreign CDN behavior on the client separately.

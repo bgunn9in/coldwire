@@ -3,7 +3,7 @@
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'Run on a build machine as root'; exit 1; }
 source /etc/os-release
-[[ $ID == ubuntu && $VERSION_ID == 22.04 && $(uname -m) == x86_64 ]] || { echo 'Only Ubuntu 22.04 amd64 is supported; other versions have not been tested'; exit 1; }
+[[ $ID == ubuntu && $VERSION_ID == 22.04 && $(uname -m) == x86_64 ]] || { echo 'Build on Ubuntu 22.04 amd64 to retain glibc 2.35 compatibility'; exit 1; }
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 [[ ! -e $repo/dist/awg-native-linux-amd64.tar.gz ]] || { echo 'Bundle already exists; never overwrite a released build'; exit 1; }
 export DEBIAN_FRONTEND=noninteractive

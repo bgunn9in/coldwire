@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy two NEW Ubuntu 22.04 servers over SSH; other OS versions are untested."""
+"""Deploy two clean Ubuntu 22.04, 24.04 or 26.04 LTS servers over SSH."""
 import argparse
 import base64
 from dataclasses import dataclass, field

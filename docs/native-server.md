@@ -1,130 +1,122 @@
-# Нативный AmneziaWG 3.1: 1 vCPU, 1 ГБ RAM
+# Native AmneziaWG 3.1: 1 vCPU, 1 GiB RAM
 
-**Русский** · [English](en/native-server.md)
+English | [Русский](ru/native-server.md)
 
-Новая установка работает **без Docker**, напрямую в Ubuntu под systemd.
-Постоянно работает один процесс `amneziawg-go`. Компилятор Go, Docker/containerd,
-сборочные пакеты и модуль AWG в ядро на VPS не устанавливаются.
-Используется штатный TUN ядра Linux и официальная userspace-реализация AWG 3.1.
+The exit runs the official AWG 3.1 userspace implementation under systemd.
+One `amneziawg-go` process stays resident and uses Linux's standard TUN
+device. Installation adds no Docker/containerd, compiler or AWG kernel module.
 
-## Установка с нуля
+## Install from scratch
 
-Поддерживается только Ubuntu 22.04; остальные версии не тестировались
-и отклоняются установщиком.
-
-Требования: чистый Ubuntu 22.04 **amd64**, systemd, Python 3.10+,
-публичный IPv4 на интерфейсе, доступ к пакетным репозиториям Ubuntu и TUN.
-Скопируйте весь репозиторий, включая `dist`, затем из его корня:
+Supported releases are **Ubuntu 22.04, 24.04 and 26.04 LTS amd64**.
+Requirements: a clean server, systemd, Python 3.10+, an assigned
+public IPv4, Ubuntu package access and TUN. Copy the whole repository including
+`dist`, then run from its root:
 
 ```bash
 sudo bash servers/install-exit.sh --endpoint NEW_PUBLIC_IPV4 --client windows
 ```
 
-Замените `NEW_PUBLIC_IPV4` адресом **нового** VPS. По умолчанию UDP32497;
-другой порт задаётся `--port`. Разрешите выбранный UDP-порт в firewall хостера,
-сохранив SSH. Установщик не управляет внешним firewall хостинга.
-Вопросов приложения, ввода ключей и сборки на VPS нет.
+Replace `NEW_PUBLIC_IPV4` with the **new** VPS address. Default UDP32497 is
+overridden with `--port`. Allow that UDP port in the provider firewall without
+losing SSH. The installer does not manage external firewall rules. No Amnezia
+application, manual key entry or server-side compilation is needed.
 
-Дополнительно создать профиль через входной сервер:
+To include a profile through an entry server instead:
 
 ```bash
 sudo bash servers/install-exit.sh --endpoint NEW_PUBLIC_IPV4 --entry ENTRY_PUBLIC_IPV4 --entry-port 32497 --client windows
 ```
 
-Выберите одну команду установки. `--entry` только создаёт альтернативные профили:
-**правила A не меняются**. Профиль через A заработает только после настройки
-его перенаправления на выбранный B.
-Сначала проверяйте прямой профиль нового B на запасном устройстве.
+Choose one install command. `--entry` creates alternative profiles only:
+**it does not change A**. A's relay must forward to the selected B for that
+profile to work. Test direct access to the new B on a spare device first.
 
-Для автоматической установки вместе с REALITY используйте режим `both`
-[мастера](deploy.md). Отдельный AWG install отказывается работать поверх Xray.
-При восстановлении обоих протоколов сначала восстанавливайте AWG, затем Xray
-с `--with-awg`. Уже работающие службы автоматически не мигрируются.
+For automated coexistence with REALITY, choose `both` in the [wizard](deploy.md).
+Standalone AWG installation refuses existing Xray state. Restore AWG first,
+then Xray with `--with-awg` for a dual-protocol exit. Running services are not
+automatically migrated.
 
-Для частного адреса в локальной VM/LAN требуется явный флаг:
+A private VM/LAN endpoint requires an explicit flag:
 
 ```bash
 sudo bash servers/install-exit.sh --endpoint 10.0.2.15 --allow-private-endpoint --client vm1
 ```
 
-Разрешаются только RFC1918 10/8, 172.16/12, 192.168/16, назначенные локально.
-Это не настройка внешнего NAT/проброса портов; тест VM отдельно использует
-виртуальную сеть. По умолчанию проверка требует публичный адрес.
+Only locally assigned RFC1918 10/8, 172.16/12 and 192.168/16 are allowed by
+that option. It does not configure upstream NAT or port forwarding: the lab
+provides a virtual network separately. Normal mode requires a public address.
 
-## Что делает установщик
+## What installation does
 
-До изменений проверяются ОС, архитектура, systemd, адрес/порт, отсутствие
-старой установки, Docker, активного UFW, таблиц nftables, forwarding,
-интерфейсов VPN и конфликтующих маршрутов 10.8.1.0/24. Защитные отказы нельзя
-обходить отключением сети на работающем сервере — используйте чистый VPS.
+Before changing the server, it checks the OS, architecture, systemd, address
+and port. It refuses an existing deployment, Docker, active UFW, nftables
+tables, forwarding, VPN interfaces or conflicting routes to 10.8.1.0/24. Do not bypass refusal by
+disabling networking on a working server; use a clean VPS.
 
-Затем проверяются закреплённый в коде SHA256 пакета `dist/awg-native-linux-amd64.tar.gz`, допустимые
-имена/типы его файлов, закреплённые commits и внутренние хеши. Пакет уже собран
-на отдельной Ubuntu 22.04 amd64; компилятор VPS не нужен.
-Устанавливаются только `nftables`, `iproute2`, `kmod` и их зависимости,
-при необходимости загружается штатный модуль `tun`.
-Общий upgrade, reboot и изменение SSH не выполняются.
+The `dist/awg-native-linux-amd64.tar.gz` checksum must match the pin in code.
+Allowed filenames/types, pinned commits and internal hashes are also checked.
+The bundle is built on Ubuntu 22.04 amd64 to retain a glibc 2.35 baseline.
+The same bundle is used on all three supported LTS releases. Only nftables,
+iproute2, kmod and their dependencies are installed on the exit; the standard
+tun module is loaded if needed. No general OS upgrade, reboot or SSH change occurs.
 
-`awg genkey/genpsk/pubkey` создают новые серверный и клиентский ключи,
-PSK и отдельный HeaderProtectionKey. Параметры соответствуют AWG 3.1:
-Jc=4–6, Jmin=10, Jmax=50; S1–S4=12; H1–H4=1,2,3,4;
-ContentPaddingAddition=10–100, RandomTrailers/DisableCookies=on,
-рандомизированные тайминги и клиентский DNS CPS I1 из штатных констант.
-Шифрование выполняет официальная реализация, а не код Python.
+`awg genkey/genpsk/pubkey` generates server/client keys, a PSK and a separate
+HeaderProtectionKey. AWG 3.1 parameters are Jc=4–6, Jmin=10, Jmax=50;
+S1–S4=12; H1–H4=1,2,3,4; ContentPaddingAddition=10–100;
+RandomTrailers/DisableCookies=on; randomized timings and a client DNS CPS I1
+from upstream constants. Encryption is done by the official implementation,
+not by Python.
 
-Сервис `awg-relay-kit-exit.service` включает интерфейс `awg0`, адрес
-10.8.1.1/24, MTU1280 и собственную таблицу **ip awg_exit** с forwarding/NAT.
-Разрешены только выход из 10.8.1.0/24 через WAN и установленные ответы;
-INPUT/OUTPUT и SSH не меняются, `flush ruleset` не используется.
-VPS должен быть выделен под этот VPN: добавление других VPN/маршрутизации
-требует согласования правил FORWARD.
+`awg-relay-kit-exit.service` brings up `awg0`, 10.8.1.1/24, MTU1280 and its
+owned **ip awg_exit** forwarding/NAT table. Only 10.8.1.0/24 egress through WAN
+and established replies are allowed by its forwarding rules. INPUT/OUTPUT
+and SSH are unchanged, and there is no `flush ruleset`. Other VPNs/routing
+would require coordination of FORWARD policy on this dedicated VPS.
 
-Для обычного высокого UDP-порта systemd выдаёт Go-процессу только **NET_ADMIN**;
-при явно выбранном порте ниже 1024 дополнительно нужна **NET_BIND_SERVICE**.
-Сервис имеет доступ к TUN, использует GOMAXPROCS=1 и мягкую цель Go GC
-GOMEMLIMIT=96MiB. Это не жёсткий лимит RSS:
-пиковая память зависит от трафика и числа peers. Python-помощник настройки
-завершается после старта, отдельным демоном не остаётся.
+For a high UDP port systemd grants the Go process only **NET_ADMIN**. An
+explicit port below 1024 additionally needs **NET_BIND_SERVICE**. The service
+has TUN access, GOMAXPROCS=1 and the soft Go GC goal GOMEMLIMIT=96MiB. This is
+not a hard RSS limit; peaks depend on traffic and peer count. The Python
+network helper exits after setup instead of remaining a daemon.
 
-## Файлы и управление
+## Files and administration
 
-| Путь | Назначение |
+| Path | Purpose |
 |---|---|
-| `/usr/local/libexec/awg-relay-kit/` | Готовые `awg`, `amneziawg-go`, manifest, лицензии, исходники GPL-инструмента и помощник запуска |
-| `/etc/awg-relay-kit-exit/server.json` | Закрытый ключ сервера, PSK, параметры и реестр peers |
-| `/etc/awg-relay-kit-exit/awg0.conf` | Постоянная конфигурация AWG |
-| `/etc/awg-relay-kit-exit/exit.nft` | Только собственная таблица NAT/forwarding |
-| `/etc/systemd/system/awg-relay-kit-exit.service` | Автозапуск systemd |
-| `native-runtime.py up/down` | Включение forwarding после правил и возврат в 0 при остановке |
-| `/root/awg-relay-kit-clients/windows/` | `client.vpn`, `client.conf`, при `--entry` — `client-via-entry.*` |
+| `/usr/local/libexec/awg-relay-kit/` | Binaries, manifest, licenses, GPL tool source and startup helper |
+| `/etc/awg-relay-kit-exit/server.json` | Private server key, PSK, parameters and peer registry |
+| `/etc/awg-relay-kit-exit/awg0.conf` | Persistent AWG configuration |
+| `/etc/awg-relay-kit-exit/exit.nft` | Owned forwarding/NAT table only |
+| `/etc/systemd/system/awg-relay-kit-exit.service` | Boot-time service |
+| `native-runtime.py up/down` | Forwarding on after rules; back to 0 on stop |
+| `/root/awg-relay-kit-clients/windows/` | `client.vpn`, `client.conf`, plus `client-via-entry.*` when configured |
 
-Закрытые каталоги — 0700, секретные файлы — 0600. Закрытые ключи и PSK не печатаются и не
-передаются аргументами процессов. Прямой и via-entry профиль в одном каталоге —
-один peer, используйте их как альтернативы одного устройства.
-Для другого устройства выдайте отдельный доступ:
+Private directories are 0700 and secret files 0600. Private keys and PSKs are
+neither printed nor passed in process arguments. Direct and via-entry exports
+in one folder are alternatives for **one peer**. Issue new access for another device:
 
 ```bash
 sudo python3 install_exit.py add-client --name phone
 sudo python3 install_exit.py add-client --name mac
 ```
 
-Один новый peer добавляется без перезапуска и разрыва старых. Используется
-следующий свободный адрес 10.8.1.2–10.8.1.254. PSK/HeaderProtectionKey общие
-для сервера, приватные клиентские ключи разные, как в штатной модели Amnezia.
-Имена уникальные, 1–48 букв/цифр/`-`/`_`. При неудачной выдаче восстанавливается
-предыдущий постоянный конфиг; частичные экспорты остаются приватно для проверки.
-При внезапном выключении между файловыми записями сначала сверьте JSON/конфиг
-и runtime; транзакционной базы данных здесь нет.
+Adding a peer keeps the server process and existing sessions running.
+The next available 10.8.1.2–10.8.1.254 address is used. PSK/HeaderProtectionKey
+are server-wide; private client keys differ, following Amnezia's model. Names
+are unique, 1–48 letters/digits/`-`/`_`. On issuance failure the old persistent
+configuration is restored and partial exports remain private for inspection.
+A crash between file writes still requires checking JSON/config/runtime
+consistency: this is not a transactional database.
 
-`.vpn` — обычный клиентский доступ без SSH-пароля и административной роли Amnezia.
-Поля `containers`/`amnezia-awg2` в нём — идентификаторы клиентского формата,
-они не требуют Docker на сервере.
-Приложение требуется только пользователю для подключения, сервером управляет CLI/SSH.
-Автоматический отзыв клиента пока не реализован: после закрытой резервной копии
-согласованно удалите peer из `server.json`/`awg0.conf` и runtime командой
-`sudo /usr/local/libexec/awg-relay-kit/awg set awg0 peer PUBLIC_KEY remove`.
+`.vpn` is normal client access without an SSH password or Amnezia administrator
+role. `containers`/`amnezia-awg2` are client format identifiers, not a Docker
+requirement. The application is needed for client connections; SSH/CLI
+administers the server. Automated revocation is not implemented. After a
+private backup, consistently remove the peer from `server.json`/`awg0.conf`
+and runtime with `sudo /usr/local/libexec/awg-relay-kit/awg set awg0 peer PUBLIC_KEY remove`.
 
-## Проверка и диагностика
+## Verification and troubleshooting
 
 ```bash
 systemctl status awg-relay-kit-exit.service --no-pager
@@ -135,83 +127,84 @@ sudo nft list table ip awg_exit
 journalctl -u awg-relay-kit-exit.service -n 40 --no-pager
 ```
 
-Ожидаются active/running, enabled, свежий handshake, двусторонние счётчики,
-работающие сайты и внешний IP нового выхода. Для профиля через A peer Endpoint
-на B будет адресом A со случайным NAT-портом. Для прямого профиля — адресом клиента.
-Не публикуйте `showconf`, `dump`, server.json или клиентские экспорты: там секреты.
+Expect active/running, enabled, a fresh handshake, bidirectional counters,
+working websites and the new exit's external IP. For a via-entry client,
+B sees A as the peer Endpoint with a possibly different NAT source port.
+A direct client appears with its own address. Never publish `showconf`,
+`dump`, server.json or client exports: they contain secrets.
 
-`amneziawg-go --version` может показывать историческую строку 0.0.20250522;
-ориентируйтесь на закреплённые commits/manifest, поддержку параметров 3.1 и обмен.
-Стартовый баннер про kernel support не доказывает, что модуль AWG установлен:
-этот сервис специально использует userspace-бинарник.
-Если APT сообщает Hash Sum mismatch, не отключайте проверки подписей/хешей:
-проверьте зеркало/кеш; в локальном стенде помогли официальные HTTPS-зеркала Ubuntu.
-После постороннего сброса nftables восстановите собственные правила штатным
-перезапуском сервиса в запланированное время, учитывая обрыв VPN на этом выходе.
+`amneziawg-go --version` may show historical 0.0.20250522; use pinned
+commits/manifest, support for 3.1 parameters and real traffic as evidence.
+The startup banner mentioning kernel support does not prove an AWG kernel
+module is installed: this service deliberately uses the userspace binary.
+For APT Hash Sum mismatch, inspect mirrors/caches rather than disabling
+signature/hash checks. Official HTTPS mirrors helped in the disposable lab.
+After foreign nftables changes, restore owned rules using a scheduled service
+restart, accounting for interruption of VPN sessions on that exit.
 
-IPv6-выход не реализован; наличие `::/0` в клиенте его не создаёт.
-Проверяйте IPv6/KillSwitch и DNS клиента отдельно. Списки RU относятся к IPv4.
+IPv6 egress is not implemented; a client's `::/0` does not create it. Check
+IPv6/KillSwitch and client DNS separately. RU lists cover IPv4.
 
-## Резервная копия и восстановление
+## Backup and restore
 
 ```bash
 sudo install -d -m 700 /root/private
 sudo bash servers/backup-exit.sh /root/private/exit-backup
 ```
 
-Родительская папка должна существовать, конечная — ещё нет. Сохраняются закрытые
-state/clients и проверенный бинарный пакет из установленного каталога BIN,
-поэтому повторный backup работает и после restore без исходной папки dist.
-Backup и add-client используют один lock;
-ручное редактирование на время копирования исключите. Копия секретная, храните
-зашифрованной вне Git. Сам сервер не перезапускается.
+The parent directory must exist, but the output must be new. Backup saves
+private state/clients and the verified bundle from installed BIN, so another
+backup works after restore without the original dist directory. Backup and
+add-client share a lock; avoid manual edits while copying. Store the secret
+backup encrypted and outside Git. Backup does not restart the service.
 
-На **другом чистом Ubuntu VPS**, с этим репозиторием и доверенной копией:
+On **another clean Ubuntu VPS** with this repository and a trusted backup:
 
 ```bash
 sudo bash servers/restore-exit.sh --backup /root/private/exit-backup --endpoint NEW_PUBLIC_IPV4
 ```
 
-Сохраняются ключи/peers, заново определяются интерфейс WAN и адрес нового B.
-Для VM/LAN снова нужен явный `--allow-private-endpoint`.
-Backup не изменяется. Старые прямые экспорты всё ещё содержат старый Endpoint:
-переконвертируйте `.vpn` с `--entry NEW_B_IP --port SERVER_PORT`, а в `.conf`
-обновите Endpoint. Профили через прежний A могут остаться прежними при сохранении
-ключей и обновлении назначения реле. Новый add-client использует уже новый IP B.
-Это восстановление не переносит пользователей/SSH ключи ОС и firewall хостера.
+Keys/peers survive; WAN and the new B address are detected again. VM/LAN use
+still requires explicit `--allow-private-endpoint`. The backup is not changed.
+Old direct exports retain old Endpoints: reconvert `.vpn` using
+`--entry NEW_B_IP --port SERVER_PORT` and update `.conf` Endpoint. Existing
+profiles through A may remain valid if keys are preserved and A's destination
+is updated. New add-client exports use the new B address. OS users/SSH keys
+and provider firewall are not transferred.
 
-Повторная установка блокируется. Если активация нового сервиса не удалась,
-он отключается, forwarding возвращается в 0; постоянный sysctl override не создаётся;
-закрытые файлы сохраняются для диагностики. Это не повод переиспользовать
-возможно уже выданные ключи без проверки. Остановка только нового выхода:
-`sudo systemctl disable --now awg-relay-kit-exit.service`.
+Reinstallation over existing state is blocked. Failed activation disables the
+new service and returns forwarding to 0; no persistent sysctl override is
+created. Private files remain for diagnosis, not automatic key reuse. To stop
+only this exit: `sudo systemctl disable --now awg-relay-kit-exit.service`.
 
-## Сборка и полный тест
+## Build and full test
 
-Пакет уже включён в репозиторий. Пересборка на **отдельной** Ubuntu 22.04 amd64:
+The bundle is included. Its build host must remain Ubuntu 22.04 amd64 so
+that the resulting binaries retain the oldest supported glibc baseline.
+To rebuild, use a **separate** build host:
 
 ```bash
 sudo bash servers/build-native.sh
 ```
 
-Скрипт откажется перезаписывать существующий пакет. Для пересборки используйте
-отдельную сборочную копию исходников без `dist/awg-native-linux-amd64.tar.gz`,
-сохранив прежний релиз. На работающем VPS пакет пересобирать не нужно.
-Go 1.25.12 проверяется по SHA256, исходники AWG/инструментов — закреплённые commits.
-Только на сборочной машине ставятся build-essential/git/curl; временный Go удаляется.
-Манифест фиксирует источники и хеши. Пакет содержит лицензии и исходники GPL-инструмента.
-Собственная новая сборка может иметь другой архивный хеш: после проверки
-происхождения и содержимого обновите `BUNDLE_SHA256` в `install_exit.py`.
-Подмена одной `.sha256` не считается доверенным обновлением бинарника.
+Existing bundles are not overwritten. Use a separate build checkout without
+`dist/awg-native-linux-amd64.tar.gz`, keeping the released copy. Do not rebuild
+on a working VPS. Go 1.25.12 is SHA256-checked; upstream commits are pinned.
+Only the build machine installs build-essential/git/curl, and temporary Go
+is removed. Manifests record provenance and hashes; licenses and GPL tool
+source are included. A fresh build may have a different archive hash: after
+verifying provenance/content, update `BUNDLE_SHA256` in `install_exit.py`.
+Changing only `.sha256` is not a trusted binary update.
 
-В частной одноразовой VM после установки можно воспроизвести сетевой тест:
+An installed disposable private VM can run:
 
 ```bash
 sudo python3 tests/smoke_native_vm.py --vm-test --client vm1 --second-client vm2 --report /root/vm-report.json
 ```
 
-Тест создаёт временные namespace-клиенты, добавляет второго peer, проверяет
-Интернет/NAT и 10-секундную TCP-нагрузку. Он требует установленного нативного выхода
-с частным RFC1918 Endpoint и отказывается работать с публичным адресом.
-На действующих серверах его не запускайте. Измерения и результат reboot/restore —
-[в отчёте проверки](validation-native.md).
+It creates temporary namespace clients, adds a second peer, verifies
+Internet/NAT and runs ten seconds of TCP load. It requires an owned native
+exit with an RFC1918 Endpoint and refuses public addresses. Never run it on
+a working production server. [Measurements and reboot/restore results](validation-native.md).
+
+Ubuntu 24.04/26.04 checks and CPU-image requirements: [LTS report](validation-lts.md).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fresh dedicated Ubuntu 22.04 entry only; other OS versions are untested.
+# Entry relay for a clean Ubuntu 22.04, 24.04 or 26.04 LTS amd64 server.
 set -euo pipefail
 export LC_ALL=C
 [[ $EUID == 0 ]] || { echo 'Run as root'; exit 1; }
@@ -20,7 +20,7 @@ if not all(p.isdecimal() and 1 <= int(p) <= 65535 and str(int(p)) == p for p in 
     raise ValueError('Invalid or duplicate UDP ports')
 PY
 source /etc/os-release
-[[ $ID == ubuntu && $VERSION_ID == 22.04 ]] || { echo 'Only Ubuntu 22.04 is supported; other versions have not been tested'; exit 1; }
+[[ $ID == ubuntu && ( $VERSION_ID == 22.04 || $VERSION_ID == 24.04 || $VERSION_ID == 26.04 ) && $(uname -m) == x86_64 ]] || { echo 'Ubuntu 22.04, 24.04 or 26.04 LTS amd64 required'; exit 1; }
 [[ -d /run/systemd/system ]] || { echo 'systemd is required'; exit 1; }
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 [[ -f $script_dir/rollback-entry.sh && -f $script_dir/confirm-entry.sh ]] || { echo 'Copy the whole servers directory'; exit 1; }

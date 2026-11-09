@@ -21,6 +21,13 @@ def state():
 
 
 class XrayTests(unittest.TestCase):
+    def test_unsupported_lts_host_is_refused_before_commands(self):
+        for version in ('24.10', '26.10'):
+            with self.subTest(version=version), patch.object(Path, 'read_text', return_value=f'ID=ubuntu\nVERSION_ID="{version}"\n'), patch.object(xray, 'run') as command:
+                with self.assertRaisesRegex(ValueError, 'Supported Ubuntu LTS releases'):
+                    xray.preflight(None)
+                command.assert_not_called()
+
     def test_exports_preserve_identity_and_never_export_private_server_key(self):
         original = state()
         changed, files = config.new_client(original, 'phone')
