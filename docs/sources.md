@@ -80,7 +80,9 @@ deploy and authenticated traffic through the relay. [Earlier exit report](valida
 [Ubuntu 22.04 three-mode report](validation-protocols.md).
 The later [LTS cycle](validation-lts.md) tested all three modes on fresh
 Ubuntu 24.04 and 26.04 VMs with the same 1 vCPU / 1 GiB allocation, including
-sudo-rs, Python 3.12/3.14, cold boots and restore.
+sudo-rs, Python 3.12/3.14, cold boots and restore. The [ordinary-reboot
+follow-up](validation-lts.md#ordinary-reboots) adds 24 guest reboots on
+10 November using a locally patched QEMU/WHPX test build.
 
 Native AWG and Xray carried real traffic. AmneziaVPN 5.1.0.6 Linux in a
 separate VM imported AWG `.vpn`, Xray JSON and VLESS URI, storing appropriate

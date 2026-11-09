@@ -98,3 +98,7 @@ platform caption changed in the SVG. Links, hashes and absence of private
 data were checked. All 47 unit tests passed on Windows and guest Python
 3.12/3.14. Support for the new OS releases was verified in the six VM cycles
 listed in the LTS report.
+
+On 10 November, a separate [ordinary-reboot follow-up](validation-lts.md#ordinary-reboots)
+added six fresh VM cycles and 24 guest reboots with a locally patched QEMU/WHPX
+test build. VPN scripts and released bundles remained unchanged.

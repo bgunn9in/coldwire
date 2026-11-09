@@ -7,6 +7,9 @@ Ubuntu 24.04 and 26.04 VM disks. No changes were made to working external
 servers, the operator's VPN or Windows routes. The earlier [Ubuntu 22.04
 report](validation-protocols.md) remains a separate test cycle.
 
+Ordinary A/B reboots passed in the [10 November follow-up](#ordinary-reboots)
+using a locally patched QEMU/WHPX test build.
+
 ## What changed
 
 The SSH preflight, manual relay installer and both exit installers now accept
@@ -106,7 +109,9 @@ VPN processes, excluding the OS and test fixtures; observation times differ.
 QEMU/WHPX failed with an xsave error during a soft reset of a 24.04 guest.
 The remaining persistence checks used clean guest shutdown followed by a new
 QEMU process on the same disk. They verify cold-boot autostart and saved state;
-they do not verify a successful WHPX soft reset on these new OS releases.
+those initial checks did not verify a successful WHPX soft reset. The
+[10 November follow-up](#ordinary-reboots) below verifies ordinary reboots
+using a locally patched test-tool build.
 
 One initial REALITY/26.04 run timed out at both external HTTPS address checks.
 A quick check and a complete rerun then passed without a runtime-code or
@@ -120,3 +125,106 @@ These runs do not establish multi-day stability, maximum client counts or DPI
 evasion. IPv6 egress is not implemented. Physical client applications, every
 provider firewall and all DNS/DoH/KillSwitch combinations were not retested.
 In-place distribution upgrades were not tested; installers require clean hosts.
+
+## Ordinary reboots
+
+Follow-up date: **10 November 2026**. All six OS/protocol combinations now pass
+ordinary `sudo -n systemctl reboot` on A and B. Each case used fresh VM disks,
+1 vCPU and 1024 MiB per guest, plus a separate client C. The VPN scripts and
+released bundles are byte-for-byte unchanged from the initial LTS checks.
+No working external servers, the operator's VPN or Windows routes were changed.
+
+### WHPX diagnosis and local repair
+
+These are native Windows QEMU processes with `-accel whpx`, not WSL2 guests.
+The host is Windows 11 build 26300. The original installed QEMU reports
+`11.1.0 (v11.1.0-12130-ge470268ff4)`. The failure also occurs on a relay with no
+VPN service running: Linux reaches its reboot target, then QEMU fails to boot
+the guest again.
+
+The following controls used the same Ubuntu 24.04 disk. A failed control did
+not return with a new boot ID within 75 seconds; its serial/QMP logs were saved.
+
+| QEMU | CPU | Interrupt controller | Firmware | Result |
+|---|---|---|---|---|
+| Installed 11.1.0 build | `max` | Default | SeaBIOS | Failed |
+| Installed 11.1.0 build | `max` | `kernel-irqchip=off` | SeaBIOS | Failed |
+| Installed 11.1.0 build | `qemu64` | Default | SeaBIOS | Failed |
+| Installed 11.1.0 build | `qemu64` | `kernel-irqchip=off` | SeaBIOS | Failed |
+| Installed 11.1.0 build | `max` | Default | UEFI | Failed |
+| Locally built 11.1.3, unmodified | `max` | Default | SeaBIOS | Failed |
+| Same 11.1.3 build with partition-reset patch | `max` | Default | SeaBIOS | Passed, 15.74 seconds to new boot ID |
+
+The successful build applies the [proposed upstream WHPX partition-reset
+patch](https://patchew.org/QEMU/20260421205749.55060-1-mohamed@unpredictable.fr/).
+It adds a reset callback calling `WHvResetPartition` while guest CPUs are
+stopped, before QEMU writes their reset state. The same-version control
+localizes the failure to this reset path on the tested host; changing VPN
+settings was unnecessary.
+
+Microsoft documents that [WHvResetPartition](https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvresetpartition)
+reinitializes virtual processors and pending per-processor state, while
+preserving mapped guest memory. The function is available on this host.
+This is a local test-tool build using a proposed patch, not a claim that
+released QEMU 11.1.3 contains the fix. No QEMU binary is distributed by COLDWIRE.
+Ubuntu VPS installations do not need QEMU, MSYS2 or this patch.
+
+The source is the official QEMU 11.1.3 tarball; its PGP signature was checked
+against the release key fingerprint published on the [QEMU download page](https://www.qemu.org/download/):
+`CEACC9E15534EBABB82D3FA03353C9CEF108B584`.
+It was built separately with portable MSYS2 UCRT64, GCC 16.2.0, WHPX enabled
+and TCG disabled. The installed system QEMU and Windows settings were unchanged.
+The patched and unpatched builds used the same 51 bundled DLLs and installed
+firmware.
+
+| Local build input/output | SHA256 |
+|---|---|
+| Official source tarball | `5a8289c7940dc77d3873c81a6c29ba3afe1446fc9d36e77fa1658cdbecb84b22` |
+| Applied patch, normalized LF and final newline | `aa659609ea554908252d8e609aa87147c330454827c742109fe6da172cd1db5b` |
+| Tested patched executable | `2fe0a473a1071cf0a776a61b657677aa21b3813b03f16676e4b390ecd10e6edc` |
+
+### What proves an ordinary reboot
+
+For each case, the test first verified client traffic, then rebooted A alone,
+B alone, and A/B back-to-back without waiting for A to return. This is four
+guest reboot commands per case, **24 in total**. After every phase it checked:
+
+- A new Linux `boot_id` and a guest-originated QMP `RESET` event.
+- The same Windows QEMU PID and process creation time, with the QMP connection
+  kept open throughout. No process restart or cold-start fallback was used.
+- Enabled/active services, forwarding and owned nftables rules. No manual
+  service restart was performed to make a post-reboot check pass.
+- Unchanged VPN identities and successful HTTPS, external-IP and DNS checks
+  from C through A. `both` checked AWG and REALITY concurrently.
+
+| Ubuntu | Mode | A alone | B alone | A/B together | Guest reboots |
+|---|---|---|---|---|---:|
+| 24.04 | `awg` | PASS | PASS | PASS | 4 |
+| 24.04 | `reality` | PASS | PASS | PASS | 4 |
+| 24.04 | `both` | PASS | PASS | PASS | 4 |
+| 26.04 | `awg` | PASS | PASS | PASS | 4 |
+| 26.04 | `reality` | PASS | PASS | PASS | 4 |
+| 26.04 | `both` | PASS | PASS | PASS | 4 |
+
+All guests share the host's external NAT, so matching the external IP alone
+is insufficient evidence. The probes also check the configured entry path,
+actual authenticated traffic and persistent relay rules.
+
+The full matrix used default WHPX interrupt handling and SeaBIOS. CPU/image
+selection matched the earlier tests: 24.04 and the 26.04 single-protocol cases
+used `max`; the 26.04 dual-protocol case used `qemu64` and the standard amd64
+image. No guest kernel reboot parameters were changed.
+
+### Remaining limits
+
+The backend still sometimes logs `failed to get xsave state` and an ignored
+interrupt-vector warning. They also appear in successful reboot checks; this
+follow-up does not claim to fix every WHPX diagnostic or CPU save/restore path.
+The [QEMU XSAVE diagnostic](https://github.com/qemu/qemu/blob/v11.1.3/target/i386/whpx/whpx-all.c)
+uses C `errno` when reporting a Windows API failure, so its displayed suffix
+alone does not identify the underlying HRESULT.
+
+The successful result applies to this local patched QEMU/Windows combination.
+Migration and long-running hypervisor workloads were not validated. The
+restored exit D was not part of this ordinary-reboot matrix. The earlier load,
+restore and five-minute-timer boundaries still apply.

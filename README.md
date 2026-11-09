@@ -155,8 +155,8 @@ Each command creates exactly two JSON files in a new folder. Optional
 
 All three modes were tested on Ubuntu **22.04, 24.04 and 26.04 LTS** VMs
 with 1 vCPU and 1 GiB RAM. The [24.04/26.04 report](docs/validation-lts.md)
-covers SSH installation, traffic, service independence, cold boots, restore
-and memory use. The [22.04 report](docs/validation-protocols.md) also records
+covers SSH installation, traffic, service independence, cold boots, ordinary
+A/B reboots, restore and memory use. The [22.04 report](docs/validation-protocols.md) also records
 guest reboots and full five-minute rollback expiry; the [earlier AWG report](docs/validation-native.md)
 records a separate load test. These short runs do not establish the maximum
 speed or number of clients a VPS can handle.
