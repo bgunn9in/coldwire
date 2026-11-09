@@ -2,7 +2,7 @@
 
 [English](../servers.md) | Русский
 
-Поддерживаются **Ubuntu 22.04, 24.04 и 26.04 LTS amd64**. Другие версии
+Поддерживаются **Debian 12/13 и Ubuntu 22.04/24.04/26.04 LTS amd64**. Другие версии
 и архитектуры установщики отклоняют. Нативный бинарный пакет
 выхода предназначен только для amd64.
 
@@ -19,8 +19,8 @@ SNAT/masquerade обеспечивает ответы через A. Расшиф
 
 ## Выход B
 
-Для AWG нужен чистый сервер поддерживаемой Ubuntu с systemd, Python 3.10+, TUN и IPv4
-на интерфейсе. Docker и компилятор Go на выход не устанавливаются.
+Для AWG нужен чистый сервер поддерживаемой Debian или Ubuntu с systemd,
+Python 3.10+, TUN и IPv4 на интерфейсе. Docker и компилятор Go на выход не устанавливаются.
 
 ```bash
 sudo bash servers/install-exit.sh --endpoint EXIT_IPV4 --entry ENTRY_IPV4 --client client1
@@ -127,3 +127,5 @@ sudo bash servers/restore-exit.sh --backup /root/private/exit-backup --endpoint 
 затем Xray с `--with-awg`; реле A хранится и обслуживается отдельно.
 
 Проверки Ubuntu 24.04/26.04 и требования образов к CPU: [отчёт LTS](validation-lts.md).
+
+Установка, перезагрузка и восстановление Debian 12/13: [отчёт Debian](validation-debian.md).

@@ -47,11 +47,21 @@ force-push does not guarantee physical removal. See [GitHub's guidance](https://
 
 ## Release checks
 
-From the repository root:
+From the repository root, prepare the operator venv and run the tests.
+The help option sets up the local environment without connecting to servers.
+
+Linux/macOS:
 
 ```bash
-python -m pip install -r requirements-deploy.txt
-python -m unittest discover -s tests -v
+bash setup.sh --help
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+Windows PowerShell:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 --help
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 SSH host-key tests require Paramiko; without it, that test is skipped. Check
@@ -65,8 +75,9 @@ Preserve licenses and corresponding source in
 Xray's bundle includes its license and a manifest pointing to the pinned
 source version. The project's MIT license does not replace upstream licenses.
 
-Supported server releases are Ubuntu 22.04, 24.04 and 26.04 LTS amd64.
-The [LTS report](validation-lts.md), [Ubuntu 22.04 three-mode report](validation-protocols.md)
+Supported server releases are Debian 12/13 and Ubuntu 22.04/24.04/26.04 LTS amd64.
+The [Debian report](validation-debian.md), [LTS report](validation-lts.md),
+[Ubuntu 22.04 three-mode report](validation-protocols.md)
 and [earlier AWG report](validation-native.md) record the tests performed.
 A later documentation edit does not imply that the full VM cycle was rerun.
 

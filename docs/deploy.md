@@ -3,7 +3,8 @@
 English | [Русский](ru/deploy.md)
 
 `deploy.py` runs on your computer and configures two separate clean servers
-running **Ubuntu 22.04, 24.04 or 26.04 LTS amd64**. Other OS releases are rejected.
+running **Debian 12/13 or Ubuntu 22.04/24.04/26.04 LTS amd64**. Other OS
+releases are rejected.
 Servers need password-based SSH, root or sudo, assigned public IPv4 addresses
 and APT access. TUN is required on B only for AWG. Additional provider-side NAT
 is unsupported in normal mode; the private-address flag is for the lab.
@@ -15,10 +16,14 @@ computer or change your computer's routes.
 
 ## Start the wizard
 
-Install Python **3.10+** with venv/pip on your computer first. The launcher
+Install standard CPython **3.10+** with venv/pip on your computer first. The launcher
 creates `.venv` and installs the pinned dependency. On the servers, the wizard
 installs missing Python, iproute2, OpenSSL and CA-certificate packages after
 checking the OS and existing state of both machines.
+
+On Windows, the launcher selects an installed standard CPython version.
+An existing venv built with free-threaded Python is rejected before pip runs.
+Rename that folder to keep a backup, then rerun the launcher.
 
 Windows PowerShell, from the repository root:
 
@@ -175,3 +180,5 @@ explicit `--allow-private-endpoint`; it does not bypass foreign firewalls or
 permit installing over an existing VPN.
 
 Ubuntu 24.04/26.04 checks and CPU-image requirements: [LTS report](validation-lts.md).
+
+Debian 12/13 installation, reboot and restore checks: [Debian report](validation-debian.md).

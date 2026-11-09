@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy two clean Ubuntu 22.04, 24.04 or 26.04 LTS servers over SSH."""
+"""Deploy two clean Ubuntu 22.04/24.04/26.04 LTS or Debian 12/13 servers over SSH."""
 import argparse
 import base64
 from dataclasses import dataclass, field

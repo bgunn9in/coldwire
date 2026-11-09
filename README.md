@@ -4,8 +4,8 @@
 
 English | [Русский](README.ru.md)
 
-COLDWIRE sets up a VPN across two Ubuntu servers. Your devices connect to
-entry A, and websites see exit B's IP address. You can install AmneziaWG 3.1,
+COLDWIRE sets up a VPN across two Debian or Ubuntu servers. Your devices
+connect to entry A, and websites see exit B's IP address. You can install AmneziaWG 3.1,
 VLESS with REALITY and XTLS Vision, or both.
 
 The entry server forwards encrypted traffic with nftables. The VPN services
@@ -17,14 +17,14 @@ keys and configuration files.
 
 ## Installation
 
-You need two clean Ubuntu **22.04, 24.04 or 26.04 LTS amd64** VPS instances
-with public IPv4 addresses assigned to their network interfaces. Each must
+You need two clean **Debian 12/13 or Ubuntu 22.04/24.04/26.04 LTS amd64**
+VPS instances with public IPv4 addresses assigned to their network interfaces. Each must
 allow SSH access as root or with sudo. AWG also needs TUN on the exit server.
 Other OS releases and VPS instances behind additional provider NAT are
 unsupported. For a 26.04 cloud image built for amd64v3, the VPS must expose
 the required CPU features. [Platform checks](docs/validation-lts.md).
 
-Install Python 3.10+ with venv/pip on your computer, then run one of these
+Install standard CPython 3.10+ with venv/pip on your computer, then run one of these
 commands from the repository folder.
 
 Windows PowerShell:
@@ -43,7 +43,7 @@ The wizard asks which protocol to install and requests each server's IPv4,
 SSH port, username and password. Password input is hidden. It installs missing
 server packages, generates keys and REALITY settings, and saves client profiles.
 For password-protected sudo, it uses the SSH password unless you provide a
-separate one.
+separate one. The wizard detects the server OS automatically.
 
 | Mode | Default entry ports | Services on the exit |
 |---|---|---|
@@ -143,12 +143,22 @@ Each command creates exactly two JSON files in a new folder. Optional
 
 ## Tests and limits
 
+Linux/macOS:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+Windows PowerShell:
+
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-All three modes were tested on Ubuntu **22.04, 24.04 and 26.04 LTS** VMs
-with 1 vCPU and 1 GiB RAM. The [24.04/26.04 report](docs/validation-lts.md)
+All three modes were tested on **Debian 12/13 and Ubuntu 22.04/24.04/26.04
+LTS** VMs with 1 vCPU and 1 GiB RAM. The [Debian report](docs/validation-debian.md)
+records six fresh installations, 24 ordinary A/B reboots, restore and full
+rollback-timer expiry. The [24.04/26.04 report](docs/validation-lts.md)
 covers SSH installation, traffic, service independence, cold boots, ordinary
 A/B reboots, restore and memory use. The [22.04 report](docs/validation-protocols.md)
 also covers guest reboots and full five-minute rollback expiry. The

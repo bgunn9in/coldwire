@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Privileged LAB test: private-address Ubuntu VM only; creates a second peer."""
+"""Privileged LAB test: private-address Debian/Ubuntu VM only; creates a second peer."""
 import argparse
 import ipaddress
 import json

@@ -3,7 +3,7 @@
 English | [Русский](ru/sources.md)
 
 Documentation was checked against the toolkit code and AmneziaVPN 5.1.0.6.
-Supported server releases are **Ubuntu 22.04, 24.04 and 26.04 LTS amd64**.
+Supported server releases are **Debian 12/13 and Ubuntu 22.04/24.04/26.04 LTS amd64**.
 Other releases and architectures are not supported. The `amnezia-awg2`
 identifier in `.vpn` belongs to the client file format. It does not require
 Docker or mean protocol version 2.
@@ -93,3 +93,5 @@ is one manual observation, not a compatibility guarantee for all versions.
 IPv6 egress is absent; all DNS/DoH/KillSwitch combinations were not tested.
 Short memory measurements do not establish maximum throughput, multi-day
 stability or evasion of a particular DPI implementation.
+
+The [Debian 12/13 report](validation-debian.md) covers all three modes on those releases, including ordinary reboots, restore and full timer expiry.

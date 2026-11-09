@@ -1,4 +1,4 @@
-"""Install native AWG on Ubuntu 22.04, 24.04 or 26.04 LTS, without Docker or a compiler."""
+"""Install native AWG on Ubuntu 22.04/24.04/26.04 LTS or Debian 12/13, without Docker or a compiler."""
 import argparse
 import hashlib
 import ipaddress
@@ -26,7 +26,7 @@ MARKER = 'awg-relay-kit-native-v1'
 GO_COMMIT = '1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1'
 TOOLS_COMMIT = 'ee0f0a9aa34ff0a0da4b3433b9512781cfe02843'
 BUNDLE_SHA256 = '44c066267291dcfbf493725f00d28ce65fd7722097a434927efa18c9e3b90749'
-SUPPORTED_UBUNTU = ('22.04', '24.04', '26.04')
+SUPPORTED_RELEASES = {'ubuntu': ('22.04', '24.04', '26.04'), 'debian': ('12', '13')}
 
 
 def run(*args, data=None, visible=False):
@@ -64,13 +64,13 @@ def read_bundle(path):
     return files
 
 
-def require_supported_ubuntu():
+def require_supported_host():
     release = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
     version = release.get('VERSION_ID', '').strip('"')
-    if release.get('ID', '').strip('"') != 'ubuntu' or version not in SUPPORTED_UBUNTU:
-        raise ValueError('Supported Ubuntu LTS releases: ' + ', '.join(SUPPORTED_UBUNTU))
+    if version not in SUPPORTED_RELEASES.get(release.get('ID', '').strip('"'), ()):
+        raise ValueError('Supported server releases: Ubuntu 22.04, 24.04, 26.04 LTS; Debian 12, 13')
     if platform.machine() != 'x86_64' or not Path('/run/systemd/system').is_dir():
-        raise ValueError('Requires amd64 Ubuntu with systemd')
+        raise ValueError('Requires amd64 Linux with systemd')
     return version
 
 
@@ -88,7 +88,7 @@ def preflight(args):
         raise ValueError('Invalid UDP port')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,47}', args.client):
         raise ValueError('Invalid client name')
-    require_supported_ubuntu()
+    require_supported_host()
     if any(p.exists() for p in (STATE, CLIENTS, BIN, UNIT, SYSCTL, Path('/opt/amnezia'), Path('/etc/awg-relay-kit-xray'))):
         raise ValueError('An exit installation/output already exists; refusing to overwrite')
     if shutil.which('docker') or Path('/var/lib/docker').exists():

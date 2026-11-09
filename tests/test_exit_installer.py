@@ -148,20 +148,25 @@ class ExitInstallerTests(unittest.TestCase):
 
     def test_untested_os_versions_are_refused_before_commands(self):
         args = SimpleNamespace(endpoint="1.1.1.1", entry=None, port=32497, entry_port=32497, client="test")
-        for release in ('ID=ubuntu\nVERSION_ID="24.10"\n', 'ID=ubuntu\nVERSION_ID="26.10"\n', 'ID=ubuntu\nVERSION_ID="20.04"\n', 'ID=debian\nVERSION_ID="12"\n'):
+        for release in ('ID=ubuntu\nVERSION_ID="24.10"\n', 'ID=ubuntu\nVERSION_ID="26.10"\n', 'ID=ubuntu\nVERSION_ID="20.04"\n', 'ID=debian\nVERSION_ID="11"\n', 'ID=debian\nVERSION_ID="14"\n', 'ID=other\nID_LIKE=debian\nVERSION_ID="13"\n', 'ID=debian\n'):
             with self.subTest(release=release), patch.object(Path, 'read_text', return_value=release), patch.object(exit_tool, 'run') as command:
-                with self.assertRaisesRegex(ValueError, 'Supported Ubuntu LTS releases'):
+                with self.assertRaisesRegex(ValueError, 'Supported server releases'):
                     exit_tool.preflight(args)
                 command.assert_not_called()
 
-    def test_supported_lts_releases_share_the_same_host_check(self):
-        for version in ('22.04', '24.04', '26.04'):
-            with self.subTest(version=version), patch.object(Path, 'read_text', return_value=f'ID=ubuntu\nVERSION_ID="{version}"\n'), patch.object(Path, 'is_dir', return_value=True), patch.object(exit_tool.platform, 'machine', return_value='x86_64'):
-                self.assertEqual(exit_tool.require_supported_ubuntu(), version)
+    def test_supported_releases_share_the_same_host_check(self):
+        for distro, version in (('ubuntu', '22.04'), ('ubuntu', '24.04'), ('ubuntu', '26.04'), ('debian', '12'), ('debian', '13')):
+            with self.subTest(distro=distro, version=version), patch.object(Path, 'read_text', return_value=f'ID={distro}\nVERSION_ID="{version}"\n'), patch.object(Path, 'is_dir', return_value=True), patch.object(exit_tool.platform, 'machine', return_value='x86_64'):
+                self.assertEqual(exit_tool.require_supported_host(), version)
 
     def test_unsupported_architecture_is_refused(self):
-        with patch.object(Path, 'read_text', return_value='ID=ubuntu\nVERSION_ID="26.04"\n'), patch.object(exit_tool.platform, 'machine', return_value='aarch64'), self.assertRaisesRegex(ValueError, 'amd64 Ubuntu'):
-            exit_tool.require_supported_ubuntu()
+        for distro, version in (('ubuntu', '26.04'), ('debian', '12'), ('debian', '13')):
+            with self.subTest(distro=distro), patch.object(Path, 'read_text', return_value=f'ID={distro}\nVERSION_ID="{version}"\n'), patch.object(Path, 'is_dir', return_value=True), patch.object(exit_tool.platform, 'machine', return_value='aarch64'), self.assertRaisesRegex(ValueError, 'amd64 Linux'):
+                exit_tool.require_supported_host()
+
+    def test_supported_os_without_systemd_is_refused(self):
+        with patch.object(Path, 'read_text', return_value='ID=debian\nVERSION_ID="13"\n'), patch.object(exit_tool.platform, 'machine', return_value='x86_64'), patch.object(Path, 'is_dir', return_value=False), self.assertRaisesRegex(ValueError, 'systemd'):
+            exit_tool.require_supported_host()
 
     def test_activation_failure_stops_only_its_service(self):
         with tempfile.TemporaryDirectory() as folder:

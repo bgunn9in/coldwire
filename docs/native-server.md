@@ -8,9 +8,9 @@ device. Installation adds no Docker/containerd, compiler or AWG kernel module.
 
 ## Install from scratch
 
-Supported releases are **Ubuntu 22.04, 24.04 and 26.04 LTS amd64**.
+Supported releases are **Debian 12/13 and Ubuntu 22.04/24.04/26.04 LTS amd64**.
 Requirements: a clean server, systemd, Python 3.10+, an assigned
-public IPv4, Ubuntu package access and TUN. Copy the whole repository including
+public IPv4, APT access and TUN. Copy the whole repository including
 `dist`, then run from its root:
 
 ```bash
@@ -58,7 +58,7 @@ on a working server can disconnect its users.
 The `dist/awg-native-linux-amd64.tar.gz` checksum must match the pin in code.
 Allowed filenames/types, pinned commits and internal hashes are also checked.
 The bundle is built on Ubuntu 22.04 amd64 to retain a glibc 2.35 baseline.
-The same bundle is used on all three supported LTS releases. Only nftables,
+The same bundle is used on all five supported releases. Only nftables,
 iproute2, kmod and their dependencies are installed on the exit; the standard
 tun module is loaded if needed. No general OS upgrade, reboot or SSH change occurs.
 
@@ -160,7 +160,7 @@ directory. Backup and add-client share a lock; avoid manual edits while
 copying. Store the backup encrypted and outside Git. Creating a backup
 does not restart the service.
 
-On **another clean Ubuntu VPS** with this repository and a trusted backup:
+On **another clean supported Debian or Ubuntu VPS** with this repository and a trusted backup:
 
 ```bash
 sudo bash servers/restore-exit.sh --backup /root/private/exit-backup --endpoint NEW_PUBLIC_IPV4
@@ -210,3 +210,5 @@ exit with an RFC1918 Endpoint and refuses public addresses. Never run it on
 a working production server. [Measurements and reboot/restore results](validation-native.md).
 
 Ubuntu 24.04/26.04 checks and CPU-image requirements: [LTS report](validation-lts.md).
+
+Debian 12/13 installation, reboot and restore checks: [Debian report](validation-debian.md).

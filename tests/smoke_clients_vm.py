@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LAB ONLY: verify exported profiles from a separate disposable Ubuntu client VM."""
+"""LAB ONLY: verify exported profiles from a separate disposable Debian/Ubuntu client VM."""
 import argparse
 import contextlib
 import copy

@@ -51,11 +51,21 @@ git commit -m "Initial source release"
 
 ## Проверка выпуска
 
-Из корня исходников:
+Из корня исходников подготовьте venv оператора и запустите тесты.
+Параметр справки настраивает локальную среду без подключения к серверам.
+
+Linux/macOS:
 
 ```bash
-python -m pip install -r requirements-deploy.txt
-python -m unittest discover -s tests -v
+bash setup.sh --help
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+Windows PowerShell:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 --help
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 Paramiko нужен для SSH-тестов; без него один тест host keys будет пропущен.
@@ -67,8 +77,9 @@ Paramiko нужен для SSH-тестов; без него один тест h
 в `dist/awg-native-linux-amd64.tar.gz` и `dist/xray-native-linux-amd64.tar.gz`.
 Xray-пакет содержит лицензию и manifest со ссылкой на исходники закреплённой версии.
 
-Поддерживаются Ubuntu 22.04, 24.04 и 26.04 LTS amd64. Результаты проверок
-приведены в [отчёте LTS](validation-lts.md), [отчёте трёх режимов на 22.04](validation-protocols.md)
+Поддерживаются Debian 12/13 и Ubuntu 22.04/24.04/26.04 LTS amd64. Результаты проверок
+приведены в [отчёте Debian](validation-debian.md), [отчёте LTS](validation-lts.md),
+[отчёте трёх режимов на 22.04](validation-protocols.md)
 и [раннем отчёте AWG](validation-native.md). Правка документации сама по себе
 не означает повторного прохождения полного VM-цикла.
 

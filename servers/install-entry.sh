@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Entry relay for a clean Ubuntu 22.04, 24.04 or 26.04 LTS amd64 server.
+# Entry relay for clean Ubuntu 22.04/24.04/26.04 LTS or Debian 12/13 amd64.
 set -euo pipefail
 export LC_ALL=C
 [[ $EUID == 0 ]] || { echo 'Run as root'; exit 1; }
@@ -20,7 +20,11 @@ if not all(p.isdecimal() and 1 <= int(p) <= 65535 and str(int(p)) == p for p in 
     raise ValueError('Invalid or duplicate UDP ports')
 PY
 source /etc/os-release
-[[ $ID == ubuntu && ( $VERSION_ID == 22.04 || $VERSION_ID == 24.04 || $VERSION_ID == 26.04 ) && $(uname -m) == x86_64 ]] || { echo 'Ubuntu 22.04, 24.04 or 26.04 LTS amd64 required'; exit 1; }
+case "${ID:-}:${VERSION_ID:-}" in
+    ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:12|debian:13) ;;
+    *) echo 'Ubuntu 22.04/24.04/26.04 LTS or Debian 12/13 required'; exit 1 ;;
+esac
+[[ $(uname -m) == x86_64 ]] || { echo 'amd64 required'; exit 1; }
 [[ -d /run/systemd/system ]] || { echo 'systemd is required'; exit 1; }
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 [[ -f $script_dir/rollback-entry.sh && -f $script_dir/confirm-entry.sh ]] || { echo 'Copy the whole servers directory'; exit 1; }

@@ -2,7 +2,7 @@
 
 English | [Русский](ru/servers.md)
 
-Supported releases are **Ubuntu 22.04, 24.04 and 26.04 LTS amd64**.
+Supported releases are **Debian 12/13 and Ubuntu 22.04/24.04/26.04 LTS amd64**.
 The installers reject other releases and architectures.
 
 A forwards traffic with nftables; B runs AWG 3.1, Xray REALITY or both under
@@ -16,7 +16,7 @@ from a complete repository copy.
 
 ## Exit B
 
-AWG requires a clean supported Ubuntu release with systemd, Python 3.10+,
+AWG requires a clean supported Debian or Ubuntu server with systemd, Python 3.10+,
 TUN and an assigned IPv4. No Docker or Go compiler is installed on the exit.
 
 ```bash
@@ -122,3 +122,5 @@ For both protocols, restore AWG first, then Xray with `--with-awg`. A's relay
 is maintained separately.
 
 Ubuntu 24.04/26.04 checks and CPU-image requirements: [LTS report](validation-lts.md).
+
+Debian 12/13 installation, reboot and restore checks: [Debian report](validation-debian.md).

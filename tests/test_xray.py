@@ -21,10 +21,10 @@ def state():
 
 
 class XrayTests(unittest.TestCase):
-    def test_unsupported_lts_host_is_refused_before_commands(self):
-        for version in ('24.10', '26.10'):
-            with self.subTest(version=version), patch.object(Path, 'read_text', return_value=f'ID=ubuntu\nVERSION_ID="{version}"\n'), patch.object(xray, 'run') as command:
-                with self.assertRaisesRegex(ValueError, 'Supported Ubuntu LTS releases'):
+    def test_unsupported_host_is_refused_before_commands(self):
+        for distro, version in (('ubuntu', '24.10'), ('ubuntu', '26.10'), ('debian', '11'), ('debian', '14'), ('other', '13')):
+            with self.subTest(distro=distro, version=version), patch.object(Path, 'read_text', return_value=f'ID={distro}\nVERSION_ID="{version}"\n'), patch.object(xray, 'run') as command:
+                with self.assertRaisesRegex(ValueError, 'Supported server releases'):
                     xray.preflight(None)
                 command.assert_not_called()
 

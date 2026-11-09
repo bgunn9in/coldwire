@@ -4,7 +4,11 @@ set -euo pipefail
 export LC_ALL=C
 [[ $EUID == 0 ]] || { echo 'Root/sudo required'; exit 1; }
 source /etc/os-release
-[[ $ID == ubuntu && ( $VERSION_ID == 22.04 || $VERSION_ID == 24.04 || $VERSION_ID == 26.04 ) && $(uname -m) == x86_64 && -d /run/systemd/system ]] || { echo 'Ubuntu 22.04, 24.04 or 26.04 LTS amd64 with systemd required'; exit 1; }
+case "${ID:-}:${VERSION_ID:-}" in
+    ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:12|debian:13) ;;
+    *) echo 'Ubuntu 22.04/24.04/26.04 LTS or Debian 12/13 required'; exit 1 ;;
+esac
+[[ $(uname -m) == x86_64 && -d /run/systemd/system ]] || { echo 'amd64 with systemd required'; exit 1; }
 for path in /opt/awg-relay-kit /opt/amnezia /etc/awg-relay-kit-exit /etc/awg-relay-kit-xray /var/lib/awg-relay-kit /usr/local/libexec/awg-relay-kit /usr/local/libexec/awg-relay-kit-xray /root/awg-relay-kit-clients /root/awg-relay-kit-xray-clients /etc/blackice-relay.nft /etc/systemd/system/blackice-relay.service; do
     [[ ! -e $path ]] || { echo 'Existing installation/output detected'; exit 1; }
 done
@@ -24,4 +28,4 @@ if [[ ${1:---check} == --bootstrap ]]; then
         apt-get install -y --no-install-recommends "${missing[@]}"
     fi
 fi
-echo 'Clean Ubuntu host check passed'
+echo 'Clean server host check passed'

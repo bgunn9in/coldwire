@@ -2,7 +2,7 @@
 
 English | [Русский](ru/xray.md)
 
-Supported servers run **Ubuntu 22.04, 24.04 or 26.04 LTS amd64**. A forwards
+Supported servers run **Debian 12/13 or Ubuntu 22.04/24.04/26.04 LTS amd64**. A forwards
 TCP in the kernel; B runs Xray as a separate service. Clients connect to A,
 and websites see B's address. No Docker, Go SDK or control
 panel is installed on the VPS. REALITY-only mode does not need TUN.
@@ -137,3 +137,5 @@ provenance. Upgrading requires compatibility checks and explicit pin changes,
 not downloading `latest` automatically. [Sources](sources.md).
 
 Ubuntu 24.04/26.04 checks and CPU-image requirements: [LTS report](validation-lts.md).
+
+Debian 12/13 installation, reboot and restore checks: [Debian report](validation-debian.md).

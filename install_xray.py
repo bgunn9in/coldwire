@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install native Xray/REALITY on clean Ubuntu 22.04, 24.04 or 26.04 LTS amd64."""
+"""Install native Xray/REALITY on clean Ubuntu 22.04/24.04/26.04 LTS or Debian 12/13 amd64."""
 import argparse
 import hashlib
 import ipaddress
@@ -68,7 +68,7 @@ def choose_target(requested=None):
 
 
 def preflight(args):
-    awg.require_supported_ubuntu()
+    awg.require_supported_host()
     address = ipaddress.IPv4Address(args.endpoint)
     private = args.allow_private_endpoint and any(address in ipaddress.IPv4Network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
     if (not address.is_global or address.is_multicast) and not private:

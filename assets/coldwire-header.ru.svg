@@ -15,7 +15,7 @@
 <rect x="40" y="39" width="8" height="8" fill="#78f2bf"/>
 <g font-family="Consolas, Liberation Mono, Menlo, monospace">
   <text x="62" y="51" fill="#78f2bf" font-size="16" letter-spacing="1.5">СЕТЕВЫЕ СИСТЕМЫ / VPN-РЕЛЕ</text>
-  <text x="1240" y="51" text-anchor="end" fill="#91a9b6" font-size="15" letter-spacing="1">UBUNTU LTS / NATIVE SYSTEMD</text>
+  <text x="1240" y="51" text-anchor="end" fill="#91a9b6" font-size="15" letter-spacing="1">DEBIAN / UBUNTU / SYSTEMD</text>
   <path d="M40 112L52 100H904V262L892 274H40Z" fill="#0b171f" fill-opacity=".45" stroke="#314b58"/>
   <path d="M44 116V270H888" fill="none" stroke="#c27be8" stroke-opacity=".27"/>
   <text x="62" y="187" fill="#76dcff" fill-opacity=".18" font-size="92" font-weight="bold" letter-spacing="9" aria-hidden="true">COLDWIRE</text>

@@ -5,7 +5,7 @@ English | [Русский](ru/troubleshooting.md)
 Replace `ENTRY_IPV4`/`EXIT_IPV4` and example interface `ens3` with your own.
 Do not switch the only working VPN for diagnosis. Use a spare device with
 separate access and retain a direct B profile. The installers require clean
-Ubuntu 22.04, 24.04 or 26.04 LTS amd64 servers. They do not repair existing
+Debian 12/13 or Ubuntu 22.04/24.04/26.04 LTS amd64 servers. They do not repair existing
 deployments.
 
 ## Symptoms
@@ -22,6 +22,15 @@ deployments.
 
 Using one peer on two devices moves its Endpoint. Issue separate access.
 Regenerating B's keys invalidates previously issued profiles.
+
+## Installer on Windows
+
+The launcher selects standard CPython 3.10+ from registered versions.
+An unqualified `py -3` can prefer a free-threaded build, as described in
+[Python's Windows guide](https://docs.python.org/3/using/windows.html).
+The current dependency chain failed on Python `3.13t` in testing.
+If an existing `.venv` uses that build, the launcher stops before pip.
+Rename the folder to preserve it, then rerun `setup.ps1` with standard CPython.
 
 ## Windows and client checks
 
@@ -129,7 +138,7 @@ SNI, REALITY key and Vision.
 
 | Phase/symptom | Check |
 |---|---|
-| `XRAY_PREFLIGHT` | Supported Ubuntu LTS amd64, assigned IP, free TCP port, clean server |
+| `XRAY_PREFLIGHT` | Supported Debian/Ubuntu amd64, assigned IP, free TCP port, clean server |
 | `XRAY_TLS_TARGET` | B can reach target, valid certificate and TLS1.3/h2/X25519; optionally use `--reality-target` |
 | `XRAY_BINARY_INSTALL` | Bundle/pinned SHA, disk space, `/usr/local/libexec` permissions |
 | `XRAY_ACTIVATION` | systemd journal, executable permissions, TCP port, LoadCredential and listener readiness |
@@ -153,3 +162,5 @@ Do not publish private config/server.json or client JSON/URI. Running
 `xray run -test -config ...` as root checks syntax, not DynamicUser access or
 client connectivity. Diagnose services independently in `both`; Xray restart
 does not require AWG restart. [Xray maintenance](xray.md).
+
+The [Debian 12/13 report](validation-debian.md) covers all three modes on those releases, including ordinary reboots, restore and full timer expiry.
