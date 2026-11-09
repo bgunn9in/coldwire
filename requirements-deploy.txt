@@ -1,0 +1,2 @@
+# Operator computer only; nothing from this file is installed on either VPS.
+paramiko==5.1.0

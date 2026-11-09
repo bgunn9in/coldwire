@@ -1,0 +1,310 @@
+[
+  {
+    "hostname": "direct-5-45-192-0-18.invalid",
+    "ip": "5.45.192.0/18"
+  },
+  {
+    "hostname": "direct-5-61-16-0-21.invalid",
+    "ip": "5.61.16.0/21"
+  },
+  {
+    "hostname": "direct-5-255-192-0-18.invalid",
+    "ip": "5.255.192.0/18"
+  },
+  {
+    "hostname": "direct-10-0-0-0-8.invalid",
+    "ip": "10.0.0.0/8"
+  },
+  {
+    "hostname": "direct-31-130-128-0-19.invalid",
+    "ip": "31.130.128.0/19"
+  },
+  {
+    "hostname": "direct-37-9-64-0-18.invalid",
+    "ip": "37.9.64.0/18"
+  },
+  {
+    "hostname": "direct-37-220-160-0-21.invalid",
+    "ip": "37.220.160.0/21"
+  },
+  {
+    "hostname": "direct-77-88-0-0-18.invalid",
+    "ip": "77.88.0.0/18"
+  },
+  {
+    "hostname": "direct-78-41-96-0-20.invalid",
+    "ip": "78.41.96.0/20"
+  },
+  {
+    "hostname": "direct-81-161-98-0-23.invalid",
+    "ip": "81.161.98.0/23"
+  },
+  {
+    "hostname": "direct-82-202-188-0-22.invalid",
+    "ip": "82.202.188.0/22"
+  },
+  {
+    "hostname": "direct-84-252-144-0-21.invalid",
+    "ip": "84.252.144.0/21"
+  },
+  {
+    "hostname": "direct-85-198-64-0-20.invalid",
+    "ip": "85.198.64.0/20"
+  },
+  {
+    "hostname": "direct-87-226-128-0-17.invalid",
+    "ip": "87.226.128.0/17"
+  },
+  {
+    "hostname": "direct-87-240-128-0-18.invalid",
+    "ip": "87.240.128.0/18"
+  },
+  {
+    "hostname": "direct-87-250-192-0-18.invalid",
+    "ip": "87.250.192.0/18"
+  },
+  {
+    "hostname": "direct-89-221-232-0-21.invalid",
+    "ip": "89.221.232.0/21"
+  },
+  {
+    "hostname": "direct-90-156-224-0-19.invalid",
+    "ip": "90.156.224.0/19"
+  },
+  {
+    "hostname": "direct-91-198-98-0-24.invalid",
+    "ip": "91.198.98.0/24"
+  },
+  {
+    "hostname": "direct-91-221-164-0-23.invalid",
+    "ip": "91.221.164.0/23"
+  },
+  {
+    "hostname": "direct-91-230-107-0-24.invalid",
+    "ip": "91.230.107.0/24"
+  },
+  {
+    "hostname": "direct-91-232-6-0-23.invalid",
+    "ip": "91.232.6.0/23"
+  },
+  {
+    "hostname": "direct-91-236-48-0-22.invalid",
+    "ip": "91.236.48.0/22"
+  },
+  {
+    "hostname": "direct-93-93-88-0-21.invalid",
+    "ip": "93.93.88.0/21"
+  },
+  {
+    "hostname": "direct-93-158-128-0-18.invalid",
+    "ip": "93.158.128.0/18"
+  },
+  {
+    "hostname": "direct-93-186-224-0-20.invalid",
+    "ip": "93.186.224.0/20"
+  },
+  {
+    "hostname": "direct-94-79-0-0-18.invalid",
+    "ip": "94.79.0.0/18"
+  },
+  {
+    "hostname": "direct-95-129-232-0-21.invalid",
+    "ip": "95.129.232.0/21"
+  },
+  {
+    "hostname": "direct-95-163-0-0-17.invalid",
+    "ip": "95.163.0.0/17"
+  },
+  {
+    "hostname": "direct-100-64-0-0-10.invalid",
+    "ip": "100.64.0.0/10"
+  },
+  {
+    "hostname": "direct-109-235-160-0-21.invalid",
+    "ip": "109.235.160.0/21"
+  },
+  {
+    "hostname": "direct-109-238-88-0-22.invalid",
+    "ip": "109.238.88.0/22"
+  },
+  {
+    "hostname": "direct-135-106-192-0-18.invalid",
+    "ip": "135.106.192.0/18"
+  },
+  {
+    "hostname": "direct-141-8-128-0-18.invalid",
+    "ip": "141.8.128.0/18"
+  },
+  {
+    "hostname": "direct-155-212-192-0-20.invalid",
+    "ip": "155.212.192.0/20"
+  },
+  {
+    "hostname": "direct-155-212-234-0-23.invalid",
+    "ip": "155.212.234.0/23"
+  },
+  {
+    "hostname": "direct-169-254-0-0-16.invalid",
+    "ip": "169.254.0.0/16"
+  },
+  {
+    "hostname": "direct-172-16-0-0-12.invalid",
+    "ip": "172.16.0.0/12"
+  },
+  {
+    "hostname": "direct-176-114-112-0-20.invalid",
+    "ip": "176.114.112.0/20"
+  },
+  {
+    "hostname": "direct-178-130-128-0-20.invalid",
+    "ip": "178.130.128.0/20"
+  },
+  {
+    "hostname": "direct-178-176-0-0-14.invalid",
+    "ip": "178.176.0.0/14"
+  },
+  {
+    "hostname": "direct-178-248-232-0-21.invalid",
+    "ip": "178.248.232.0/21"
+  },
+  {
+    "hostname": "direct-185-11-196-0-22.invalid",
+    "ip": "185.11.196.0/22"
+  },
+  {
+    "hostname": "direct-185-62-200-0-22.invalid",
+    "ip": "185.62.200.0/22"
+  },
+  {
+    "hostname": "direct-185-65-148-0-22.invalid",
+    "ip": "185.65.148.0/22"
+  },
+  {
+    "hostname": "direct-185-71-64-0-21.invalid",
+    "ip": "185.71.64.0/21"
+  },
+  {
+    "hostname": "direct-185-71-76-0-22.invalid",
+    "ip": "185.71.76.0/22"
+  },
+  {
+    "hostname": "direct-185-73-192-0-22.invalid",
+    "ip": "185.73.192.0/22"
+  },
+  {
+    "hostname": "direct-185-129-96-0-21.invalid",
+    "ip": "185.129.96.0/21"
+  },
+  {
+    "hostname": "direct-185-138-252-0-22.invalid",
+    "ip": "185.138.252.0/22"
+  },
+  {
+    "hostname": "direct-185-163-156-0-22.invalid",
+    "ip": "185.163.156.0/22"
+  },
+  {
+    "hostname": "direct-185-170-0-0-22.invalid",
+    "ip": "185.170.0.0/22"
+  },
+  {
+    "hostname": "direct-185-180-200-0-22.invalid",
+    "ip": "185.180.200.0/22"
+  },
+  {
+    "hostname": "direct-188-162-0-0-16.invalid",
+    "ip": "188.162.0.0/16"
+  },
+  {
+    "hostname": "direct-188-186-0-0-15.invalid",
+    "ip": "188.186.0.0/15"
+  },
+  {
+    "hostname": "direct-192-168-0-0-16.invalid",
+    "ip": "192.168.0.0/16"
+  },
+  {
+    "hostname": "direct-193-28-44-0-24.invalid",
+    "ip": "193.28.44.0/24"
+  },
+  {
+    "hostname": "direct-193-200-10-0-24.invalid",
+    "ip": "193.200.10.0/24"
+  },
+  {
+    "hostname": "direct-193-232-0-0-15.invalid",
+    "ip": "193.232.0.0/15"
+  },
+  {
+    "hostname": "direct-194-1-214-0-24.invalid",
+    "ip": "194.1.214.0/24"
+  },
+  {
+    "hostname": "direct-194-190-0-0-16.invalid",
+    "ip": "194.190.0.0/16"
+  },
+  {
+    "hostname": "direct-195-161-0-0-16.invalid",
+    "ip": "195.161.0.0/16"
+  },
+  {
+    "hostname": "direct-195-208-0-0-15.invalid",
+    "ip": "195.208.0.0/15"
+  },
+  {
+    "hostname": "direct-195-242-82-0-23.invalid",
+    "ip": "195.242.82.0/23"
+  },
+  {
+    "hostname": "direct-212-11-128-0-19.invalid",
+    "ip": "212.11.128.0/19"
+  },
+  {
+    "hostname": "direct-212-164-0-0-16.invalid",
+    "ip": "212.164.0.0/16"
+  },
+  {
+    "hostname": "direct-212-193-128-0-17.invalid",
+    "ip": "212.193.128.0/17"
+  },
+  {
+    "hostname": "direct-213-59-128-0-17.invalid",
+    "ip": "213.59.128.0/17"
+  },
+  {
+    "hostname": "direct-213-87-0-0-16.invalid",
+    "ip": "213.87.0.0/16"
+  },
+  {
+    "hostname": "direct-213-165-192-0-19.invalid",
+    "ip": "213.165.192.0/19"
+  },
+  {
+    "hostname": "direct-213-180-192-0-19.invalid",
+    "ip": "213.180.192.0/19"
+  },
+  {
+    "hostname": "direct-213-184-128-0-19.invalid",
+    "ip": "213.184.128.0/19"
+  },
+  {
+    "hostname": "direct-217-12-96-0-20.invalid",
+    "ip": "217.12.96.0/20"
+  },
+  {
+    "hostname": "direct-217-20-144-0-20.invalid",
+    "ip": "217.20.144.0/20"
+  },
+  {
+    "hostname": "direct-217-77-104-0-21.invalid",
+    "ip": "217.77.104.0/21"
+  },
+  {
+    "hostname": "direct-217-118-64-0-19.invalid",
+    "ip": "217.118.64.0/19"
+  },
+  {
+    "hostname": "direct-217-198-0-0-20.invalid",
+    "ip": "217.198.0.0/20"
+  }
+]
