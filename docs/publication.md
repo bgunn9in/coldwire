@@ -102,6 +102,6 @@ added six fresh VM cycles and 24 guest reboots with a locally patched QEMU/WHPX
 test build. VPN scripts and released bundles remained unchanged.
 
 The later prose review retained English as the default and the Russian
-translations. The README topology now uses matching English and Russian
+translations. The README header and topology use matching English and Russian
 SVGs. Scripts, commands, address data, binary bundles and both RU JSON files
 were unchanged; the VM cycle was not rerun for these documentation changes.

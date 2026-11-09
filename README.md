@@ -1,7 +1,5 @@
 # COLDWIRE
 
-VPN RELAY DEPLOYMENT SYSTEM
-
 ![COLDWIRE: VPN RELAY DEPLOYMENT SYSTEM](assets/coldwire-header.svg)
 
 English | [Русский](README.ru.md)
@@ -58,10 +56,10 @@ the installer. It cannot change that firewall through SSH alone. If SSH uses
 TCP443, the wizard can select a free TCP8443; other port conflicts stop the
 installation. You can also set VPN ports explicitly.
 
-The installer requires clean servers and refuses existing toolkit state,
-active UFW or foreign nftables tables. The wizard trusts the first SSH key
-it receives and rejects later changes before sending a password. To verify
-first contact independently, provide known SSH fingerprints.
+The installer requires clean servers and refuses an existing toolkit
+installation, active UFW or nftables tables from other software. The wizard
+trusts the first SSH key it receives and rejects later changes before sending
+a password. To verify first contact independently, provide known SSH fingerprints.
 [Installation options and SSH verification](docs/deploy.md).
 
 ## Client profiles

@@ -5,22 +5,23 @@ selected by the project maintainer. It depicts an angular C/W conductor
 monogram with square contacts and an ice-blue frame. It is not copied from
 the branding of Amnezia, Xray or any third-party VPN application.
 
-`coldwire-logo.png` is the original generated PNG. `coldwire-header.svg`
-embeds those PNG bytes without modifying them. The routing diagrams,
+`coldwire-logo.png` is the original generated PNG. The headers,
+`coldwire-header.svg` and `coldwire-header.ru.svg`, embed those PNG bytes
+without modifying them. The routing diagrams,
 `coldwire-topology.svg` and `coldwire-topology.ru.svg`, are original SVG
-artwork in English and Russian. They use the same topology with a dark
-terminal grid, phosphor lines and an amber direct route, inspired by
-1980s and 1990s cyberpunk. All four assets use the project's
-[MIT license](../LICENSE).
+artwork in English and Russian. The headers and diagrams share a dark
+terminal grid, phosphor lines, cut corners and faint scanlines, inspired by
+1980s and 1990s cyberpunk. The direct route uses amber. All five assets use
+the project's [MIT license](../LICENSE).
 
 The self-contained SVGs have dark backgrounds for light and dark GitHub
 themes. They use system monospace fonts and faint coordinate grids. The
-header shows Client → Entry A → Exit B → Internet. The routing diagrams also
-show selected Russian destinations reached directly through the ISP. Each
-diagram has a text title and description. These are topology drawings;
+headers show Client → Entry A → Exit B → Internet. The routing diagrams also
+show selected Russian destinations reached directly through the ISP. Each SVG
+has a title and description in its language. These are topology drawings;
 they do not report live deployment status. The SVGs contain no scripts,
 external fonts or tracking requests.
 
-The header palette is `#070d13`, `#0e1922`, `#2d4653`, `#e6f1f5`, `#a5bac5`,
-mint `#66dbb2`, ice blue `#67b7ff` and violet `#baa0ff`. Commands remain
-selectable text in standard Markdown.
+The SVG palette uses background `#060c12`, panels `#0b171f`, borders `#314b58`,
+text `#e7f5f3` and `#a4b9c3`, mint `#78f2bf`, cyan `#76dcff`, violet `#c27be8`
+and amber `#f2bd73`. Commands remain selectable text in standard Markdown.

@@ -33,7 +33,7 @@ on B. Conversion does not create users or connect to servers. `--entry` is
 required; replace `ENTRY_IPV4` with your entry address. `--port` defaults to
 32497. No server addresses are preconfigured.
 
-## A normal new client
+## Create a client
 
 1. In the application's administrator connection to B, create a **separate
    client for the new device**.
