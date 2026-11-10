@@ -166,6 +166,10 @@ also covers guest reboots and full five-minute rollback expiry. The
 These short runs do not establish the maximum speed or number of clients
 a VPS can handle.
 
+A lab-only [Header Protection + MAC1 prefilter](experimental/awg-prefilter/README.md)
+has separate interoperability and performance measurements. The installers do
+not enable it.
+
 The relay separates entry and exit IPs and keeps the protocol's encryption.
 It adds no second tunnel layer and does not prevent traffic correlation.
 REALITY does not guarantee evasion of every DPI system. AWG remains a UDP

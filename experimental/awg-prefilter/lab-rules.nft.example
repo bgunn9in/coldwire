@@ -1,0 +1,19 @@
+# Disposable IPv4 lab only. Replace the interface and private lab addresses.
+define wan = "enp0s3"
+define entry = 192.168.76.10
+define backend = 192.168.76.20
+define entry_port = 32497
+define backend_port = 32497
+
+table ip awg_prefilter_lab {
+    chain early {
+        type filter hook prerouting priority raw; policy accept;
+        iifname $wan ip daddr $entry ip saddr $backend udp sport $backend_port counter return
+        iifname $wan ip daddr $entry udp dport $entry_port counter queue num 100
+    }
+    chain backend_original {
+        type filter hook prerouting priority mangle; policy accept;
+        # Only conntrack replies may bypass MAC1, whose recipient is then the client.
+        iifname $wan ip daddr $entry ip saddr $backend udp sport $backend_port udp dport $entry_port ct direction original counter queue num 100
+    }
+}

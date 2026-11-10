@@ -1,0 +1,455 @@
+{
+  "date": "2026-11-10",
+  "status": "lab prototype; not client authentication; not enabled by installers",
+  "resources_per_guest": {
+    "vcpus": 1,
+    "ram_mib": 1024
+  },
+  "guest_roles": [
+    "client",
+    "entry",
+    "exit",
+    "independent-noise-sender"
+  ],
+  "platform": {
+    "distribution": "Debian 13.7 amd64",
+    "kernel": "6.12.115+deb13.1-cloud-amd64",
+    "openssl": "OpenSSL 3.5.7 9 Jun 2026 (Library: OpenSSL 3.5.7 9 Jun 2026)",
+    "nftables": "nftables v1.1.3 (Commodore Bullmoose #4)",
+    "gcc": "cc (Debian 14.2.0-19) 14.2.0",
+    "libnetfilter_queue": "1.0.5",
+    "qemu": "11.1.3, local WHPX reboot fix",
+    "cpu_model": "max",
+    "network": "learning Ethernet switch v2, localhost TCP sockets, no Windows adapters/routes changed"
+  },
+  "source_sha256": "7378ba3442035c3cffd7bc31f5d779a2a4c6bd06fa17768f146408f538aa741f",
+  "binary_sha256": "2c70c847730a16e03d5d3724a5128bbb6835018f4ed1708d6ee4806d57aa996e",
+  "awg_core_commit": "1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1",
+  "tests": {
+    "offline": 14,
+    "asan_ubsan": 14,
+    "existing_windows_unit_suite": 48
+  },
+  "compatibility": {
+    "two_fresh_native_clients": true,
+    "both_clients_https_dns_egress": true,
+    "mtu_1280_df_ping_1200": true,
+    "server_initiated_handshake_response_mac1": true,
+    "wrong_hpk_no_vpn_access": true,
+    "unknown_client_no_vpn_access": true,
+    "source_ip_and_port_roaming": true,
+    "queue_crash_is_fail_closed": true,
+    "remove_only_guard_restores_dnat": true,
+    "relay_rules_unchanged": true
+  },
+  "spoofed_backend": {
+    "spoofed_backend_packets": 100,
+    "checked_in_original_direction": 100,
+    "dropped_header": 100,
+    "client_still_works": true
+  },
+  "keyless_captured_header": {
+    "attacker_has_no_key_file": true,
+    "captured_header_modified_payload": true,
+    "sent": 100,
+    "accepted_transport_at_least": 100,
+    "legitimate_client_still_works": true
+  },
+  "public_artifacts": {
+    "literal_example_rules_work": true,
+    "export_keys_cli_matches": true,
+    "both_clients_work": true
+  },
+  "tcp_method": {
+    "repeats_per_mode_direction": 3,
+    "measurement_seconds": 12,
+    "omit_seconds": 2,
+    "mode_order": [
+      "dnat/filter",
+      "filter/dnat",
+      "dnat/filter"
+    ]
+  },
+  "tcp": [
+    {
+      "trial": 1,
+      "mode": "dnat",
+      "direction": "upload",
+      "mbps": 236.1170178829446,
+      "entry_cpu_percent": 3.2482598607888633,
+      "filter_rss_kib": null,
+      "filter_process_cpu_percent": null,
+      "queue": null
+    },
+    {
+      "trial": 1,
+      "mode": "dnat",
+      "direction": "download",
+      "mbps": 227.1224633259908,
+      "entry_cpu_percent": 3.674745895230649,
+      "filter_rss_kib": null,
+      "filter_process_cpu_percent": null,
+      "queue": null
+    },
+    {
+      "trial": 1,
+      "mode": "filter",
+      "direction": "upload",
+      "mbps": 232.79729542611315,
+      "entry_cpu_percent": 33.10152990264256,
+      "filter_rss_kib": 6460,
+      "filter_process_cpu_percent": 22.70371831587598,
+      "queue": {
+        "pending": 0,
+        "queue_dropped": 0,
+        "netlink_dropped": 0
+      }
+    },
+    {
+      "trial": 1,
+      "mode": "filter",
+      "direction": "download",
+      "mbps": 224.41396516376363,
+      "entry_cpu_percent": 21.872863978127135,
+      "filter_rss_kib": 6460,
+      "filter_process_cpu_percent": 6.128282894541942,
+      "queue": {
+        "pending": 0,
+        "queue_dropped": 0,
+        "netlink_dropped": 0
+      }
+    },
+    {
+      "trial": 2,
+      "mode": "filter",
+      "direction": "upload",
+      "mbps": 233.44548663674448,
+      "entry_cpu_percent": 32.42487770789658,
+      "filter_rss_kib": 6464,
+      "filter_process_cpu_percent": 22.353621459264975,
+      "queue": {
+        "pending": 0,
+        "queue_dropped": 0,
+        "netlink_dropped": 0
+      }
+    },
+    {
+      "trial": 2,
+      "mode": "filter",
+      "direction": "download",
+      "mbps": 224.83316367980623,
+      "entry_cpu_percent": 21.697467488021903,
+      "filter_rss_kib": 6464,
+      "filter_process_cpu_percent": 6.204570317532533,
+      "queue": {
+        "pending": 0,
+        "queue_dropped": 0,
+        "netlink_dropped": 0
+      }
+    },
+    {
+      "trial": 2,
+      "mode": "dnat",
+      "direction": "upload",
+      "mbps": 234.6067015739444,
+      "entry_cpu_percent": 3.2532920216886136,
+      "filter_rss_kib": null,
+      "filter_process_cpu_percent": null,
+      "queue": null
+    },
+    {
+      "trial": 2,
+      "mode": "dnat",
+      "direction": "download",
+      "mbps": 224.56635874947375,
+      "entry_cpu_percent": 3.1446540880503147,
+      "filter_rss_kib": null,
+      "filter_process_cpu_percent": null,
+      "queue": null
+    },
+    {
+      "trial": 3,
+      "mode": "dnat",
+      "direction": "upload",
+      "mbps": 233.646779761316,
+      "entry_cpu_percent": 2.7950310559006213,
+      "filter_rss_kib": null,
+      "filter_process_cpu_percent": null,
+      "queue": null
+    },
+    {
+      "trial": 3,
+      "mode": "dnat",
+      "direction": "download",
+      "mbps": 226.12755168107762,
+      "entry_cpu_percent": 3.5294117647058822,
+      "filter_rss_kib": null,
+      "filter_process_cpu_percent": null,
+      "queue": null
+    },
+    {
+      "trial": 3,
+      "mode": "filter",
+      "direction": "upload",
+      "mbps": 235.0505552561022,
+      "entry_cpu_percent": 33.908839779005525,
+      "filter_rss_kib": 6456,
+      "filter_process_cpu_percent": 22.85320223835117,
+      "queue": {
+        "pending": 0,
+        "queue_dropped": 0,
+        "netlink_dropped": 0
+      }
+    },
+    {
+      "trial": 3,
+      "mode": "filter",
+      "direction": "download",
+      "mbps": 225.02532915399166,
+      "entry_cpu_percent": 21.751025991792066,
+      "filter_rss_kib": 6456,
+      "filter_process_cpu_percent": 6.049725077163242,
+      "queue": {
+        "pending": 0,
+        "queue_dropped": 0,
+        "netlink_dropped": 0
+      }
+    }
+  ],
+  "noise": [
+    {
+      "mode": "dnat",
+      "kind": "random",
+      "sent": 9000,
+      "pps": 2999.9102786831945,
+      "arrived_at_exit": 9000,
+      "exit_skb_packets": 802,
+      "exit_counter_bytes": 2326456
+    },
+    {
+      "mode": "dnat",
+      "kind": "wrong_hpk",
+      "sent": 9000,
+      "pps": 2999.9008902743212,
+      "arrived_at_exit": 9000,
+      "exit_skb_packets": 825,
+      "exit_counter_bytes": 1463100
+    },
+    {
+      "mode": "dnat",
+      "kind": "bad_mac",
+      "sent": 9000,
+      "pps": 2999.905586971229,
+      "arrived_at_exit": 9000,
+      "exit_skb_packets": 806,
+      "exit_counter_bytes": 1462568
+    },
+    {
+      "mode": "dnat",
+      "kind": "valid_unknown",
+      "sent": 9000,
+      "pps": 2999.9119695830827,
+      "arrived_at_exit": 9000,
+      "exit_skb_packets": 789,
+      "exit_counter_bytes": 1462092
+    },
+    {
+      "mode": "dnat",
+      "kind": "forged_transport",
+      "sent": 9000,
+      "pps": 2999.9141424573436,
+      "arrived_at_exit": 9000,
+      "exit_skb_packets": 787,
+      "exit_counter_bytes": 418036
+    },
+    {
+      "mode": "filter",
+      "kind": "random",
+      "sent": 9000,
+      "pps": 2999.903097130203,
+      "arrived_at_exit": 0,
+      "exit_skb_packets": 0,
+      "exit_counter_bytes": 0
+    },
+    {
+      "mode": "filter",
+      "kind": "wrong_hpk",
+      "sent": 9000,
+      "pps": 2999.9119405848646,
+      "arrived_at_exit": 0,
+      "exit_skb_packets": 0,
+      "exit_counter_bytes": 0
+    },
+    {
+      "mode": "filter",
+      "kind": "bad_mac",
+      "sent": 9000,
+      "pps": 2999.9039730736995,
+      "arrived_at_exit": 0,
+      "exit_skb_packets": 0,
+      "exit_counter_bytes": 0
+    },
+    {
+      "mode": "filter",
+      "kind": "valid_unknown",
+      "sent": 9000,
+      "pps": 2999.895392647596,
+      "arrived_at_exit": 9000,
+      "exit_skb_packets": 826,
+      "exit_counter_bytes": 1463128
+    },
+    {
+      "mode": "filter",
+      "kind": "forged_transport",
+      "sent": 9000,
+      "pps": 2999.916603318395,
+      "arrived_at_exit": 9000,
+      "exit_skb_packets": 833,
+      "exit_counter_bytes": 419324
+    }
+  ],
+  "flow_pressure": [
+    {
+      "mode": "filter",
+      "udp_source_tuples": 4096,
+      "sent": 40000,
+      "pps": 9999.775992518404,
+      "entry_conntrack_before": 34,
+      "entry_conntrack_after": 35
+    },
+    {
+      "mode": "dnat",
+      "udp_source_tuples": 4096,
+      "sent": 40000,
+      "pps": 9999.790044408335,
+      "entry_conntrack_before": 37,
+      "entry_conntrack_after": 4114
+    }
+  ],
+  "concurrent_noise": [
+    {
+      "mode": "dnat",
+      "requested_pps": 0,
+      "actual_sender_pps": 0,
+      "mbps": 232.75763358305312,
+      "entry_cpu_percent": 2.0408163265306123,
+      "filter_rss_kib": null,
+      "queue": null,
+      "switch_dropped_frames": 0,
+      "iperf_error": null
+    },
+    {
+      "mode": "dnat",
+      "requested_pps": 10000,
+      "actual_sender_pps": 9999.926385542045,
+      "mbps": 182.535132473425,
+      "entry_cpu_percent": 2.4038461538461537,
+      "filter_rss_kib": null,
+      "queue": null,
+      "switch_dropped_frames": 0,
+      "iperf_error": null
+    },
+    {
+      "mode": "dnat",
+      "requested_pps": 30000,
+      "actual_sender_pps": 29999.80094382099,
+      "mbps": 134.74680862845298,
+      "entry_cpu_percent": 10.212201591511937,
+      "filter_rss_kib": null,
+      "queue": null,
+      "switch_dropped_frames": 0,
+      "iperf_error": null
+    },
+    {
+      "mode": "dnat",
+      "requested_pps": 60000,
+      "actual_sender_pps": 59999.63441222736,
+      "mbps": 162.68458310883105,
+      "entry_cpu_percent": 59.69788519637462,
+      "filter_rss_kib": null,
+      "queue": null,
+      "switch_dropped_frames": 0,
+      "iperf_error": null
+    },
+    {
+      "mode": "filter",
+      "requested_pps": 0,
+      "actual_sender_pps": 0,
+      "mbps": 209.1812462735483,
+      "entry_cpu_percent": 29.680851063829788,
+      "filter_rss_kib": 6464,
+      "queue": {
+        "pending": 0,
+        "queue_dropped": 0,
+        "netlink_dropped": 0
+      },
+      "switch_dropped_frames": 0,
+      "iperf_error": null
+    },
+    {
+      "mode": "filter",
+      "requested_pps": 10000,
+      "actual_sender_pps": 9999.90922332416,
+      "mbps": 178.9301619149097,
+      "entry_cpu_percent": 33.47457627118644,
+      "filter_rss_kib": 6460,
+      "queue": {
+        "pending": 0,
+        "queue_dropped": 0,
+        "netlink_dropped": 0
+      },
+      "switch_dropped_frames": 0,
+      "iperf_error": null
+    },
+    {
+      "mode": "filter",
+      "requested_pps": 30000,
+      "actual_sender_pps": 29999.811553683718,
+      "mbps": 153.68547158532715,
+      "entry_cpu_percent": 46.74250258531541,
+      "filter_rss_kib": 6464,
+      "queue": {
+        "pending": 18,
+        "queue_dropped": 0,
+        "netlink_dropped": 0
+      },
+      "switch_dropped_frames": 0,
+      "iperf_error": null
+    },
+    {
+      "mode": "filter",
+      "requested_pps": 60000,
+      "actual_sender_pps": 59999.600927654654,
+      "mbps": 125.4174198642937,
+      "entry_cpu_percent": 66.66666666666667,
+      "filter_rss_kib": 6460,
+      "queue": {
+        "pending": 75,
+        "queue_dropped": 3281,
+        "netlink_dropped": 0
+      },
+      "switch_dropped_frames": 0,
+      "iperf_error": null
+    }
+  ],
+  "limits": {
+    "outer_ipv6": false,
+    "s1_s4": 12,
+    "h1_h4": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "tunnel_mtu": 1280,
+    "physical_client_guis_tested": false,
+    "other_distributions_tested_for_prototype": false,
+    "dpi_or_internet_ddos_tested": false,
+    "long_duration_tested": false
+  },
+  "cleanup": {
+    "all_guests_and_helpers_stopped": true,
+    "loopback_ports_released": true,
+    "live_vps_or_vpn_modified": false
+  }
+}
