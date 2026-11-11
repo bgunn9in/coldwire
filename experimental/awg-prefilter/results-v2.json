@@ -1,0 +1,2652 @@
+{
+  "date": "2026-11-11",
+  "status": "isolated-lab-follow-up",
+  "resources_per_guest": {
+    "vcpus": 1,
+    "configured_ram_mib": 1024
+  },
+  "environment": {
+    "kernel": "6.12.115+deb13.1-cloud-amd64",
+    "openssl": "OpenSSL 3.5.7 9 Jun 2026 (Library: OpenSSL 3.5.7 9 Jun 2026)",
+    "nftables": "nftables v1.1.3 (Commodore Bullmoose #4)",
+    "gcc": "cc (Debian 14.2.0-19) 14.2.0",
+    "libnetfilter_queue": "1.0.5",
+    "binary_sha256": {
+      "prefilter": "8d3b21dd0559a62a5f55a8dd11c58d552332d564155b4d2ab1d72f221f77aa16",
+      "prefilter-full": "23fe1429886e64a0be17288a2673deb15464d3df57e6e54cfc2ecf8e0586ce5f",
+      "prefilter-asan": "b833c91119086578f16e611595358f93962a53f908ad978741772c0e922d82bf",
+      "prefilter-profile": "2a08aac3509120443c4f96301981fa208573c1b997198b0e72d781d41c405ff9"
+    },
+    "resources": {
+      "entry": {
+        "vcpus": 1,
+        "mem_total_kib": 991164
+      },
+      "exit": {
+        "vcpus": 1,
+        "mem_total_kib": 991164
+      },
+      "client": {
+        "vcpus": 1,
+        "mem_total_kib": 991164
+      },
+      "attacker": {
+        "vcpus": 1,
+        "mem_total_kib": 991164
+      }
+    }
+  },
+  "source_sha256": {
+    "prefilter.c": "041f246b9e966d33bcdb81a5554eb6baa7377f01ce47502cbf8a27659b5b3f42",
+    "lab-kernel-guard.nft.example": "f50508d6dd45b89f6711b270a76dfdbdcf3ac275cd3800d0d4cbf0ced51b4de9",
+    "test_prefilter.py": "6e86e7092f9cab0930b788975e8e359b0309359ca47bd914677bb966644c3c17"
+  },
+  "baseline_source_commit": "4744e828ed3ac139567c3c622081ce5764b9d4ff",
+  "copy_range_bytes": 212,
+  "offline_tests": {
+    "optimized": 16,
+    "asan_ubsan": 16,
+    "profile": 16
+  },
+  "project_python_tests": {
+    "passed": 50,
+    "skipped": 0
+  },
+  "tcp_method": {
+    "repetitions": 3,
+    "seconds_after_warmup": 8,
+    "warmup_seconds": 1,
+    "mode_order": "rotated",
+    "profiling": false
+  },
+  "tcp": [
+    {
+      "iteration": 0,
+      "mode": "dnat",
+      "direction": "upload",
+      "mbps": 143.3265667177826,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 78.65044247787611,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "10"
+        },
+        "exit": {
+          "cpu_percent": 51.84794086589229,
+          "rss_kib": 59752,
+          "queue": null,
+          "conntrack": "15"
+        },
+        "client": {
+          "cpu_percent": 26.354941551540914,
+          "rss_kib": 47052,
+          "queue": null,
+          "conntrack": "15"
+        }
+      }
+    },
+    {
+      "iteration": 0,
+      "mode": "dnat",
+      "direction": "download",
+      "mbps": 133.69507776470263,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 80.98987626546682,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "12"
+        },
+        "exit": {
+          "cpu_percent": 24.32723358449946,
+          "rss_kib": 67880,
+          "queue": null,
+          "conntrack": "19"
+        },
+        "client": {
+          "cpu_percent": 55.9915164369035,
+          "rss_kib": 47300,
+          "queue": null,
+          "conntrack": "18"
+        }
+      }
+    },
+    {
+      "iteration": 0,
+      "mode": "kernel",
+      "direction": "upload",
+      "mbps": 156.63316585149724,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 84.32250839865621,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "15"
+        },
+        "exit": {
+          "cpu_percent": 49.946409431939976,
+          "rss_kib": 80304,
+          "queue": null,
+          "conntrack": "24"
+        },
+        "client": {
+          "cpu_percent": 32.1978021978022,
+          "rss_kib": 48244,
+          "queue": null,
+          "conntrack": "22"
+        }
+      }
+    },
+    {
+      "iteration": 0,
+      "mode": "kernel",
+      "direction": "download",
+      "mbps": 130.8097742438911,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 79.93119266055047,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "17"
+        },
+        "exit": {
+          "cpu_percent": 25.268817204301076,
+          "rss_kib": 87556,
+          "queue": null,
+          "conntrack": "28"
+        },
+        "client": {
+          "cpu_percent": 54.66101694915254,
+          "rss_kib": 48152,
+          "queue": null,
+          "conntrack": "25"
+        }
+      }
+    },
+    {
+      "iteration": 0,
+      "mode": "filter",
+      "direction": "upload",
+      "mbps": 149.9153947761003,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 31.86221743810549,
+          "rss_kib": 6444,
+          "queue": "100   4546     0 2   212     0     0   136336  1",
+          "conntrack": "20"
+        },
+        "exit": {
+          "cpu_percent": 45.44468546637744,
+          "rss_kib": 83060,
+          "queue": null,
+          "conntrack": "33"
+        },
+        "client": {
+          "cpu_percent": 33.993399339933994,
+          "rss_kib": 51484,
+          "queue": null,
+          "conntrack": "29"
+        }
+      }
+    },
+    {
+      "iteration": 0,
+      "mode": "filter",
+      "direction": "download",
+      "mbps": 143.01542671236507,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 54.40860215053763,
+          "rss_kib": 6444,
+          "queue": "100   4546     0 2   212     0     0   176541  1",
+          "conntrack": "5"
+        },
+        "exit": {
+          "cpu_percent": 23.060344827586206,
+          "rss_kib": 83296,
+          "queue": null,
+          "conntrack": "16"
+        },
+        "client": {
+          "cpu_percent": 51.851851851851855,
+          "rss_kib": 48256,
+          "queue": null,
+          "conntrack": "32"
+        }
+      }
+    },
+    {
+      "iteration": 0,
+      "mode": "combined",
+      "direction": "upload",
+      "mbps": 138.15115517843773,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 31.896551724137932,
+          "rss_kib": 6436,
+          "queue": "100   4629     0 2   212     0     0   128277  1",
+          "conntrack": "8"
+        },
+        "exit": {
+          "cpu_percent": 44.696969696969695,
+          "rss_kib": 87096,
+          "queue": null,
+          "conntrack": "21"
+        },
+        "client": {
+          "cpu_percent": 30.97826086956522,
+          "rss_kib": 49236,
+          "queue": null,
+          "conntrack": "10"
+        }
+      }
+    },
+    {
+      "iteration": 0,
+      "mode": "combined",
+      "direction": "download",
+      "mbps": 131.7119497018849,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 49.38132733408324,
+          "rss_kib": 6436,
+          "queue": "100   4629     0 2   212     0     0   165480  1",
+          "conntrack": "10"
+        },
+        "exit": {
+          "cpu_percent": 22.63948497854077,
+          "rss_kib": 83844,
+          "queue": null,
+          "conntrack": "25"
+        },
+        "client": {
+          "cpu_percent": 48.922413793103445,
+          "rss_kib": 51680,
+          "queue": null,
+          "conntrack": "13"
+        }
+      }
+    },
+    {
+      "iteration": 0,
+      "mode": "full-filter",
+      "direction": "upload",
+      "mbps": 145.16041317863758,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 29.891304347826086,
+          "rss_kib": 6440,
+          "queue": "100   4714     0 2 65531     0     0   132696  1",
+          "conntrack": "13"
+        },
+        "exit": {
+          "cpu_percent": 45.46436285097192,
+          "rss_kib": 85200,
+          "queue": null,
+          "conntrack": "30"
+        },
+        "client": {
+          "cpu_percent": 26.338797814207652,
+          "rss_kib": 50884,
+          "queue": null,
+          "conntrack": "17"
+        }
+      }
+    },
+    {
+      "iteration": 0,
+      "mode": "full-filter",
+      "direction": "download",
+      "mbps": 132.90376847064354,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 53.6231884057971,
+          "rss_kib": 6440,
+          "queue": "100   4714     0 2 65531     0     0   168790  1",
+          "conntrack": "15"
+        },
+        "exit": {
+          "cpu_percent": 24.758842443729904,
+          "rss_kib": 87572,
+          "queue": null,
+          "conntrack": "33"
+        },
+        "client": {
+          "cpu_percent": 51.93312434691745,
+          "rss_kib": 50304,
+          "queue": null,
+          "conntrack": "20"
+        }
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "kernel",
+      "direction": "upload",
+      "mbps": 148.82291860475638,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 80.69364161849711,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "18"
+        },
+        "exit": {
+          "cpu_percent": 48.80952380952381,
+          "rss_kib": 85280,
+          "queue": null,
+          "conntrack": "38"
+        },
+        "client": {
+          "cpu_percent": 25.109649122807017,
+          "rss_kib": 50616,
+          "queue": null,
+          "conntrack": "24"
+        }
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "kernel",
+      "direction": "download",
+      "mbps": 131.20369521755228,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 87.11111111111111,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "5"
+        },
+        "exit": {
+          "cpu_percent": 22.103004291845494,
+          "rss_kib": 84968,
+          "queue": null,
+          "conntrack": "22"
+        },
+        "client": {
+          "cpu_percent": 54.23728813559322,
+          "rss_kib": 49612,
+          "queue": null,
+          "conntrack": "27"
+        }
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "filter",
+      "direction": "upload",
+      "mbps": 148.41299413845206,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 29.86036519871106,
+          "rss_kib": 6444,
+          "queue": "100   4876     0 2   212     0     0   137716  1",
+          "conntrack": "8"
+        },
+        "exit": {
+          "cpu_percent": 44.143167028199564,
+          "rss_kib": 89968,
+          "queue": null,
+          "conntrack": "27"
+        },
+        "client": {
+          "cpu_percent": 26.868905742145177,
+          "rss_kib": 49592,
+          "queue": null,
+          "conntrack": "9"
+        }
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "filter",
+      "direction": "download",
+      "mbps": 140.51130923355217,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 57.5192096597146,
+          "rss_kib": 6444,
+          "queue": "100   4876     0 2   212     0     0   176608  1",
+          "conntrack": "10"
+        },
+        "exit": {
+          "cpu_percent": 22.234156820622985,
+          "rss_kib": 89944,
+          "queue": null,
+          "conntrack": "31"
+        },
+        "client": {
+          "cpu_percent": 50.583244962884415,
+          "rss_kib": 53196,
+          "queue": null,
+          "conntrack": "12"
+        }
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "combined",
+      "direction": "upload",
+      "mbps": 149.94521616584598,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 31.896551724137932,
+          "rss_kib": 6440,
+          "queue": "100   4959     0 2   212     0     0   138438  1",
+          "conntrack": "13"
+        },
+        "exit": {
+          "cpu_percent": 45.053763440860216,
+          "rss_kib": 94864,
+          "queue": null,
+          "conntrack": "36"
+        },
+        "client": {
+          "cpu_percent": 30.970556161395855,
+          "rss_kib": 50060,
+          "queue": null,
+          "conntrack": "16"
+        }
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "combined",
+      "direction": "download",
+      "mbps": 133.02387970084195,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 51.3215859030837,
+          "rss_kib": 6440,
+          "queue": "100   4959     0 2   212     0     0   175929  1",
+          "conntrack": "15"
+        },
+        "exit": {
+          "cpu_percent": 21.05831533477322,
+          "rss_kib": 97476,
+          "queue": null,
+          "conntrack": "40"
+        },
+        "client": {
+          "cpu_percent": 50.805585392051555,
+          "rss_kib": 49904,
+          "queue": null,
+          "conntrack": "19"
+        }
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "full-filter",
+      "direction": "upload",
+      "mbps": 149.6849079388744,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 28.833693304535636,
+          "rss_kib": 6444,
+          "queue": "100   5044     0 2 65531     0     0   135819  1",
+          "conntrack": "18"
+        },
+        "exit": {
+          "cpu_percent": 43.044906900328584,
+          "rss_kib": 94212,
+          "queue": null,
+          "conntrack": "45"
+        },
+        "client": {
+          "cpu_percent": 23.721436343852012,
+          "rss_kib": 50708,
+          "queue": null,
+          "conntrack": "23"
+        }
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "full-filter",
+      "direction": "download",
+      "mbps": 139.72874286985055,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 48.891352549889135,
+          "rss_kib": 6444,
+          "queue": "100   5044     0 2 65531     0     0   174895  1",
+          "conntrack": "20"
+        },
+        "exit": {
+          "cpu_percent": 20.950323974082075,
+          "rss_kib": 86896,
+          "queue": null,
+          "conntrack": "49"
+        },
+        "client": {
+          "cpu_percent": 50.858369098712444,
+          "rss_kib": 49628,
+          "queue": null,
+          "conntrack": "26"
+        }
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "dnat",
+      "direction": "upload",
+      "mbps": 145.9993067993601,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 76.92307692307692,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "8"
+        },
+        "exit": {
+          "cpu_percent": 49.46236559139785,
+          "rss_kib": 86704,
+          "queue": null,
+          "conntrack": "26"
+        },
+        "client": {
+          "cpu_percent": 24.56140350877193,
+          "rss_kib": 49092,
+          "queue": null,
+          "conntrack": "10"
+        }
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "dnat",
+      "direction": "download",
+      "mbps": 133.17353007980137,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 86.73469387755102,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "10"
+        },
+        "exit": {
+          "cpu_percent": 22.96137339055794,
+          "rss_kib": 88056,
+          "queue": null,
+          "conntrack": "30"
+        },
+        "client": {
+          "cpu_percent": 55.30546623794212,
+          "rss_kib": 49636,
+          "queue": null,
+          "conntrack": "13"
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "mode": "filter",
+      "direction": "upload",
+      "mbps": 155.35114907538411,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 31.905781584582442,
+          "rss_kib": 6440,
+          "queue": "100   5206     0 2   212     0     0   143041  1",
+          "conntrack": "13"
+        },
+        "exit": {
+          "cpu_percent": 45.52238805970149,
+          "rss_kib": 86752,
+          "queue": null,
+          "conntrack": "35"
+        },
+        "client": {
+          "cpu_percent": 32.53796095444685,
+          "rss_kib": 49964,
+          "queue": null,
+          "conntrack": "17"
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "mode": "filter",
+      "direction": "download",
+      "mbps": 143.38534780825094,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 52.53863134657836,
+          "rss_kib": 6440,
+          "queue": "100   5206     0 2   212     0     0   182657  1",
+          "conntrack": "15"
+        },
+        "exit": {
+          "cpu_percent": 20.36637931034483,
+          "rss_kib": 89212,
+          "queue": null,
+          "conntrack": "39"
+        },
+        "client": {
+          "cpu_percent": 50.42643923240938,
+          "rss_kib": 53620,
+          "queue": null,
+          "conntrack": "20"
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "mode": "combined",
+      "direction": "upload",
+      "mbps": 151.57818345577692,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 32.432432432432435,
+          "rss_kib": 6440,
+          "queue": "100   5291     0 2   212     0     0   137074  1",
+          "conntrack": "17"
+        },
+        "exit": {
+          "cpu_percent": 43.369565217391305,
+          "rss_kib": 91952,
+          "queue": null,
+          "conntrack": "44"
+        },
+        "client": {
+          "cpu_percent": 32.4945295404814,
+          "rss_kib": 52372,
+          "queue": null,
+          "conntrack": "24"
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "mode": "combined",
+      "direction": "download",
+      "mbps": 141.2999786368404,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 49.88864142538976,
+          "rss_kib": 6440,
+          "queue": "100   5291     0 2   212     0     0   177355  1",
+          "conntrack": "19"
+        },
+        "exit": {
+          "cpu_percent": 21.120689655172413,
+          "rss_kib": 88656,
+          "queue": null,
+          "conntrack": "21"
+        },
+        "client": {
+          "cpu_percent": 50.64102564102564,
+          "rss_kib": 52780,
+          "queue": null,
+          "conntrack": "27"
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "mode": "full-filter",
+      "direction": "upload",
+      "mbps": 158.58401890025453,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 30.94218415417559,
+          "rss_kib": 6444,
+          "queue": "100   5376     0 2 65531     0     0   145188  1",
+          "conntrack": "8"
+        },
+        "exit": {
+          "cpu_percent": 44.18356456776948,
+          "rss_kib": 88624,
+          "queue": null,
+          "conntrack": "26"
+        },
+        "client": {
+          "cpu_percent": 32.711306256860595,
+          "rss_kib": 55216,
+          "queue": null,
+          "conntrack": "10"
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "mode": "full-filter",
+      "direction": "download",
+      "mbps": 146.14601073005366,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 43.44978165938865,
+          "rss_kib": 6444,
+          "queue": "100   5376     0 2 65531     0     0   184957  1",
+          "conntrack": "10"
+        },
+        "exit": {
+          "cpu_percent": 21.65948275862069,
+          "rss_kib": 87316,
+          "queue": null,
+          "conntrack": "30"
+        },
+        "client": {
+          "cpu_percent": 50.5795574288725,
+          "rss_kib": 54672,
+          "queue": null,
+          "conntrack": "13"
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "mode": "dnat",
+      "direction": "upload",
+      "mbps": 154.19408121844893,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 82.55945639864099,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "13"
+        },
+        "exit": {
+          "cpu_percent": 48.12433011789925,
+          "rss_kib": 86056,
+          "queue": null,
+          "conntrack": "35"
+        },
+        "client": {
+          "cpu_percent": 26.304347826086957,
+          "rss_kib": 52460,
+          "queue": null,
+          "conntrack": "17"
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "mode": "dnat",
+      "direction": "download",
+      "mbps": 133.0301979607708,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 80.87557603686636,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "15"
+        },
+        "exit": {
+          "cpu_percent": 25.82710779082177,
+          "rss_kib": 84788,
+          "queue": null,
+          "conntrack": "39"
+        },
+        "client": {
+          "cpu_percent": 54.14424111948332,
+          "rss_kib": 52084,
+          "queue": null,
+          "conntrack": "20"
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "mode": "kernel",
+      "direction": "upload",
+      "mbps": 152.94070374049133,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 85.76122672508215,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "19"
+        },
+        "exit": {
+          "cpu_percent": 47.608695652173914,
+          "rss_kib": 84772,
+          "queue": null,
+          "conntrack": "43"
+        },
+        "client": {
+          "cpu_percent": 29.815016322089228,
+          "rss_kib": 55400,
+          "queue": null,
+          "conntrack": "24"
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "mode": "kernel",
+      "direction": "download",
+      "mbps": 134.74082017522093,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 75.70093457943925,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "21"
+        },
+        "exit": {
+          "cpu_percent": 24.456521739130434,
+          "rss_kib": 86272,
+          "queue": null,
+          "conntrack": "47"
+        },
+        "client": {
+          "cpu_percent": 55.67338282078473,
+          "rss_kib": 52760,
+          "queue": null,
+          "conntrack": "27"
+        }
+      }
+    }
+  ],
+  "controlled_noise_method": {
+    "repetitions": 2,
+    "payload_bytes": 256,
+    "requested_pps": [
+      5000,
+      10000
+    ],
+    "achieved_rate_tolerance_percent": 1,
+    "mode_order": "reversed on second repetition"
+  },
+  "controlled_noise": [
+    {
+      "iteration": 0,
+      "mode": "dnat",
+      "requested_noise_pps": 5000,
+      "sender": {
+        "kind": "random",
+        "sent": 60000,
+        "seconds": 12.000097039000138,
+        "pps": 4999.9595674102375,
+        "flows": 1
+      },
+      "sender_within_one_percent": true,
+      "mbps": 103.01510861404313,
+      "iperf_error": null,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 86.99453551912568,
+          "cpu_tick_deltas": {
+            "user": 5,
+            "nice": 0,
+            "system": 6,
+            "idle": 119,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 785,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 86.99453551912568,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "6"
+        },
+        "exit": {
+          "cpu_percent": 44.53870625662778,
+          "cpu_tick_deltas": {
+            "user": 120,
+            "nice": 0,
+            "system": 219,
+            "idle": 523,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 81,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 44.53870625662778,
+          "rss_kib": 103628,
+          "queue": null,
+          "conntrack": "10"
+        },
+        "client": {
+          "cpu_percent": 20.083246618106138,
+          "cpu_tick_deltas": {
+            "user": 79,
+            "nice": 0,
+            "system": 63,
+            "idle": 768,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 51,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 20.083246618106138,
+          "rss_kib": 49216,
+          "queue": null,
+          "conntrack": "8"
+        }
+      },
+      "switch_drops": 0
+    },
+    {
+      "iteration": 0,
+      "mode": "dnat",
+      "requested_noise_pps": 10000,
+      "sender": {
+        "kind": "random",
+        "sent": 120000,
+        "seconds": 12.000085127000148,
+        "pps": 9999.929061336443,
+        "flows": 1
+      },
+      "sender_within_one_percent": true,
+      "mbps": 66.21836867190633,
+      "iperf_error": null,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 87.65159867695701,
+          "cpu_tick_deltas": {
+            "user": 12,
+            "nice": 0,
+            "system": 4,
+            "idle": 112,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 779,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 87.65159867695701,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "9"
+        },
+        "exit": {
+          "cpu_percent": 37.17948717948718,
+          "cpu_tick_deltas": {
+            "user": 107,
+            "nice": 0,
+            "system": 173,
+            "idle": 588,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 68,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 37.17948717948718,
+          "rss_kib": 105316,
+          "queue": null,
+          "conntrack": "16"
+        },
+        "client": {
+          "cpu_percent": 16.92627206645898,
+          "cpu_tick_deltas": {
+            "user": 58,
+            "nice": 0,
+            "system": 59,
+            "idle": 800,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 46,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 16.92627206645898,
+          "rss_kib": 54796,
+          "queue": null,
+          "conntrack": "13"
+        }
+      },
+      "switch_drops": 0
+    },
+    {
+      "iteration": 0,
+      "mode": "kernel",
+      "requested_noise_pps": 5000,
+      "sender": {
+        "kind": "random",
+        "sent": 60000,
+        "seconds": 12.000090616999842,
+        "pps": 4999.96224320185,
+        "flows": 1
+      },
+      "sender_within_one_percent": true,
+      "mbps": 99.20548439187249,
+      "iperf_error": null,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 83.10657596371883,
+          "cpu_tick_deltas": {
+            "user": 7,
+            "nice": 0,
+            "system": 7,
+            "idle": 149,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 719,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 83.10657596371883,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "12"
+        },
+        "exit": {
+          "cpu_percent": 44.10201912858661,
+          "cpu_tick_deltas": {
+            "user": 123,
+            "nice": 0,
+            "system": 230,
+            "idle": 525,
+            "iowait": 1,
+            "irq": 0,
+            "softirq": 62,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 44.10201912858661,
+          "rss_kib": 109892,
+          "queue": null,
+          "conntrack": "22"
+        },
+        "client": {
+          "cpu_percent": 18.663838812301165,
+          "cpu_tick_deltas": {
+            "user": 65,
+            "nice": 0,
+            "system": 54,
+            "idle": 765,
+            "iowait": 2,
+            "irq": 0,
+            "softirq": 57,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 18.663838812301165,
+          "rss_kib": 50188,
+          "queue": null,
+          "conntrack": "18"
+        }
+      },
+      "switch_drops": 0
+    },
+    {
+      "iteration": 0,
+      "mode": "kernel",
+      "requested_noise_pps": 10000,
+      "sender": {
+        "kind": "random",
+        "sent": 120000,
+        "seconds": 12.00008090700021,
+        "pps": 9999.932577954401,
+        "flows": 1
+      },
+      "sender_within_one_percent": true,
+      "mbps": 67.77841860721514,
+      "iperf_error": null,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 87.96909492273731,
+          "cpu_tick_deltas": {
+            "user": 10,
+            "nice": 0,
+            "system": 7,
+            "idle": 109,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 780,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 87.96909492273731,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "5"
+        },
+        "exit": {
+          "cpu_percent": 40.683229813664596,
+          "cpu_tick_deltas": {
+            "user": 123,
+            "nice": 0,
+            "system": 195,
+            "idle": 573,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 75,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 40.683229813664596,
+          "rss_kib": 110020,
+          "queue": null,
+          "conntrack": "20"
+        },
+        "client": {
+          "cpu_percent": 16.94560669456067,
+          "cpu_tick_deltas": {
+            "user": 52,
+            "nice": 0,
+            "system": 61,
+            "idle": 791,
+            "iowait": 3,
+            "irq": 0,
+            "softirq": 49,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 16.94560669456067,
+          "rss_kib": 52960,
+          "queue": null,
+          "conntrack": "9"
+        }
+      },
+      "switch_drops": 0
+    },
+    {
+      "iteration": 0,
+      "mode": "combined",
+      "requested_noise_pps": 5000,
+      "sender": {
+        "kind": "random",
+        "sent": 60000,
+        "seconds": 12.000055698000097,
+        "pps": 4999.9767926076765,
+        "flows": 1
+      },
+      "sender_within_one_percent": true,
+      "mbps": 138.7815873179052,
+      "iperf_error": null,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 38.76889848812095,
+          "cpu_tick_deltas": {
+            "user": 46,
+            "nice": 0,
+            "system": 136,
+            "idle": 559,
+            "iowait": 8,
+            "irq": 0,
+            "softirq": 177,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 38.76889848812095,
+          "rss_kib": 6444,
+          "queue": "100   7762     0 2   212     0     0   180536  1",
+          "conntrack": "9"
+        },
+        "exit": {
+          "cpu_percent": 43.92324093816631,
+          "cpu_tick_deltas": {
+            "user": 130,
+            "nice": 0,
+            "system": 222,
+            "idle": 524,
+            "iowait": 2,
+            "irq": 0,
+            "softirq": 60,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 43.92324093816631,
+          "rss_kib": 110020,
+          "queue": null,
+          "conntrack": "26"
+        },
+        "client": {
+          "cpu_percent": 27.657266811279825,
+          "cpu_tick_deltas": {
+            "user": 120,
+            "nice": 0,
+            "system": 107,
+            "idle": 665,
+            "iowait": 2,
+            "irq": 0,
+            "softirq": 28,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 27.657266811279825,
+          "rss_kib": 49240,
+          "queue": null,
+          "conntrack": "14"
+        }
+      },
+      "switch_drops": 0,
+      "filter_stats": {
+        "bytes": 190604843,
+        "copied_bytes": 39939433,
+        "netlink_enobufs": 0,
+        "malformed": 0,
+        "header": 60000,
+        "mac1": 0,
+        "crypto": 0,
+        "init": 0,
+        "response": 0,
+        "cookie": 0,
+        "transport": 128396
+      }
+    },
+    {
+      "iteration": 0,
+      "mode": "combined",
+      "requested_noise_pps": 10000,
+      "sender": {
+        "kind": "random",
+        "sent": 120000,
+        "seconds": 12.00007788999983,
+        "pps": 9999.935092088115,
+        "flows": 1
+      },
+      "sender_within_one_percent": true,
+      "mbps": 126.33328699455983,
+      "iperf_error": null,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 41.48936170212766,
+          "cpu_tick_deltas": {
+            "user": 55,
+            "nice": 0,
+            "system": 140,
+            "idle": 549,
+            "iowait": 1,
+            "irq": 0,
+            "softirq": 195,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 41.48936170212766,
+          "rss_kib": 6384,
+          "queue": "100   7849     0 2   212  1067     0   221743  1",
+          "conntrack": "14"
+        },
+        "exit": {
+          "cpu_percent": 40.25423728813559,
+          "cpu_tick_deltas": {
+            "user": 112,
+            "nice": 0,
+            "system": 218,
+            "idle": 563,
+            "iowait": 1,
+            "irq": 0,
+            "softirq": 50,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 40.25423728813559,
+          "rss_kib": 110020,
+          "queue": null,
+          "conntrack": "32"
+        },
+        "client": {
+          "cpu_percent": 25.268817204301076,
+          "cpu_tick_deltas": {
+            "user": 116,
+            "nice": 0,
+            "system": 94,
+            "idle": 689,
+            "iowait": 6,
+            "irq": 0,
+            "softirq": 25,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 25.268817204301076,
+          "rss_kib": 48052,
+          "queue": null,
+          "conntrack": "19"
+        }
+      },
+      "switch_drops": 0,
+      "filter_stats": {
+        "bytes": 191746864,
+        "copied_bytes": 50078225,
+        "netlink_enobufs": 0,
+        "malformed": 0,
+        "header": 119469,
+        "mac1": 0,
+        "crypto": 0,
+        "init": 1,
+        "response": 0,
+        "cookie": 0,
+        "transport": 116754
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "combined",
+      "requested_noise_pps": 5000,
+      "sender": {
+        "kind": "random",
+        "sent": 60000,
+        "seconds": 12.000103083000113,
+        "pps": 4999.9570491189115,
+        "flows": 1
+      },
+      "sender_within_one_percent": true,
+      "mbps": 136.6239230539596,
+      "iperf_error": null,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 35.54603854389722,
+          "cpu_tick_deltas": {
+            "user": 49,
+            "nice": 0,
+            "system": 124,
+            "idle": 596,
+            "iowait": 6,
+            "irq": 0,
+            "softirq": 159,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 35.54603854389722,
+          "rss_kib": 6444,
+          "queue": "100   7935     0 2   212     0     0   178076  1",
+          "conntrack": "19"
+        },
+        "exit": {
+          "cpu_percent": 41.360691144708426,
+          "cpu_tick_deltas": {
+            "user": 112,
+            "nice": 0,
+            "system": 215,
+            "idle": 542,
+            "iowait": 1,
+            "irq": 0,
+            "softirq": 56,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 41.360691144708426,
+          "rss_kib": 109572,
+          "queue": null,
+          "conntrack": "38"
+        },
+        "client": {
+          "cpu_percent": 23.56756756756757,
+          "cpu_tick_deltas": {
+            "user": 115,
+            "nice": 0,
+            "system": 83,
+            "idle": 706,
+            "iowait": 1,
+            "irq": 0,
+            "softirq": 20,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 23.56756756756757,
+          "rss_kib": 52968,
+          "queue": null,
+          "conntrack": "24"
+        }
+      },
+      "switch_drops": 0,
+      "filter_stats": {
+        "bytes": 186899304,
+        "copied_bytes": 39358507,
+        "netlink_enobufs": 0,
+        "malformed": 0,
+        "header": 60000,
+        "mac1": 0,
+        "crypto": 0,
+        "init": 0,
+        "response": 0,
+        "cookie": 0,
+        "transport": 125656
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "combined",
+      "requested_noise_pps": 10000,
+      "sender": {
+        "kind": "random",
+        "sent": 120000,
+        "seconds": 12.000083676000031,
+        "pps": 9999.930270486198,
+        "flows": 1
+      },
+      "sender_within_one_percent": true,
+      "mbps": 123.11164090761655,
+      "iperf_error": null,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 42.17907227615965,
+          "cpu_tick_deltas": {
+            "user": 60,
+            "nice": 0,
+            "system": 142,
+            "idle": 533,
+            "iowait": 3,
+            "irq": 0,
+            "softirq": 189,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 42.17907227615965,
+          "rss_kib": 6444,
+          "queue": "100   8021     0 2   212  1137     0   219340  1",
+          "conntrack": "24"
+        },
+        "exit": {
+          "cpu_percent": 38.91304347826087,
+          "cpu_tick_deltas": {
+            "user": 110,
+            "nice": 0,
+            "system": 195,
+            "idle": 556,
+            "iowait": 6,
+            "irq": 0,
+            "softirq": 53,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 38.91304347826087,
+          "rss_kib": 109420,
+          "queue": null,
+          "conntrack": "21"
+        },
+        "client": {
+          "cpu_percent": 21.861471861471863,
+          "cpu_tick_deltas": {
+            "user": 94,
+            "nice": 0,
+            "system": 88,
+            "idle": 712,
+            "iowait": 10,
+            "irq": 0,
+            "softirq": 20,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 21.861471861471863,
+          "rss_kib": 52956,
+          "queue": null,
+          "conntrack": "29"
+        }
+      },
+      "switch_drops": 0,
+      "filter_stats": {
+        "bytes": 188705571,
+        "copied_bytes": 49591670,
+        "netlink_enobufs": 0,
+        "malformed": 0,
+        "header": 119415,
+        "mac1": 0,
+        "crypto": 0,
+        "init": 0,
+        "response": 0,
+        "cookie": 0,
+        "transport": 114511
+      }
+    },
+    {
+      "iteration": 1,
+      "mode": "kernel",
+      "requested_noise_pps": 5000,
+      "sender": {
+        "kind": "random",
+        "sent": 60000,
+        "seconds": 12.000086870999894,
+        "pps": 4999.963804012076,
+        "flows": 1
+      },
+      "sender_within_one_percent": true,
+      "mbps": 101.45182605861275,
+      "iperf_error": null,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 88.16091954022988,
+          "cpu_tick_deltas": {
+            "user": 7,
+            "nice": 0,
+            "system": 2,
+            "idle": 103,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 758,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 88.16091954022988,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "9"
+        },
+        "exit": {
+          "cpu_percent": 41.33042529989095,
+          "cpu_tick_deltas": {
+            "user": 110,
+            "nice": 0,
+            "system": 204,
+            "idle": 538,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 65,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 41.33042529989095,
+          "rss_kib": 109764,
+          "queue": null,
+          "conntrack": "28"
+        },
+        "client": {
+          "cpu_percent": 22.139830508474578,
+          "cpu_tick_deltas": {
+            "user": 80,
+            "nice": 0,
+            "system": 78,
+            "idle": 734,
+            "iowait": 1,
+            "irq": 0,
+            "softirq": 51,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 22.139830508474578,
+          "rss_kib": 52956,
+          "queue": null,
+          "conntrack": "9"
+        }
+      },
+      "switch_drops": 0
+    },
+    {
+      "iteration": 1,
+      "mode": "kernel",
+      "requested_noise_pps": 10000,
+      "sender": {
+        "kind": "random",
+        "sent": 120000,
+        "seconds": 12.000101763999965,
+        "pps": 9999.91519738585,
+        "flows": 1
+      },
+      "sender_within_one_percent": true,
+      "mbps": 68.54469243493087,
+      "iperf_error": null,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 89.45615982241954,
+          "cpu_tick_deltas": {
+            "user": 12,
+            "nice": 0,
+            "system": 4,
+            "idle": 95,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 790,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 89.45615982241954,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "13"
+        },
+        "exit": {
+          "cpu_percent": 37.55230125523013,
+          "cpu_tick_deltas": {
+            "user": 112,
+            "nice": 0,
+            "system": 179,
+            "idle": 597,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 68,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 37.55230125523013,
+          "rss_kib": 109252,
+          "queue": null,
+          "conntrack": "34"
+        },
+        "client": {
+          "cpu_percent": 16.0,
+          "cpu_tick_deltas": {
+            "user": 51,
+            "nice": 0,
+            "system": 60,
+            "idle": 819,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 45,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 16.0,
+          "rss_kib": 52944,
+          "queue": null,
+          "conntrack": "14"
+        }
+      },
+      "switch_drops": 0
+    },
+    {
+      "iteration": 1,
+      "mode": "dnat",
+      "requested_noise_pps": 5000,
+      "sender": {
+        "kind": "random",
+        "sent": 60000,
+        "seconds": 12.000095760000022,
+        "pps": 4999.960100318391,
+        "flows": 1
+      },
+      "sender_within_one_percent": true,
+      "mbps": 102.95164501384482,
+      "iperf_error": null,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 88.81506090808416,
+          "cpu_tick_deltas": {
+            "user": 5,
+            "nice": 0,
+            "system": 6,
+            "idle": 98,
+            "iowait": 3,
+            "irq": 0,
+            "softirq": 791,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 88.81506090808416,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "17"
+        },
+        "exit": {
+          "cpu_percent": 42.076502732240435,
+          "cpu_tick_deltas": {
+            "user": 113,
+            "nice": 0,
+            "system": 199,
+            "idle": 530,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 73,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 42.076502732240435,
+          "rss_kib": 108420,
+          "queue": null,
+          "conntrack": "40"
+        },
+        "client": {
+          "cpu_percent": 20.25862068965517,
+          "cpu_tick_deltas": {
+            "user": 83,
+            "nice": 0,
+            "system": 65,
+            "idle": 740,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 40,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 20.25862068965517,
+          "rss_kib": 49780,
+          "queue": null,
+          "conntrack": "19"
+        }
+      },
+      "switch_drops": 0
+    },
+    {
+      "iteration": 1,
+      "mode": "dnat",
+      "requested_noise_pps": 10000,
+      "sender": {
+        "kind": "random",
+        "sent": 120000,
+        "seconds": 12.000084558000026,
+        "pps": 9999.929535496507,
+        "flows": 1
+      },
+      "sender_within_one_percent": true,
+      "mbps": 66.57455989632035,
+      "iperf_error": null,
+      "metrics": {
+        "entry": {
+          "cpu_percent": 89.46784922394679,
+          "cpu_tick_deltas": {
+            "user": 9,
+            "nice": 0,
+            "system": 5,
+            "idle": 95,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 793,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 89.46784922394679,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "20"
+        },
+        "exit": {
+          "cpu_percent": 36.334405144694536,
+          "cpu_tick_deltas": {
+            "user": 110,
+            "nice": 0,
+            "system": 166,
+            "idle": 594,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 63,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 36.334405144694536,
+          "rss_kib": 108228,
+          "queue": null,
+          "conntrack": "45"
+        },
+        "client": {
+          "cpu_percent": 13.865546218487395,
+          "cpu_tick_deltas": {
+            "user": 43,
+            "nice": 0,
+            "system": 41,
+            "idle": 819,
+            "iowait": 1,
+            "irq": 0,
+            "softirq": 48,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 13.865546218487395,
+          "rss_kib": 59824,
+          "queue": null,
+          "conntrack": "24"
+        }
+      },
+      "switch_drops": 0
+    }
+  ],
+  "oversubscribed_sender_attempts": {
+    "comparison_eligible": false,
+    "reason": "requested sender rates were not achieved and differed by mode",
+    "runs": [
+      {
+        "iteration": 0,
+        "mode": "dnat",
+        "requested_noise_pps": 30000,
+        "sender": {
+          "kind": "random",
+          "sent": 251720,
+          "seconds": 12.000197129000071,
+          "pps": 20976.3220798836,
+          "flows": 1
+        },
+        "mbps": 30.800060606757853,
+        "iperf_error": null,
+        "metrics": {
+          "entry": {
+            "cpu_percent": 96.40221402214023,
+            "rss_kib": null,
+            "queue": "",
+            "conntrack": "9"
+          },
+          "exit": {
+            "cpu_percent": 31.584362139917694,
+            "rss_kib": 94816,
+            "queue": null,
+            "conntrack": "20"
+          },
+          "client": {
+            "cpu_percent": 14.591439688715953,
+            "rss_kib": 29008,
+            "queue": null,
+            "conntrack": "13"
+          }
+        },
+        "switch_drops": 0
+      },
+      {
+        "iteration": 0,
+        "mode": "dnat",
+        "requested_noise_pps": 60000,
+        "sender": {
+          "kind": "random",
+          "sent": 330600,
+          "seconds": 12.002270371999884,
+          "pps": 27544.78859027016,
+          "flows": 1
+        },
+        "mbps": 32.819670871530214,
+        "iperf_error": null,
+        "metrics": {
+          "entry": {
+            "cpu_percent": 97.18446601941747,
+            "rss_kib": null,
+            "queue": "",
+            "conntrack": "12"
+          },
+          "exit": {
+            "cpu_percent": 33.333333333333336,
+            "rss_kib": 94740,
+            "queue": null,
+            "conntrack": "16"
+          },
+          "client": {
+            "cpu_percent": 9.97983870967742,
+            "rss_kib": 41880,
+            "queue": null,
+            "conntrack": "12"
+          }
+        },
+        "switch_drops": 0
+      },
+      {
+        "iteration": 0,
+        "mode": "kernel",
+        "requested_noise_pps": 30000,
+        "sender": {
+          "kind": "random",
+          "sent": 218860,
+          "seconds": 12.000077844000089,
+          "pps": 18238.21502203235,
+          "flows": 1
+        },
+        "mbps": 19.11173757643303,
+        "iperf_error": null,
+        "metrics": {
+          "entry": {
+            "cpu_percent": 96.74721189591078,
+            "rss_kib": null,
+            "queue": "",
+            "conntrack": "10"
+          },
+          "exit": {
+            "cpu_percent": 32.390243902439025,
+            "rss_kib": 99380,
+            "queue": null,
+            "conntrack": "22"
+          },
+          "client": {
+            "cpu_percent": 10.500963391136802,
+            "rss_kib": 43272,
+            "queue": null,
+            "conntrack": "17"
+          }
+        },
+        "switch_drops": 0
+      },
+      {
+        "iteration": 0,
+        "mode": "kernel",
+        "requested_noise_pps": 60000,
+        "sender": {
+          "kind": "random",
+          "sent": 200940,
+          "seconds": 12.00352747099987,
+          "pps": 16740.07915468719,
+          "flows": 1
+        },
+        "mbps": 28.401650094025978,
+        "iperf_error": null,
+        "metrics": {
+          "entry": {
+            "cpu_percent": 95.4119850187266,
+            "rss_kib": null,
+            "queue": "",
+            "conntrack": "13"
+          },
+          "exit": {
+            "cpu_percent": 32.84169124877089,
+            "rss_kib": 92584,
+            "queue": null,
+            "conntrack": "28"
+          },
+          "client": {
+            "cpu_percent": 11.166500498504487,
+            "rss_kib": 43276,
+            "queue": null,
+            "conntrack": "22"
+          }
+        },
+        "switch_drops": 0
+      },
+      {
+        "iteration": 0,
+        "mode": "combined",
+        "requested_noise_pps": 30000,
+        "sender": {
+          "kind": "random",
+          "sent": 197020,
+          "seconds": 12.004704227000047,
+          "pps": 16411.899558248002,
+          "flows": 1
+        },
+        "mbps": 123.21198404205764,
+        "iperf_error": null,
+        "metrics": {
+          "entry": {
+            "cpu_percent": 49.00105152471083,
+            "rss_kib": 6440,
+            "queue": "100   6408     0 2   212  1270     0   288029  1",
+            "conntrack": "17"
+          },
+          "exit": {
+            "cpu_percent": 38.15513626834382,
+            "rss_kib": 93608,
+            "queue": null,
+            "conntrack": "34"
+          },
+          "client": {
+            "cpu_percent": 19.337606837606838,
+            "rss_kib": 47540,
+            "queue": null,
+            "conntrack": "27"
+          }
+        },
+        "switch_drops": 0,
+        "filter_stats": {
+          "bytes": 210411288,
+          "copied_bytes": 65892718,
+          "netlink_enobufs": 0,
+          "malformed": 0,
+          "header": 196428,
+          "mac1": 0,
+          "crypto": 0,
+          "init": 0,
+          "response": 0,
+          "cookie": 0,
+          "transport": 114389
+        }
+      },
+      {
+        "iteration": 0,
+        "mode": "combined",
+        "requested_noise_pps": 60000,
+        "sender": {
+          "kind": "random",
+          "sent": 200460,
+          "seconds": 12.00213820099998,
+          "pps": 16702.02397630268,
+          "flows": 1
+        },
+        "mbps": 127.48827374983101,
+        "iperf_error": null,
+        "metrics": {
+          "entry": {
+            "cpu_percent": 49.36440677966102,
+            "rss_kib": 6436,
+            "queue": "100   6496     0 2   212  1605     0   292744  1",
+            "conntrack": "22"
+          },
+          "exit": {
+            "cpu_percent": 39.705882352941174,
+            "rss_kib": 98260,
+            "queue": null,
+            "conntrack": "40"
+          },
+          "client": {
+            "cpu_percent": 18.27027027027027,
+            "rss_kib": 49756,
+            "queue": null,
+            "conntrack": "32"
+          }
+        },
+        "switch_drops": 0,
+        "filter_stats": {
+          "bytes": 216817728,
+          "copied_bytes": 67396144,
+          "netlink_enobufs": 0,
+          "malformed": 0,
+          "header": 199407,
+          "mac1": 0,
+          "crypto": 0,
+          "init": 0,
+          "response": 0,
+          "cookie": 0,
+          "transport": 118502
+        }
+      },
+      {
+        "iteration": 1,
+        "mode": "combined",
+        "requested_noise_pps": 30000,
+        "sender": {
+          "kind": "random",
+          "sent": 198180,
+          "seconds": 12.00006441100004,
+          "pps": 16514.911354837008,
+          "flows": 1
+        },
+        "mbps": 126.22693524755587,
+        "iperf_error": null,
+        "metrics": {
+          "entry": {
+            "cpu_percent": 48.723404255319146,
+            "rss_kib": 6444,
+            "queue": "100   6582     0 2   212   797     0   288407  1",
+            "conntrack": "7"
+          },
+          "exit": {
+            "cpu_percent": 39.327024185068346,
+            "rss_kib": 100692,
+            "queue": null,
+            "conntrack": "21"
+          },
+          "client": {
+            "cpu_percent": 18.629550321199144,
+            "rss_kib": 50420,
+            "queue": null,
+            "conntrack": "11"
+          }
+        },
+        "switch_drops": 0,
+        "filter_stats": {
+          "bytes": 213778783,
+          "copied_bytes": 66658835,
+          "netlink_enobufs": 0,
+          "malformed": 0,
+          "header": 197852,
+          "mac1": 0,
+          "crypto": 0,
+          "init": 0,
+          "response": 0,
+          "cookie": 0,
+          "transport": 116579
+        }
+      },
+      {
+        "iteration": 1,
+        "mode": "combined",
+        "requested_noise_pps": 60000,
+        "sender": {
+          "kind": "random",
+          "sent": 197720,
+          "seconds": 12.000341156999866,
+          "pps": 16476.19825246958,
+          "flows": 1
+        },
+        "mbps": 123.58133200293247,
+        "iperf_error": null,
+        "metrics": {
+          "entry": {
+            "cpu_percent": 49.62162162162162,
+            "rss_kib": 6444,
+            "queue": "100   6668     6 2   212  2866     0   284149  1",
+            "conntrack": "12"
+          },
+          "exit": {
+            "cpu_percent": 39.49044585987261,
+            "rss_kib": 100732,
+            "queue": null,
+            "conntrack": "27"
+          },
+          "client": {
+            "cpu_percent": 21.482277121374867,
+            "rss_kib": 47900,
+            "queue": null,
+            "conntrack": "16"
+          }
+        },
+        "switch_drops": 0,
+        "filter_stats": {
+          "bytes": 210731672,
+          "copied_bytes": 65864870,
+          "netlink_enobufs": 0,
+          "malformed": 0,
+          "header": 195963,
+          "mac1": 0,
+          "crypto": 0,
+          "init": 0,
+          "response": 0,
+          "cookie": 0,
+          "transport": 114723
+        }
+      },
+      {
+        "iteration": 1,
+        "mode": "kernel",
+        "requested_noise_pps": 30000,
+        "sender": {
+          "kind": "random",
+          "sent": 199200,
+          "seconds": 12.0034646470001,
+          "pps": 16595.20862168607,
+          "flows": 1
+        },
+        "mbps": 33.827489499834634,
+        "iperf_error": null,
+        "metrics": {
+          "entry": {
+            "cpu_percent": 95.28650646950092,
+            "rss_kib": null,
+            "queue": "",
+            "conntrack": "18"
+          },
+          "exit": {
+            "cpu_percent": 33.394160583941606,
+            "rss_kib": 100732,
+            "queue": null,
+            "conntrack": "33"
+          },
+          "client": {
+            "cpu_percent": 18.51851851851852,
+            "rss_kib": 48456,
+            "queue": null,
+            "conntrack": "21"
+          }
+        },
+        "switch_drops": 0
+      },
+      {
+        "iteration": 1,
+        "mode": "kernel",
+        "requested_noise_pps": 60000,
+        "sender": {
+          "kind": "random",
+          "sent": 204120,
+          "seconds": 12.000007922000123,
+          "pps": 17009.98877057224,
+          "flows": 1
+        },
+        "mbps": 39.8195462887685,
+        "iperf_error": null,
+        "metrics": {
+          "entry": {
+            "cpu_percent": 94.73684210526316,
+            "rss_kib": null,
+            "queue": "",
+            "conntrack": "21"
+          },
+          "exit": {
+            "cpu_percent": 32.593340060544904,
+            "rss_kib": 101804,
+            "queue": null,
+            "conntrack": "39"
+          },
+          "client": {
+            "cpu_percent": 12.106299212598426,
+            "rss_kib": 48708,
+            "queue": null,
+            "conntrack": "26"
+          }
+        },
+        "switch_drops": 0
+      },
+      {
+        "iteration": 1,
+        "mode": "dnat",
+        "requested_noise_pps": 30000,
+        "sender": {
+          "kind": "random",
+          "sent": 201860,
+          "seconds": 12.001127749000034,
+          "pps": 16820.085930409292,
+          "flows": 1
+        },
+        "mbps": 38.325006122053644,
+        "iperf_error": null,
+        "metrics": {
+          "entry": {
+            "cpu_percent": 93.65384615384616,
+            "rss_kib": null,
+            "queue": "",
+            "conntrack": "25"
+          },
+          "exit": {
+            "cpu_percent": 34.231536926147704,
+            "rss_kib": 101804,
+            "queue": null,
+            "conntrack": "22"
+          },
+          "client": {
+            "cpu_percent": 16.48675171736997,
+            "rss_kib": 47576,
+            "queue": null,
+            "conntrack": "9"
+          }
+        },
+        "switch_drops": 0
+      },
+      {
+        "iteration": 1,
+        "mode": "dnat",
+        "requested_noise_pps": 60000,
+        "sender": {
+          "kind": "random",
+          "sent": 205320,
+          "seconds": 12.003559900000027,
+          "pps": 17104.92568125557,
+          "flows": 1
+        },
+        "mbps": 39.36656201084505,
+        "iperf_error": null,
+        "metrics": {
+          "entry": {
+            "cpu_percent": 97.40980573543015,
+            "rss_kib": null,
+            "queue": "",
+            "conntrack": "7"
+          },
+          "exit": {
+            "cpu_percent": 34.56175298804781,
+            "rss_kib": 101804,
+            "queue": null,
+            "conntrack": "28"
+          },
+          "client": {
+            "cpu_percent": 13.411078717201166,
+            "rss_kib": 48300,
+            "queue": null,
+            "conntrack": "14"
+          }
+        },
+        "switch_drops": 0
+      }
+    ]
+  },
+  "profiling": {
+    "clock": "CLOCK_THREAD_CPUTIME_ID",
+    "header_and_handshake_included_in_inspect": true,
+    "receive_includes_syscall_and_dequeue": true,
+    "clock_overhead_included": true,
+    "upload": {
+      "bytes": 174987051,
+      "copied_bytes": 27441843,
+      "netlink_enobufs": 0,
+      "malformed": 0,
+      "header": 0,
+      "mac1": 0,
+      "crypto": 0,
+      "init": 0,
+      "response": 0,
+      "cookie": 0,
+      "transport": 129446,
+      "receive_cpu_ns": 334453900,
+      "inspect_cpu_ns": 543381900,
+      "header_cpu_ns": 299796100,
+      "handshake_cpu_ns": 0,
+      "verdict_cpu_ns": 1389982800
+    },
+    "download": {
+      "bytes": 7038215,
+      "copied_bytes": 7002392,
+      "netlink_enobufs": 0,
+      "malformed": 0,
+      "header": 0,
+      "mac1": 0,
+      "crypto": 0,
+      "init": 0,
+      "response": 0,
+      "cookie": 0,
+      "transport": 39230,
+      "receive_cpu_ns": 116638300,
+      "inspect_cpu_ns": 169102900,
+      "header_cpu_ns": 95773800,
+      "handshake_cpu_ns": 0,
+      "verdict_cpu_ns": 1797724800
+    }
+  },
+  "cpu_accounting_check": [
+    {
+      "mode": "dnat",
+      "metrics": {
+        "entry": {
+          "cpu_percent": 82.18714768883878,
+          "cpu_tick_deltas": {
+            "user": 5,
+            "nice": 0,
+            "system": 4,
+            "idle": 158,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 720,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 82.18714768883878,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "5"
+        },
+        "exit": {
+          "cpu_percent": 47.8494623655914,
+          "cpu_tick_deltas": {
+            "user": 138,
+            "nice": 0,
+            "system": 242,
+            "idle": 484,
+            "iowait": 1,
+            "irq": 0,
+            "softirq": 65,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 47.8494623655914,
+          "rss_kib": 101804,
+          "queue": null,
+          "conntrack": "13"
+        },
+        "client": {
+          "cpu_percent": 27.145922746781117,
+          "cpu_tick_deltas": {
+            "user": 113,
+            "nice": 0,
+            "system": 105,
+            "idle": 676,
+            "iowait": 3,
+            "irq": 0,
+            "softirq": 35,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 27.145922746781117,
+          "rss_kib": 49864,
+          "queue": null,
+          "conntrack": "8"
+        }
+      },
+      "mbps": 142.83955112688733
+    },
+    {
+      "mode": "filter",
+      "metrics": {
+        "entry": {
+          "cpu_percent": 28.9247311827957,
+          "cpu_tick_deltas": {
+            "user": 41,
+            "nice": 0,
+            "system": 107,
+            "idle": 655,
+            "iowait": 6,
+            "irq": 0,
+            "softirq": 121,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 28.9247311827957,
+          "rss_kib": 6440,
+          "queue": "100   7125     0 2   212     0     0   127162  1",
+          "conntrack": "8"
+        },
+        "exit": {
+          "cpu_percent": 45.84681769147789,
+          "cpu_tick_deltas": {
+            "user": 120,
+            "nice": 0,
+            "system": 240,
+            "idle": 499,
+            "iowait": 3,
+            "irq": 0,
+            "softirq": 65,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 45.84681769147789,
+          "rss_kib": 101804,
+          "queue": null,
+          "conntrack": "18"
+        },
+        "client": {
+          "cpu_percent": 21.82017543859649,
+          "cpu_tick_deltas": {
+            "user": 94,
+            "nice": 0,
+            "system": 82,
+            "idle": 710,
+            "iowait": 3,
+            "irq": 0,
+            "softirq": 23,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 21.82017543859649,
+          "rss_kib": 48180,
+          "queue": null,
+          "conntrack": "12"
+        }
+      },
+      "mbps": 139.39906938589587
+    },
+    {
+      "mode": "full-filter",
+      "metrics": {
+        "entry": {
+          "cpu_percent": 27.54880694143167,
+          "cpu_tick_deltas": {
+            "user": 30,
+            "nice": 0,
+            "system": 119,
+            "idle": 663,
+            "iowait": 5,
+            "irq": 0,
+            "softirq": 105,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 27.54880694143167,
+          "rss_kib": 6432,
+          "queue": "100   7180     0 2 65531     0     0   128726  1",
+          "conntrack": "11"
+        },
+        "exit": {
+          "cpu_percent": 45.84221748400853,
+          "cpu_tick_deltas": {
+            "user": 130,
+            "nice": 0,
+            "system": 238,
+            "idle": 508,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 62,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 45.84221748400853,
+          "rss_kib": 101804,
+          "queue": null,
+          "conntrack": "23"
+        },
+        "client": {
+          "cpu_percent": 20.044052863436125,
+          "cpu_tick_deltas": {
+            "user": 90,
+            "nice": 0,
+            "system": 72,
+            "idle": 726,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 20,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 20.044052863436125,
+          "rss_kib": 48176,
+          "queue": null,
+          "conntrack": "16"
+        }
+      },
+      "mbps": 140.43171519604275
+    },
+    {
+      "mode": "kernel",
+      "metrics": {
+        "entry": {
+          "cpu_percent": 70.66508313539192,
+          "cpu_tick_deltas": {
+            "user": 6,
+            "nice": 0,
+            "system": 5,
+            "idle": 247,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 584,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 70.66508313539192,
+          "rss_kib": null,
+          "queue": "",
+          "conntrack": "14"
+        },
+        "exit": {
+          "cpu_percent": 49.13793103448276,
+          "cpu_tick_deltas": {
+            "user": 147,
+            "nice": 0,
+            "system": 246,
+            "idle": 471,
+            "iowait": 1,
+            "irq": 0,
+            "softirq": 63,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 49.13793103448276,
+          "rss_kib": 101380,
+          "queue": null,
+          "conntrack": "28"
+        },
+        "client": {
+          "cpu_percent": 20.738327904451683,
+          "cpu_tick_deltas": {
+            "user": 81,
+            "nice": 0,
+            "system": 65,
+            "idle": 730,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 45,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 20.738327904451683,
+          "rss_kib": 51272,
+          "queue": null,
+          "conntrack": "20"
+        }
+      },
+      "mbps": 141.04349915283768
+    },
+    {
+      "mode": "combined",
+      "metrics": {
+        "entry": {
+          "cpu_percent": 29.533116178067317,
+          "cpu_tick_deltas": {
+            "user": 37,
+            "nice": 0,
+            "system": 115,
+            "idle": 645,
+            "iowait": 4,
+            "irq": 0,
+            "softirq": 120,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 29.533116178067317,
+          "rss_kib": 6448,
+          "queue": "100   7300     0 2   212     0     0   127950  1",
+          "conntrack": "18"
+        },
+        "exit": {
+          "cpu_percent": 44.70842332613391,
+          "cpu_tick_deltas": {
+            "user": 124,
+            "nice": 0,
+            "system": 223,
+            "idle": 512,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 67,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 44.70842332613391,
+          "rss_kib": 101380,
+          "queue": null,
+          "conntrack": "33"
+        },
+        "client": {
+          "cpu_percent": 22.967032967032967,
+          "cpu_tick_deltas": {
+            "user": 105,
+            "nice": 0,
+            "system": 85,
+            "idle": 701,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 19,
+            "steal": 0
+          },
+          "cpu_excluding_steal_percent": 22.967032967032967,
+          "rss_kib": 49000,
+          "queue": null,
+          "conntrack": "24"
+        }
+      },
+      "mbps": 140.59183610323947
+    }
+  ],
+  "safety": {
+    "dnat_two_clients_shared_nat_and_sizes": true,
+    "dnat_source_ip_and_port_roaming": true,
+    "dnat_same_outer_tuple_handed_to_second_client": true,
+    "kernel_two_clients_shared_nat_and_sizes": true,
+    "kernel_source_ip_and_port_roaming": true,
+    "kernel_same_outer_tuple_handed_to_second_client": true,
+    "combined_two_clients_shared_nat_and_sizes": true,
+    "combined_source_ip_and_port_roaming": true,
+    "combined_same_outer_tuple_handed_to_second_client": true,
+    "wrong_hpk_no_vpn_access": true,
+    "unknown_client_no_vpn_access": true,
+    "keyless_captured_prefix_still_accepted": true,
+    "captured_prefix_sent": 100,
+    "full_set_rejects_new_tuple": true,
+    "max_flow_entries": 4096,
+    "expired_set_recovers_new_tuple": true,
+    "queue_crash_fail_closed": true,
+    "separate_rollback_and_relay_unchanged": true
+  },
+  "spoofed_backend": {
+    "spoofed_backend_packets": 100,
+    "checked_in_original_direction": 100,
+    "dropped_header": 100,
+    "client_still_works": true
+  },
+  "flow_limit_functional_test": {
+    "sender": {
+      "kind": "random",
+      "sent": 6000,
+      "seconds": 2.0000861589999204,
+      "pps": 2999.8707670674094,
+      "flows": 1
+    },
+    "elapsed_host_seconds": 2.253978200000347,
+    "admitted_all_flows": 1051,
+    "dropped": 4953,
+    "lab_test_flow_pps": 500,
+    "lab_test_global_pps": 1000,
+    "legitimate_client_recovers": true
+  },
+  "concurrent_clients": [
+    {
+      "mode": "kernel",
+      "mbps": [
+        118.81706680423669,
+        16.91891123584019
+      ],
+      "guard_drops": 0
+    },
+    {
+      "mode": "combined",
+      "mbps": [
+        57.89449838832387,
+        72.85118581296314
+      ],
+      "guard_drops": 0
+    }
+  ],
+  "camouflage": {
+    "dnat": {
+      "client_to_entry": 13,
+      "entry_to_exit": 13,
+      "incoming_reasons": {
+        "header": 6,
+        "init": 1,
+        "transport": 6
+      },
+      "forwarded_payloads_unchanged": true,
+      "unforwarded": 0
+    },
+    "combined": {
+      "client_to_entry": 14,
+      "entry_to_exit": 8,
+      "incoming_reasons": {
+        "header": 6,
+        "init": 1,
+        "transport": 7
+      },
+      "forwarded_payloads_unchanged": true,
+      "unforwarded": 6
+    }
+  },
+  "limits": {
+    "physical_gui_clients_tested": false,
+    "dpi_tested": false,
+    "flow_cache_added": false,
+    "i1_jc_policy": "strict drop",
+    "queue_drops_remain_at_controlled_10000_pps": true,
+    "example_rates_calibrated_for_production": false,
+    "cpu_difference_from_previous_lab_explained": false
+  },
+  "cleanup": {
+    "all_own_guests_stopped": true,
+    "own_helpers_stopped": true,
+    "localhost_ports_released": [
+      62522,
+      62523,
+      62524,
+      62525,
+      62622,
+      62623,
+      62624,
+      62625,
+      62580,
+      62590
+    ],
+    "normal_relay_rules_unchanged_before_shutdown": true
+  }
+}

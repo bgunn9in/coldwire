@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/netfilter.h>
+#include <linux/netfilter/nfnetlink.h>
+#include <linux/netlink.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
@@ -19,16 +21,33 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 enum verdict { MALFORMED, HEADER, MAC, CRYPTO, INIT, RESPONSE, COOKIE, DATA, REASONS };
 static const char *names[] = {"malformed", "header", "mac1", "crypto", "init", "response", "cookie", "transport"};
-static uint64_t counts[REASONS], bytes;
+/* Largest IPv4 header, UDP header, AWG nonce and initiation through MAC1. */
+enum { COPY_RANGE = 60 + 8 + 12 + 148 - 16 };
+static uint64_t counts[REASONS], bytes, copied_bytes, netlink_enobufs;
 static unsigned char hpk[32], mac_key[32];
 static EVP_CIPHER_CTX *cipher;
 static EVP_MAC *algorithm;
 static EVP_MAC_CTX *mac;
 static volatile sig_atomic_t stopping, reporting;
+
+#ifdef PREFILTER_PROFILE
+static uint64_t receive_ns, inspect_ns, header_ns, handshake_ns, verdict_ns;
+static uint64_t thread_cpu_ns(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now)) abort();
+    return (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
+}
+#define TIMER_START(name) uint64_t name = thread_cpu_ns()
+#define TIMER_STOP(name, total) ((total) += thread_cpu_ns() - (name))
+#else
+#define TIMER_START(name) ((void)0)
+#define TIMER_STOP(name, total) ((void)0)
+#endif
 
 static void fail(const char *message) {
     fprintf(stderr, "%s\n", message);
@@ -41,9 +60,17 @@ static void signal_handler(int number) {
 }
 
 static void report(void) {
-    printf("{\"bytes\":%llu", (unsigned long long)bytes);
+    printf("{\"bytes\":%llu,\"copied_bytes\":%llu,\"netlink_enobufs\":%llu",
+           (unsigned long long)bytes, (unsigned long long)copied_bytes,
+           (unsigned long long)netlink_enobufs);
     for (int i = 0; i < REASONS; i++)
         printf(",\"%s\":%llu", names[i], (unsigned long long)counts[i]);
+#ifdef PREFILTER_PROFILE
+    printf(",\"receive_cpu_ns\":%llu,\"inspect_cpu_ns\":%llu,\"header_cpu_ns\":%llu,\"handshake_cpu_ns\":%llu,\"verdict_cpu_ns\":%llu",
+           (unsigned long long)receive_ns, (unsigned long long)inspect_ns,
+           (unsigned long long)header_ns, (unsigned long long)handshake_ns,
+           (unsigned long long)verdict_ns);
+#endif
     puts("}");
     fflush(stdout);
 }
@@ -89,21 +116,26 @@ static void load_keys(const char *path) {
 
 static uint16_t be16(const unsigned char *p) { return (uint16_t)((p[0] << 8) | p[1]); }
 
-static enum verdict inspect(const unsigned char *ip, size_t length) {
+static enum verdict inspect(const unsigned char *ip, size_t length, size_t original_length) {
+    size_t required_copy = original_length < COPY_RANGE ? original_length : COPY_RANGE;
+    if (length > original_length || length < required_copy) return MALFORMED;
     if (length < 28 || ip[0] >> 4 != 4 || ip[9] != 17) return MALFORMED;
     size_t ihl = (ip[0] & 15) * 4u, total = be16(ip + 2);
-    if (ihl < 20 || ihl + 8 > length || total != length || (be16(ip + 6) & 0x3fff)) return MALFORMED;
+    if (ihl < 20 || ihl + 8 > length || total != original_length || (be16(ip + 6) & 0x3fff)) return MALFORMED;
     const unsigned char *udp = ip + ihl;
     size_t udp_length = be16(udp + 4);
     if (udp_length < 8 || ihl + udp_length != total) return MALFORMED;
     const unsigned char *payload = udp + 8;
     size_t size = udp_length - 8;
     if (size < 16) return HEADER;
-    unsigned char iv[16] = {0}, plain[148];
+    if (length < ihl + 8 + 16) return MALFORMED;
+    unsigned char iv[16] = {0}, plain[148 - 16];
     memcpy(iv + 4, payload, 12);
     int produced = 0;
+    TIMER_START(header_start);
     if (!EVP_EncryptInit_ex(cipher, EVP_chacha20(), NULL, hpk, iv) ||
         !EVP_EncryptUpdate(cipher, plain, &produced, payload + 12, 4) || produced != 4) return CRYPTO;
+    TIMER_STOP(header_start, header_ns);
     uint32_t type = (uint32_t)plain[0] | ((uint32_t)plain[1] << 8) |
                     ((uint32_t)plain[2] << 16) | ((uint32_t)plain[3] << 24);
     size_t fixed;
@@ -115,40 +147,59 @@ static enum verdict inspect(const unsigned char *ip, size_t length) {
         default: return HEADER;
     }
     if (size < 12 + fixed) return MALFORMED;
-    if (!EVP_EncryptUpdate(cipher, plain + 4, &produced, payload + 16, (int)fixed - 4) ||
-        produced != (int)fixed - 4) return CRYPTO;
+    if (length < ihl + 8 + 12 + fixed - 16) return MALFORMED;
+    TIMER_START(handshake_start);
+    if (!EVP_EncryptUpdate(cipher, plain + 4, &produced, payload + 16, (int)fixed - 20) ||
+        produced != (int)fixed - 20) return CRYPTO;
     unsigned char expected[16];
     size_t output_size = 0, wanted = sizeof(expected);
     OSSL_PARAM params[] = { OSSL_PARAM_construct_size_t(OSSL_MAC_PARAM_SIZE, &wanted), OSSL_PARAM_construct_end() };
     if (!EVP_MAC_init(mac, mac_key, 32, params) || !EVP_MAC_update(mac, plain, fixed - 32) ||
         !EVP_MAC_final(mac, expected, &output_size, sizeof(expected)) || output_size != 16) return CRYPTO;
+    TIMER_STOP(handshake_start, handshake_ns);
     if (CRYPTO_memcmp(expected, plain + fixed - 32, 16)) return MAC;
     return type == 1 ? INIT : RESPONSE;
 }
 
-static int callback(struct nfq_q_handle *queue, struct nfgenmsg *message, struct nfq_data *data, void *unused) {
-    (void)message; (void)unused;
+static int callback(struct nfq_q_handle *queue, struct nfgenmsg *message, struct nfq_data *data, void *context) {
+    (void)message;
     struct nfqnl_msg_packet_hdr *header = nfq_get_msg_packet_hdr(data);
     if (!header) return -1;
     unsigned char *packet = NULL;
     int length = nfq_get_payload(data, &packet);
-    enum verdict reason = length > 0 ? inspect(packet, (size_t)length) : MALFORMED;
+    size_t original_length = *(size_t *)context;
+    if (!original_length && length > 0) original_length = (size_t)length;
+    TIMER_START(inspect_start);
+    enum verdict reason = length > 0 ? inspect(packet, (size_t)length, original_length) : MALFORMED;
+    TIMER_STOP(inspect_start, inspect_ns);
     counts[reason]++;
-    if (length > 0) bytes += (unsigned int)length;
-    return nfq_set_verdict(queue, ntohl(header->packet_id), reason >= INIT ? NF_ACCEPT : NF_DROP, 0, NULL);
+    if (length > 0) { bytes += original_length; copied_bytes += (unsigned int)length; }
+    TIMER_START(verdict_start);
+    int result = nfq_set_verdict(queue, ntohl(header->packet_id), reason >= INIT ? NF_ACCEPT : NF_DROP, 0, NULL);
+    TIMER_STOP(verdict_start, verdict_ns);
+    return result;
 }
 
 int main(int argc, char **argv) {
     int check = argc == 3 && !strcmp(argv[1], "--check");
-    if (!check && !(argc == 5 && !strcmp(argv[1], "--vm-test") && !strcmp(argv[2], "--queue")))
-        fail("Usage: prefilter --check KEYFILE < IPV4_PACKET; or prefilter --vm-test --queue NUMBER KEYFILE");
+    int prefix_check = argc == 4 && !strcmp(argv[1], "--check-prefix");
+    if (!check && !prefix_check && !(argc == 5 && !strcmp(argv[1], "--vm-test") && !strcmp(argv[2], "--queue")))
+        fail("Usage: prefilter --check KEYFILE; --check-prefix WIRE_LENGTH KEYFILE; or --vm-test --queue NUMBER KEYFILE");
     load_keys(argv[argc - 1]);
     int result = 0;
-    if (check) {
+    if (check || prefix_check) {
         unsigned char packet[65536];
         size_t n = fread(packet, 1, sizeof(packet), stdin);
         if (ferror(stdin) || n == sizeof(packet)) fail("Invalid input packet");
-        enum verdict reason = inspect(packet, n);
+        size_t original_length = n;
+        if (prefix_check) {
+            char *end;
+            errno = 0;
+            unsigned long value = strtoul(argv[2], &end, 10);
+            if (errno || !*argv[2] || *end || !value || value > 65535) fail("Invalid original packet length");
+            original_length = value;
+        }
+        enum verdict reason = inspect(packet, n, original_length);
         printf("{\"accept\":%s,\"reason\":\"%s\"}\n", reason >= INIT ? "true" : "false", names[reason]);
         result = reason >= INIT ? 0 : 2;
     } else {
@@ -164,8 +215,9 @@ int main(int argc, char **argv) {
             fail("Cannot install signal handlers");
         struct nfq_handle *handle = nfq_open();
         if (!handle || nfq_bind_pf(handle, AF_INET)) fail("Cannot bind NFQUEUE");
-        struct nfq_q_handle *queue = nfq_create_queue(handle, (uint16_t)number, callback, NULL);
-        if (!queue || nfq_set_mode(queue, NFQNL_COPY_PACKET, 65535) || nfq_set_queue_maxlen(queue, 2048))
+        size_t original_length = 0;
+        struct nfq_q_handle *queue = nfq_create_queue(handle, (uint16_t)number, callback, &original_length);
+        if (!queue || nfq_set_mode(queue, NFQNL_COPY_PACKET, COPY_RANGE) || nfq_set_queue_maxlen(queue, 2048))
             fail("Cannot configure NFQUEUE");
         int fd = nfq_fd(handle), buffer_size = 4 * 1024 * 1024;
         /* SO_RCVBUF alone is silently clamped by net.core.rmem_max. */
@@ -173,13 +225,41 @@ int main(int argc, char **argv) {
         socklen_t option_size = sizeof(buffer_size);
         if (getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer_size, &option_size)) fail("Cannot read receive buffer");
         unsigned char buffer[131072] __attribute__((aligned));
-        printf("ready rcvbuf=%d queue_maxlen=2048\n", buffer_size); fflush(stdout);
+        printf("ready rcvbuf=%d queue_maxlen=2048 copy_range=%d\n", buffer_size, COPY_RANGE); fflush(stdout);
         while (!stopping) {
             if (reporting) { report(); reporting = 0; }
+            TIMER_START(receive_start);
             ssize_t n = recv(fd, buffer, sizeof(buffer), 0);
-            if (n < 0 && errno == EINTR) continue;
-            if (n < 0 && errno == ENOBUFS) continue;
-            if (n <= 0 || nfq_handle_packet(handle, (char *)buffer, (int)n) < 0) { result = 1; break; }
+            int receive_errno = errno;
+            TIMER_STOP(receive_start, receive_ns);
+            if (n < 0 && receive_errno == EINTR) continue;
+            if (n < 0 && receive_errno == ENOBUFS) { netlink_enobufs++; continue; }
+            if (n <= 0) { result = 1; break; }
+            int remaining = (int)n;
+            struct nlmsghdr *header = (struct nlmsghdr *)buffer;
+            while (NLMSG_OK(header, remaining)) {
+                original_length = 0;
+                if (header->nlmsg_type == ((NFNL_SUBSYS_QUEUE << 8) | NFQNL_MSG_PACKET)) {
+                    struct nlattr *attributes[NFQA_MAX + 1] = {0};
+                    if (nfq_nlmsg_parse(header, attributes) < 0) { perror("Cannot parse queue metadata"); result = 1; break; }
+                    if (attributes[NFQA_CAP_LEN]) {
+                        struct nlattr *attr = attributes[NFQA_CAP_LEN];
+                        uint32_t value;
+                        if (attr->nla_len != NLA_HDRLEN + sizeof(value)) { result = 1; break; }
+                        memcpy(&value, (const char *)attr + NLA_HDRLEN, sizeof(value));
+                        original_length = ntohl(value);
+                    }
+                }
+                if (nfq_handle_packet(handle, (char *)header, (int)header->nlmsg_len) < 0) { perror("Cannot dispatch queue packet"); result = 1; break; }
+                /* The final message may omit alignment padding. */
+                if (header->nlmsg_len == (unsigned int)remaining) { remaining = 0; break; }
+                header = NLMSG_NEXT(header, remaining);
+            }
+            if (result || remaining) {
+                fprintf(stderr, "Invalid netlink datagram, remaining=%d\n", remaining);
+                result = 1;
+                break;
+            }
         }
         report();
         nfq_destroy_queue(queue);

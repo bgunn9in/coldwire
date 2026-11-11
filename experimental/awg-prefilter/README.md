@@ -18,14 +18,18 @@ For incoming IPv4/UDP packets selected by the example rules, the process:
 1. Checks IP/UDP lengths and reads the 12-byte AWG prefix as the ChaCha20 nonce.
 2. Decodes the message type using HeaderProtectionKey.
 3. For initiation and response messages, decrypts the protected handshake
-   fields and checks MAC1 with keyed BLAKE2s-128. Random trailers are excluded.
+   fields through MAC1 and checks it with keyed BLAKE2s-128. MAC2 and random
+   trailers are outside this check.
 4. Accepts recognized transport and cookie messages with sufficient length.
    The exit performs their authentication. Rejected packets receive no reply
    from the filter. Accepted packet contents are unchanged.
 
 Only **S1-S4=12 and H1-H4=1,2,3,4** are supported. These are COLDWIRE's current
 defaults. IPv6 outer transport and other parameter combinations are outside
-this prototype. The parser supports IPv4 options; Linux handles defragmentation
+this prototype. The process copies at most 212 packet bytes from NFQUEUE,
+enough to read initiation MAC1 with a maximum-length IPv4 header. It checks
+the copied length against the original length from `NFQA_CAP_LEN` and the
+IP/UDP headers. The parser supports IPv4 options; Linux handles defragmentation
 before the lab's raw-priority queue. NFQUEUE's GSO normalization stays enabled
 so the process inspects individual datagrams.
 
@@ -71,6 +75,13 @@ cc -O1 -g -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 ASAN_OPTIONS=detect_leaks=1 PREFILTER_BINARY="$PWD/prefilter-asan" python3 test_prefilter.py
 ```
 
+For a separate profiling build, add `-DPREFILTER_PROFILE` to the compiler
+command. Its reports include thread CPU nanoseconds spent receiving netlink
+messages, inspecting packets, decoding headers, checking handshake MAC1 and
+sending verdicts. Header and handshake times are included in inspection time.
+Receive time includes the socket syscall and dequeue work. Clock calls add
+overhead, so use the ordinary build for throughput comparisons.
+
 ## Disposable relay trial
 
 Prepare an isolated client C, entry A and native AWG exit B. Use RFC1918
@@ -98,9 +109,12 @@ On A, start the separately built binary with:
 sudo ./prefilter --vm-test --queue 100 /root/prefilter-private/keys
 ```
 
-It prints `ready` after binding the queue. SIGUSR1 prints cumulative JSON
+It prints `ready` and the copy limit after binding the queue. SIGUSR1 prints cumulative JSON
 counters; SIGTERM prints the final counters and closes the queue. There are
-no per-packet logs. Queue length is bounded at 2048; fail-open is disabled.
+no per-packet logs. `bytes` counts original packet bytes, `copied_bytes`
+counts bytes delivered to userspace, and `netlink_enobufs` counts receive
+overrun notifications. Read kernel queue-drop counters separately.
+Queue length is bounded at 2048; fail-open is disabled.
 The root process uses SO_RCVBUFFORCE to request a 4 MiB receive limit. Linux
 reports 8 MiB after its accounting adjustment. This is a socket limit, not
 resident process memory; kernel queue/socket memory is additional to RSS.
@@ -129,9 +143,53 @@ has no production installer, persistent service or automatic key-rotation
 integration. Resource exhaustion and saturation of the VPS's external link
 still require separate protection.
 
+## Kernel rate guard
+
+The optional [kernel guard example](lab-kernel-guard.nft.example) runs before
+the queue and can also be tested with DNAT alone. It limits each source-IP
+and UDP-source-port tuple to 35,000 packets/s with a 3500-packet burst, then
+limits the aggregate to 50,000 packets/s with a 5000-packet burst. These are
+lab settings. Measure clean traffic, including simultaneous clients, before
+choosing rates for another environment.
+
+The dynamic set holds at most 4096 tuples and expires an idle tuple after
+five seconds. A full set drops packets from new tuples until entries expire.
+Changing an IP or port creates a new bucket. Clients sharing a public IP have
+separate buckets when their outer UDP ports differ. An attacker can still
+fill the set or consume the shared rate budget, affecting legitimate users.
+
+To compare the modes, load the guard table alone for kernel-guard/DNAT, then
+load both example tables for kernel-guard/prefilter. Check each file with
+`nft -c -f` before loading. Use the same lab interface and addresses in both.
+Arm a rollback that removes both experimental tables. Restore DNAT by
+deleting the tables.
+
+```bash
+sudo nft delete table ip awg_prefilter_lab
+sudo nft delete table ip awg_kernel_guard_lab
+```
+
+Delete the tables that are present before stopping the queue process. The
+normal relay table remains responsible for DNAT/SNAT.
+
+## Authentication and camouflage decisions
+
+The prototype continues checking every selected packet. A future flow cache
+would need authenticated confirmation from B, tied to the exact flow and a
+short expiry. A response-shaped packet or conntrack state alone can also
+come from unauthenticated traffic. Reused IP addresses must start a fresh
+check, and one admitted client must never admit every client behind its NAT.
+
+The prototype keeps its strict I1/Jc policy. Dropping those packets changes
+the A-to-B packet pattern. Preserving that pattern would require a separately
+bounded allowance for camouflage packets and measurements on both links.
+
 ## Measurements
 
-See the [VM report](validation.md) and [machine-readable results](results.json).
+The [11 November follow-up](validation-v2.md) and its
+[results](results-v2.json) cover the current copy limit and kernel guard.
+The [original VM report](validation.md) and [results](results.json) cover
+the earlier binary.
 The report separates client interoperability, malformed traffic, flow-table
 pressure and throughput. Its scope is the tested Linux client core; physical
 Windows/macOS/Android/iOS GUI clients were not operated in these tests.

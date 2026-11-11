@@ -161,6 +161,43 @@ class ListTests(unittest.TestCase):
                 self.assertFalse(lists.contains(nets, ip.IPv4Network(f"{a}/32")), (name, a))
             self.assertTrue(lists.contains(nets, ip.IPv4Network("77.88.55.88/32")))
 
+    def test_vpn_only_addresses_are_kept_in_tunnel(self):
+        exact = lists.read_networks(ROOT / "data/ru-networks.txt")
+        bundled = [ip.IPv4Network(e["ip"]) for e in json.loads((ROOT / "ru-direct.amnezia.json").read_bytes())]
+        candidates = list(dict.fromkeys(
+            a for n in bundled for a in (n.network_address, n.broadcast_address)
+            if a.is_global and not a.is_multicast and not lists.contains(exact, ip.IPv4Network(f"{a}/32"))
+        ))[:2]
+        self.assertEqual(len(candidates), 2)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "vpn-only"
+            command = [sys.executable, str(ROOT / "update_lists.py"), "--offline", "--output", str(output),
+                       "--entry", "198.51.100.10", "--exit", "203.0.113.20"]
+            for address in candidates + candidates[:1]:
+                command.extend(["--vpn-only", str(address)])
+            result = subprocess.run(command, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual({p.name for p in output.iterdir()},
+                             {"ru-direct.amnezia.json", "ru-services.amnezia.json"})
+            for name, budget in (("ru-direct", 2010), ("ru-services", 1000)):
+                networks = [ip.IPv4Network(e["ip"]) for e in
+                            json.loads((output / f"{name}.amnezia.json").read_bytes())]
+                for address in candidates + [ip.IPv4Address("198.51.100.10"), ip.IPv4Address("203.0.113.20")]:
+                    self.assertFalse(lists.contains(networks, ip.IPv4Network(f"{address}/32")))
+                self.assertLessEqual(lists.legacy_routes(networks), budget)
+                if name == "ru-direct":
+                    self.assertTrue(all(lists.contains(networks, n) for n in exact))
+
+    def test_vpn_only_rejects_invalid_or_ru_addresses_without_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "refused"
+            for address in ("not-an-ip", "::1", "1.1.1.0/24", "77.88.55.88", "192.168.1.1"):
+                with self.subTest(address=address):
+                    result = subprocess.run([sys.executable, str(ROOT / "update_lists.py"), "--offline",
+                                             "--output", str(output), "--vpn-only", address], capture_output=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(output.exists())
+
     def test_optional_protected_endpoint_changes_lists_and_conflicts_fail_safely(self):
         exact = lists.read_networks(ROOT / "data/ru-networks.txt")
         bundled = [ip.IPv4Network(e["ip"]) for e in json.loads((ROOT / "ru-direct.amnezia.json").read_bytes())]

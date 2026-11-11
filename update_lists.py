@@ -190,11 +190,14 @@ def main():
     parser.add_argument("--offline", action="store_true", help="Use the bundled source snapshots without network access")
     parser.add_argument("--entry", help="Optional entry IPv4 to keep outside the bypass list")
     parser.add_argument("--exit", help="Optional exit IPv4 to keep outside the bypass list")
+    parser.add_argument("--vpn-only", action="append", default=[], metavar="IPV4",
+                        help="Keep an additional destination IPv4 outside both bypass lists; repeat for more addresses")
     args = parser.parse_args()
     try:
         if args.output.exists():
             raise FileExistsError("Output directory already exists")
-        required = tuple(ip.IPv4Address(a) for a in (args.entry, args.exit, "1.1.1.1", "1.0.0.1", "8.8.8.8") if a is not None)
+        required = tuple(ip.IPv4Address(a) for a in (args.entry, args.exit, *args.vpn_only,
+                                                    "1.1.1.1", "1.0.0.1", "8.8.8.8") if a is not None)
         if args.offline:
             exact = read_networks(ROOT / "data/ru-networks.txt")
             protected = read_networks(ROOT / "data/protected-vpn-networks.txt")

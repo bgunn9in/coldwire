@@ -34,8 +34,9 @@ class PrefilterTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def check(self, raw, accept, reason=None):
-        result = subprocess.run([str(BINARY), '--check', str(self.key)], input=raw, capture_output=True)
+    def check(self, raw, accept, reason=None, original_length=None):
+        args = ['--check'] if original_length is None else ['--check-prefix', str(original_length)]
+        result = subprocess.run([str(BINARY), *args, str(self.key)], input=raw, capture_output=True)
         self.assertEqual(result.returncode, 0 if accept else 2, result.stderr.decode(errors='replace'))
         data = json.loads(result.stdout)
         self.assertEqual(data['accept'], accept)
@@ -56,6 +57,27 @@ class PrefilterTests(unittest.TestCase):
             raw = bytearray.fromhex(VECTORS[number])
             raw[30] ^= 1
             self.check(packet(raw), False, 'mac1')
+
+    def test_prefix_copy_preserves_verdict_for_all_types_and_options(self):
+        for number, reason in [('1', 'init'), ('2', 'response'), ('3', 'cookie'), ('4', 'transport')]:
+            for options in (0, 40):
+                for trailer in (0, 2048, 60000):
+                    with self.subTest(number=number, options=options, trailer=trailer):
+                        raw = bytearray(packet(bytes.fromhex(VECTORS[number]) + bytes(trailer)))
+                        raw[0] = 0x45 + options // 4
+                        raw[2:4] = struct.pack('!H', len(raw) + options)
+                        raw = raw[:20] + bytes(options) + raw[20:]
+                        self.check(raw, True, reason)
+                        self.check(raw[:212], True, reason, original_length=len(raw))
+
+    def test_prefix_copy_still_checks_mac_and_original_lengths(self):
+        raw = bytearray(packet(bytes.fromhex(VECTORS['1']) + bytes(2048)))
+        raw[58] ^= 1
+        self.check(raw[:212], False, 'mac1', original_length=len(raw))
+        for length in (0, 27, 43, 187, 211):
+            self.check(raw[:length], False, 'malformed', original_length=len(raw))
+        self.check(raw[:212], False, 'malformed', original_length=len(raw) + 1)
+        self.check(raw, False, 'malformed', original_length=len(raw) - 1)
 
     def test_wrong_header_key_is_dropped(self):
         text = self.key.read_text().replace(VECTORS['header_key'], base64.b64encode(bytes(32)).decode())

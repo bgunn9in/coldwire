@@ -45,7 +45,7 @@ The `ru-direct` algorithm:
 
 1. Collapse the exact RU/local set and compute its IPv4 complement.
 2. Keep VPN prefixes containing DNS 1.1.1.1/1.0.0.1/8.8.8.8 and optional
-   `--entry`/`--exit` addresses, plus foreign portions of Google, Cloudflare
+   `--entry`/`--exit` and `--vpn-only` addresses, plus foreign portions of Google, Cloudflare
    and Telegram ranges.
 3. Fill a budget of 2000 VPN prefixes with the largest remaining prefixes.
 4. Take the complement: smaller foreign gaps become bypass destinations.
@@ -91,6 +91,7 @@ From the repository root, Python 3.10+; no third-party Python packages are neede
 ```powershell
 python .\update_lists.py --output .\generated\fresh-lists
 python .\update_lists.py --entry ENTRY_IPV4 --exit EXIT_IPV4 --output .\generated\protected-lists
+python .\update_lists.py --vpn-only SERVICE_IPV4 --vpn-only SECOND_SERVICE_IPV4 --output .\generated\service-vpn-lists
 python .\update_lists.py --offline --output .\generated\snapshot
 ```
 
@@ -99,6 +100,15 @@ with your addresses if they need explicit bypass protection. The output
 directory must be new. Exactly two importable JSON files are produced;
 existing lists are never overwritten on failure. Console output identifies
 data provenance, prefixes/routes, additional bypass and SHA256.
+
+Use `--vpn-only` for a foreign service that an expanded `ru-direct` range
+would otherwise send outside the VPN. Repeat the option for each destination
+IPv4. Both generated lists exclude those addresses. An address in the exact
+RU/local source causes generation to fail because it conflicts with keeping
+all RU/local destinations direct. The command accepts individual IPv4
+addresses. If a service changes its addresses, regenerate and import the lists
+with its current addresses. Per-app exclusions and IPv6 routing still follow
+the client's settings.
 
 Online mode uses RIPEstat, Google/Cloudflare/Telegram, the
 `lib4u/amnezia-tunneling-ru` catalog and Google DNS-over-HTTPS for missing
