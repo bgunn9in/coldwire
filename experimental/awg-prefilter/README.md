@@ -82,6 +82,36 @@ sending verdicts. Header and handshake times are included in inspection time.
 Receive time includes the socket syscall and dequeue work. Clock calls add
 overhead, so use the ordinary build for throughput comparisons.
 
+## Grouping verdict messages
+
+The optional build groups up to 16 individual verdict messages into one
+netlink datagram. Each message names the exact ID of a packet that has
+already passed inspection. Mixed accept/drop decisions, gaps and wrapped
+IDs keep their individual verdicts. The queue's prefix-verdict API applies
+one decision to every pending ID up to a boundary, so this build uses
+ordinary `NFQNL_MSG_VERDICT` messages. [NFQUEUE API](https://www.netfilter.org/projects/libnetfilter_queue/doxygen/html/group__Queue.html).
+
+```bash
+make check-batch
+```
+
+This builds `prefilter-batch` and runs the protocol tests plus tests of the
+encoded verdict messages and send-error handling. Use that binary with the
+same `--vm-test --queue NUMBER KEYFILE` arguments as the ordinary binary.
+The default `prefilter` build keeps individual submissions.
+
+The grouped build uses `recvmmsg(MSG_WAITFORONE)` to receive one available
+datagram and drain up to 15 more without waiting. It submits a full group
+or the remaining tail before the next blocking receive. Receive storage is
+bounded at 16 × 8192 bytes. A truncated netlink datagram or failed verdict
+submission closes the queue. The existing fail-closed behavior then applies.
+Kernel GSO normalization and the 212-byte packet-copy limit stay enabled.
+
+`receive_calls` and `received_datagrams` describe receive operations.
+`send_calls` counts submission attempts, including interrupted retries,
+and `submitted_verdicts` counts individual verdicts successfully submitted
+to the socket. Kernel forwarding and queue drops require separate counters.
+
 ## Disposable relay trial
 
 Prepare an isolated client C, entry A and native AWG exit B. Use RFC1918
@@ -152,6 +182,11 @@ limits the aggregate to 50,000 packets/s with a 5000-packet burst. These are
 lab settings. Measure clean traffic, including simultaneous clients, before
 choosing rates for another environment.
 
+Also count client-origin drops before NFQUEUE. In the
+[burst study](validation-v4.md), tighter buckets removed queue overflow
+while dropping some client packets earlier. Zero queue drops alone do not
+establish that a policy preserves useful traffic.
+
 The dynamic set holds at most 4096 tuples and expires an idle tuple after
 five seconds. A full set drops packets from new tuples until entries expire.
 Changing an IP or port creates a new bucket. Clients sharing a public IP have
@@ -186,8 +221,13 @@ bounded allowance for camouflage packets and measurements on both links.
 
 ## Measurements
 
-The [11 November follow-up](validation-v2.md) and its
-[results](results-v2.json) cover the current copy limit and kernel guard.
+The [burst and rate study](validation-v4.md) and its [results](results-v4.json)
+compare four admission policies, including shared NAT and address changes.
+No universal preset was selected.
+The [verdict grouping experiment](validation-v3.md) and its
+[results](results-v3.json) compare the optional build with individual submissions.
+The [copy-limit follow-up](validation-v2.md) and its
+[results](results-v2.json) cover the 212-byte copy and kernel guard.
 The [original VM report](validation.md) and [results](results.json) cover
 the earlier binary.
 The report separates client interoperability, malformed traffic, flow-table

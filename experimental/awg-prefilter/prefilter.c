@@ -21,6 +21,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -29,11 +30,21 @@ static const char *names[] = {"malformed", "header", "mac1", "crypto", "init", "
 /* Largest IPv4 header, UDP header, AWG nonce and initiation through MAC1. */
 enum { COPY_RANGE = 60 + 8 + 12 + 148 - 16 };
 static uint64_t counts[REASONS], bytes, copied_bytes, netlink_enobufs;
+static uint64_t receive_calls, received_datagrams, send_calls, submitted_verdicts;
 static unsigned char hpk[32], mac_key[32];
 static EVP_CIPHER_CTX *cipher;
 static EVP_MAC *algorithm;
 static EVP_MAC_CTX *mac;
 static volatile sig_atomic_t stopping, reporting;
+
+#ifdef PREFILTER_BATCH
+enum { BATCH_SIZE = 16, DATAGRAM_SIZE = 8192 };
+static int queue_fd;
+static uint16_t queue_number;
+static unsigned int verdict_count;
+static char verdict_buffers[BATCH_SIZE][64] __attribute__((aligned));
+static struct iovec verdict_iov[BATCH_SIZE];
+#endif
 
 #ifdef PREFILTER_PROFILE
 static uint64_t receive_ns, inspect_ns, header_ns, handshake_ns, verdict_ns;
@@ -65,6 +76,9 @@ static void report(void) {
            (unsigned long long)netlink_enobufs);
     for (int i = 0; i < REASONS; i++)
         printf(",\"%s\":%llu", names[i], (unsigned long long)counts[i]);
+    printf(",\"receive_calls\":%llu,\"received_datagrams\":%llu,\"send_calls\":%llu,\"submitted_verdicts\":%llu",
+           (unsigned long long)receive_calls, (unsigned long long)received_datagrams,
+           (unsigned long long)send_calls, (unsigned long long)submitted_verdicts);
 #ifdef PREFILTER_PROFILE
     printf(",\"receive_cpu_ns\":%llu,\"inspect_cpu_ns\":%llu,\"header_cpu_ns\":%llu,\"handshake_cpu_ns\":%llu,\"verdict_cpu_ns\":%llu",
            (unsigned long long)receive_ns, (unsigned long long)inspect_ns,
@@ -161,6 +175,53 @@ static enum verdict inspect(const unsigned char *ip, size_t length, size_t origi
     return type == 1 ? INIT : RESPONSE;
 }
 
+#ifdef PREFILTER_BATCH
+static int flush_verdicts(void) {
+    if (!verdict_count) return 0;
+    struct sockaddr_nl kernel = { .nl_family = AF_NETLINK };
+    struct msghdr message = {
+        .msg_name = &kernel, .msg_namelen = sizeof(kernel),
+        .msg_iov = verdict_iov, .msg_iovlen = verdict_count
+    };
+    size_t wanted = 0;
+    for (unsigned int i = 0; i < verdict_count; i++) wanted += verdict_iov[i].iov_len;
+    TIMER_START(verdict_start);
+    ssize_t sent;
+    do {
+        send_calls++;
+        sent = sendmsg(queue_fd, &message, 0);
+    } while (sent < 0 && errno == EINTR && !stopping);
+    int send_errno = sent >= 0 && (size_t)sent != wanted ? EIO : errno;
+    TIMER_STOP(verdict_start, verdict_ns);
+    if (sent < 0 || (size_t)sent != wanted) { errno = send_errno; return -1; }
+    submitted_verdicts += verdict_count;
+    verdict_count = 0;
+    return 0;
+}
+#endif
+
+static int submit_verdict(struct nfq_q_handle *queue, uint32_t id, uint32_t verdict) {
+#ifdef PREFILTER_BATCH
+    (void)queue;
+    /* Each message addresses one inspected packet, including across ID gaps/wrap. */
+    struct nlmsghdr *header = nfq_nlmsg_put(verdict_buffers[verdict_count], NFQNL_MSG_VERDICT, queue_number);
+    header->nlmsg_flags = NLM_F_REQUEST;
+    nfq_nlmsg_verdict_put(header, (int)id, (int)verdict);
+    verdict_iov[verdict_count] = (struct iovec){ .iov_base = header, .iov_len = header->nlmsg_len };
+    verdict_count++;
+    return verdict_count == BATCH_SIZE ? flush_verdicts() : 0;
+#else
+    TIMER_START(verdict_start);
+    send_calls++;
+    int result = nfq_set_verdict(queue, id, verdict, 0, NULL);
+    int send_errno = errno;
+    TIMER_STOP(verdict_start, verdict_ns);
+    if (result >= 0) submitted_verdicts++;
+    errno = send_errno;
+    return result;
+#endif
+}
+
 static int callback(struct nfq_q_handle *queue, struct nfgenmsg *message, struct nfq_data *data, void *context) {
     (void)message;
     struct nfqnl_msg_packet_hdr *header = nfq_get_msg_packet_hdr(data);
@@ -174,10 +235,32 @@ static int callback(struct nfq_q_handle *queue, struct nfgenmsg *message, struct
     TIMER_STOP(inspect_start, inspect_ns);
     counts[reason]++;
     if (length > 0) { bytes += original_length; copied_bytes += (unsigned int)length; }
-    TIMER_START(verdict_start);
-    int result = nfq_set_verdict(queue, ntohl(header->packet_id), reason >= INIT ? NF_ACCEPT : NF_DROP, 0, NULL);
-    TIMER_STOP(verdict_start, verdict_ns);
-    return result;
+    return submit_verdict(queue, ntohl(header->packet_id), reason >= INIT ? NF_ACCEPT : NF_DROP);
+}
+
+static int handle_datagram(struct nfq_handle *handle, char *buffer, int length, size_t *original_length) {
+    int remaining = length;
+    struct nlmsghdr *header = (struct nlmsghdr *)buffer;
+    while (NLMSG_OK(header, remaining)) {
+        *original_length = 0;
+        if (header->nlmsg_type == ((NFNL_SUBSYS_QUEUE << 8) | NFQNL_MSG_PACKET)) {
+            struct nlattr *attributes[NFQA_MAX + 1] = {0};
+            if (nfq_nlmsg_parse(header, attributes) < 0) return -1;
+            if (attributes[NFQA_CAP_LEN]) {
+                struct nlattr *attr = attributes[NFQA_CAP_LEN];
+                uint32_t value;
+                if (attr->nla_len != NLA_HDRLEN + sizeof(value)) { errno = EPROTO; return -1; }
+                memcpy(&value, (const char *)attr + NLA_HDRLEN, sizeof(value));
+                *original_length = ntohl(value);
+            }
+        }
+        if (nfq_handle_packet(handle, (char *)header, (int)header->nlmsg_len) < 0) return -1;
+        /* The final message may omit alignment padding. */
+        if (header->nlmsg_len == (unsigned int)remaining) return 0;
+        header = NLMSG_NEXT(header, remaining);
+    }
+    if (remaining) { errno = EPROTO; return -1; }
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -224,42 +307,54 @@ int main(int argc, char **argv) {
         if (setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &buffer_size, sizeof(buffer_size))) fail("Cannot reserve receive buffer");
         socklen_t option_size = sizeof(buffer_size);
         if (getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer_size, &option_size)) fail("Cannot read receive buffer");
-        unsigned char buffer[131072] __attribute__((aligned));
-        printf("ready rcvbuf=%d queue_maxlen=2048 copy_range=%d\n", buffer_size, COPY_RANGE); fflush(stdout);
+#ifdef PREFILTER_BATCH
+        queue_fd = fd;
+        queue_number = (uint16_t)number;
+        char buffers[BATCH_SIZE][DATAGRAM_SIZE] __attribute__((aligned));
+        struct iovec incoming_iov[BATCH_SIZE];
+        struct mmsghdr incoming[BATCH_SIZE] = {0};
+        for (int i = 0; i < BATCH_SIZE; i++) {
+            incoming_iov[i] = (struct iovec){ .iov_base = buffers[i], .iov_len = DATAGRAM_SIZE };
+            incoming[i].msg_hdr.msg_iov = &incoming_iov[i];
+            incoming[i].msg_hdr.msg_iovlen = 1;
+        }
+        int receive_batch = BATCH_SIZE;
+#else
+        char buffer[131072] __attribute__((aligned));
+        int receive_batch = 1;
+#endif
+        printf("ready rcvbuf=%d queue_maxlen=2048 copy_range=%d receive_batch=%d\n", buffer_size, COPY_RANGE, receive_batch);
+        fflush(stdout);
         while (!stopping) {
             if (reporting) { report(); reporting = 0; }
             TIMER_START(receive_start);
+            receive_calls++;
+#ifdef PREFILTER_BATCH
+            int n = recvmmsg(fd, incoming, BATCH_SIZE, MSG_WAITFORONE, NULL);
+#else
             ssize_t n = recv(fd, buffer, sizeof(buffer), 0);
+#endif
             int receive_errno = errno;
             TIMER_STOP(receive_start, receive_ns);
             if (n < 0 && receive_errno == EINTR) continue;
             if (n < 0 && receive_errno == ENOBUFS) { netlink_enobufs++; continue; }
             if (n <= 0) { result = 1; break; }
-            int remaining = (int)n;
-            struct nlmsghdr *header = (struct nlmsghdr *)buffer;
-            while (NLMSG_OK(header, remaining)) {
-                original_length = 0;
-                if (header->nlmsg_type == ((NFNL_SUBSYS_QUEUE << 8) | NFQNL_MSG_PACKET)) {
-                    struct nlattr *attributes[NFQA_MAX + 1] = {0};
-                    if (nfq_nlmsg_parse(header, attributes) < 0) { perror("Cannot parse queue metadata"); result = 1; break; }
-                    if (attributes[NFQA_CAP_LEN]) {
-                        struct nlattr *attr = attributes[NFQA_CAP_LEN];
-                        uint32_t value;
-                        if (attr->nla_len != NLA_HDRLEN + sizeof(value)) { result = 1; break; }
-                        memcpy(&value, (const char *)attr + NLA_HDRLEN, sizeof(value));
-                        original_length = ntohl(value);
-                    }
+#ifdef PREFILTER_BATCH
+            received_datagrams += (unsigned int)n;
+            for (int i = 0; i < n; i++) {
+                if (incoming[i].msg_hdr.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) {
+                    errno = EMSGSIZE;
+                    result = 1;
+                    break;
                 }
-                if (nfq_handle_packet(handle, (char *)header, (int)header->nlmsg_len) < 0) { perror("Cannot dispatch queue packet"); result = 1; break; }
-                /* The final message may omit alignment padding. */
-                if (header->nlmsg_len == (unsigned int)remaining) { remaining = 0; break; }
-                header = NLMSG_NEXT(header, remaining);
+                if (handle_datagram(handle, buffers[i], (int)incoming[i].msg_len, &original_length) < 0) { result = 1; break; }
             }
-            if (result || remaining) {
-                fprintf(stderr, "Invalid netlink datagram, remaining=%d\n", remaining);
-                result = 1;
-                break;
-            }
+            if (!result && flush_verdicts() < 0) result = 1;
+#else
+            received_datagrams++;
+            if (handle_datagram(handle, buffer, (int)n, &original_length) < 0) result = 1;
+#endif
+            if (result) { perror("Queue processing failed"); break; }
         }
         report();
         nfq_destroy_queue(queue);
