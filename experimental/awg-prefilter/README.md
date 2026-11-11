@@ -221,6 +221,10 @@ bounded allowance for camouflage packets and measurements on both links.
 
 ## Measurements
 
+The [bounded smoothing study](validation-v5.md) and its [results](results-v5.json)
+add quiescent counter snapshots, actual-arrival captures and a switch
+`TCP_NODELAY` control. IFB/TBF was not adopted: the tested queues added CPU
+cost or client losses, and the UDP-port selector missed fragmented traffic.
 The [burst and rate study](validation-v4.md) and its [results](results-v4.json)
 compare four admission policies, including shared NAT and address changes.
 No universal preset was selected.
