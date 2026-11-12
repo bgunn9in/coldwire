@@ -221,6 +221,27 @@ bounded allowance for camouflage packets and measurements on both links.
 
 ## Measurements
 
+The [native-switch study](validation-v9.md) and its [results](results-v9.json)
+verify 25,000 offered noise packets/s. All six primary filtered runs kept
+100 Mbit/s and stayed below 75% CPU on all four guests. DNAT saturated entry.
+The [Windows lab switch](lab-switch/README.md) includes source, build instructions
+and tests; VPS installers do not deploy it.
+The [resident-collection study](validation-v8.md) and its [results](results-v8.json)
+reproduce source-VM CPU spikes from new SSH/sudo collection. Persistent
+launches kept all four guests below 75% in six filtered controls at verified
+15,000 noise packets/s and 100 Mbit/s. The Python lab switch limited the
+requested 25,000-packet/s runs; those remain diagnostics, not capacity results.
+The [short-window CPU study](validation-v7.md) and its [results](results-v7.json)
+record all four VMs: at 100 Mbit/s plus 10,000 noise packets/s, measured
+windows stayed below 75% CPU. At 25,000 packets/s, DNAT saturated entry;
+the filter preserved throughput in that comparison, but noise-VM peaks
+failed the criterion for all four VMs. Kernel stacks include verdict reinjection
+and Virtio transmission. The earlier large IFB CPU penalty did not repeat;
+the mechanism behind the cross-study grouping difference remains unresolved.
+The [CPU profiling study](validation-v6.md) and its [results](results-v6.json)
+compare ordinary and timed builds. IFB reduced grouping; timing changed it
+again. Recorded entry/exit/client CPU averages stayed below the study's 75%
+whole-guest criterion; short peaks and noise-VM CPU were not measured.
 The [bounded smoothing study](validation-v5.md) and its [results](results-v5.json)
 add quiescent counter snapshots, actual-arrival captures and a switch
 `TCP_NODELAY` control. IFB/TBF was not adopted: the tested queues added CPU
