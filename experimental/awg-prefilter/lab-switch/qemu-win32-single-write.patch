@@ -1,0 +1,18 @@
+--- a/net/socket.c
++++ b/net/socket.c
+@@ -94,7 +94,15 @@
+     ssize_t ret;
+ 
+     remaining = iov_size(iov, 2) - s->send_index;
++#ifdef CONFIG_WIN32
++    /* Keep the length prefix and frame in one TCP write on Windows. */
++    g_autofree uint8_t *frame = g_malloc(sizeof(len) + size);
++    memcpy(frame, &len, sizeof(len));
++    memcpy(frame + sizeof(len), buf, size);
++    ret = send(s->fd, frame + s->send_index, remaining, 0);
++#else
+     ret = iov_send(s->fd, iov, 2, s->send_index, remaining);
++#endif
+ 
+     if (ret == -1 && errno == EAGAIN) {
+         ret = 0; /* handled further down */

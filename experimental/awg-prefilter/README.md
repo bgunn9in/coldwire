@@ -144,7 +144,10 @@ counters; SIGTERM prints the final counters and closes the queue. There are
 no per-packet logs. `bytes` counts original packet bytes, `copied_bytes`
 counts bytes delivered to userspace, and `netlink_enobufs` counts receive
 overrun notifications. Read kernel queue-drop counters separately.
-Queue length is bounded at 2048; fail-open is disabled.
+Queue length is bounded at 4096; fail-open is disabled. The previous
+2048-packet bound overflowed under the verified burst workload in
+[v11](validation-v11.md). This remains a finite queue, not a loss guarantee
+for larger bursts or a stalled consumer.
 The root process uses SO_RCVBUFFORCE to request a 4 MiB receive limit. Linux
 reports 8 MiB after its accounting adjustment. This is a socket limit, not
 resident process memory; kernel queue/socket memory is additional to RSS.
@@ -220,6 +223,28 @@ the A-to-B packet pattern. Preserving that pattern would require a separately
 bounded allowance for camouflage packets and measurements on both links.
 
 ## Measurements
+
+The [last-ping study](validation-v12.md) and [results](results-v12.json)
+reproduce an early probe timeout while every reply reaches the client.
+A bounded ICMP helper returned 1800/1800 in nine final runs at verified
+25,000 noise packets/s and about 100 Mbit/s; peak whole-VM CPU was 65.38%.
+A deliberate drop was still detected. The historical event lacks a capture,
+so its exact cause remains an inference. VPN and filter code were unchanged
+in this study.
+
+The [QEMU send-path study](validation-v11.md) and [results](results-v11.json)
+resolve the v10 rate shortfall in 33/33 noisy runs on the patched Windows
+executable. Final repeats with the 4096-packet queue recorded zero overflow
+drops, about 100 Mbit/s and entry CPU at most 48.15% under the 90% criterion.
+One of 3000 final ping probes was lost. Patched-backend DNAT also passed;
+earlier saturation does not establish an intrinsic filter speed advantage.
+
+The [two-client and NAT-rebinding study](validation-v10.md) and its
+[results](results-v10.json) use the revised 90% whole-VM CPU threshold.
+All filtered trials kept about 100 Mbit/s total; peak guest CPU was 76.92%.
+Active TCP survived three external-IP/port changes. Only 3 of 20 noisy
+trials verified 25,000 packets/s, so repeatable pacing remains unresolved.
+An immediate-send switch variant did not fix it and was not adopted.
 
 The [native-switch study](validation-v9.md) and its [results](results-v9.json)
 verify 25,000 offered noise packets/s. All six primary filtered runs kept

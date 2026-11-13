@@ -29,6 +29,8 @@ enum verdict { MALFORMED, HEADER, MAC, CRYPTO, INIT, RESPONSE, COOKIE, DATA, REA
 static const char *names[] = {"malformed", "header", "mac1", "crypto", "init", "response", "cookie", "transport"};
 /* Largest IPv4 header, UDP header, AWG nonce and initiation through MAC1. */
 enum { COPY_RANGE = 60 + 8 + 12 + 148 - 16 };
+/* The lab offers bursts up to 4096 packets; 2048 overflowed on the faster backend. */
+enum { QUEUE_MAXLEN = 4096 };
 static uint64_t counts[REASONS], bytes, copied_bytes, netlink_enobufs;
 static uint64_t receive_calls, received_datagrams, send_calls, submitted_verdicts;
 static unsigned char hpk[32], mac_key[32];
@@ -300,7 +302,7 @@ int main(int argc, char **argv) {
         if (!handle || nfq_bind_pf(handle, AF_INET)) fail("Cannot bind NFQUEUE");
         size_t original_length = 0;
         struct nfq_q_handle *queue = nfq_create_queue(handle, (uint16_t)number, callback, &original_length);
-        if (!queue || nfq_set_mode(queue, NFQNL_COPY_PACKET, COPY_RANGE) || nfq_set_queue_maxlen(queue, 2048))
+        if (!queue || nfq_set_mode(queue, NFQNL_COPY_PACKET, COPY_RANGE) || nfq_set_queue_maxlen(queue, QUEUE_MAXLEN))
             fail("Cannot configure NFQUEUE");
         int fd = nfq_fd(handle), buffer_size = 4 * 1024 * 1024;
         /* SO_RCVBUF alone is silently clamped by net.core.rmem_max. */
@@ -323,7 +325,7 @@ int main(int argc, char **argv) {
         char buffer[131072] __attribute__((aligned));
         int receive_batch = 1;
 #endif
-        printf("ready rcvbuf=%d queue_maxlen=2048 copy_range=%d receive_batch=%d\n", buffer_size, COPY_RANGE, receive_batch);
+        printf("ready rcvbuf=%d queue_maxlen=%d copy_range=%d receive_batch=%d\n", buffer_size, QUEUE_MAXLEN, COPY_RANGE, receive_batch);
         fflush(stdout);
         while (!stopping) {
             if (reporting) { report(); reporting = 0; }
