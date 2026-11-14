@@ -258,6 +258,15 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [successive-move study](validation-v25.md) and [data](results-v25.json)
+preserve the selected ciphertext across attempts and merge newer replies
+on another authenticated move. The ordinary 500-ms ring and ciphertext
+byte budgets are unchanged. Tests separate a shorter cooldown, snapshot
+retention and the loss of an intermediate recovery path. One peer can now
+use the global allowance of one nonempty attempt per 250 ms. Recovery is
+still experimental and off by default; delivery and the one-second probe
+deadline are measured separately.
+
 The [deferred-retry study](validation-v24.md) and [data](results-v24.json)
 add one bounded pending ciphertext snapshot for the latest authenticated
 address. With two NAT moves 250 ms apart at 300-ms RTT, UDP loss fell from

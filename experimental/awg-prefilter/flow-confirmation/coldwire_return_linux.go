@@ -11,12 +11,14 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 )
 
+// shortcut: the client replay window still bounds recovery; validate higher PPS before deployment.
 const (
-	coldwireReturnSlots = 8192
-	coldwireReturnBytes = 8 << 20
-	coldwireReturnAge   = 500 * time.Millisecond
-	coldwireReplaySlots = 4096
-	coldwireReplayBytes = 2 << 20
+	coldwireReturnSlots        = 8192
+	coldwireReturnBytes        = 8 << 20
+	coldwireReturnAge          = 500 * time.Millisecond
+	coldwireReplaySlots        = 8192
+	coldwireReplayBytes        = 2 << 20
+	coldwirePeerReplayInterval = 250 * time.Millisecond
 )
 
 var coldwireReturnEnabled = os.Getenv("COLDWIRE_LAB_RETURN_REPLAY") == "1" && coldwireProofPath != ""
@@ -30,6 +32,7 @@ type coldwireReturnPacket struct {
 	index   uint32
 	sent    time.Time
 	payload []byte
+	serial  uint64
 }
 
 type coldwireReturnCache struct {
@@ -40,6 +43,7 @@ type coldwireReturnCache struct {
 	pending            map[[32]byte]coldwireReturnPending
 	pendingBytes       int
 	pendingPackets     int
+	serial             uint64
 }
 
 func (cache *coldwireReturnCache) discard() {
@@ -68,17 +72,19 @@ func (cache *coldwireReturnCache) remember(packet coldwireReturnPacket) {
 	data := make([]byte, len(packet.payload))
 	copy(data, packet.payload)
 	packet.payload = data
+	cache.serial++
+	packet.serial = cache.serial
 	cache.packets[(cache.head+cache.count)%coldwireReturnSlots] = packet
 	cache.count++
 	cache.bytes += len(data)
 }
 
-func (cache *coldwireReturnCache) selectReplies(peer [32]byte, birth time.Time, index uint32, now time.Time) [][]byte {
+func (cache *coldwireReturnCache) selectReplies(peer [32]byte, birth time.Time, index uint32, now time.Time) ([][]byte, uint64) {
 	cache.Lock()
 	defer cache.Unlock()
 	cache.prune(now)
 	if !cache.lastReplay.IsZero() && now.Sub(cache.lastReplay) < 250*time.Millisecond {
-		return nil
+		return nil, cache.serial
 	}
 	var buffers [][]byte
 	size := 0
@@ -101,7 +107,7 @@ func (cache *coldwireReturnCache) selectReplies(peer [32]byte, birth time.Time, 
 	if len(buffers) > 0 {
 		cache.lastReplay = now
 	}
-	return buffers
+	return buffers, cache.serial
 }
 
 func coldwireReturnStorage() *coldwireReturnCache {
@@ -147,7 +153,7 @@ func (peer *Peer) coldwireReplayReplies(identity [32]byte, keypair *Keypair, end
 		peer.coldwireRetryReplies(identity, keypair, endpoint)
 		return
 	}
-	if !peer.coldwireReturnLast.IsZero() && now.Sub(peer.coldwireReturnLast) < time.Second {
+	if !peer.coldwireReturnLast.IsZero() && now.Sub(peer.coldwireReturnLast) < coldwirePeerReplayInterval {
 		peer.coldwireDeferReplies(identity, keypair, endpoint, now)
 		return
 	}
@@ -164,8 +170,9 @@ func (peer *Peer) coldwireReplayReplies(identity [32]byte, keypair *Keypair, end
 		return
 	}
 	peer.coldwireReturnLast = now
-	buffers := cache.selectReplies(identity, keypair.created, keypair.localIndex, now)
+	buffers, through := cache.selectReplies(identity, keypair.created, keypair.localIndex, now)
 	if len(buffers) > 0 {
+		cache.holdReplies(identity, keypair.created, keypair.localIndex, endpoint.DstToString(), now, through, buffers)
 		peer.device.log.Verbosef("%v - Lab return attempt kind=immediate packets=%d target=%s", peer, len(buffers), endpoint.DstToString())
 	}
 	peer.coldwireSendReplies(keypair, endpoint, buffers)

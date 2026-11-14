@@ -11,7 +11,7 @@ const (
 	coldwirePendingPeers   = 16
 	coldwirePendingAge     = 1100 * time.Millisecond
 	coldwirePendingBytes   = 2 << 20
-	coldwirePendingPackets = 4096
+	coldwirePendingPackets = coldwireReplaySlots
 )
 
 // Only ciphertext and scalar ownership are retained; the next fresh packet supplies the endpoint.
@@ -22,6 +22,31 @@ type coldwireReturnPending struct {
 	due     time.Time
 	expires time.Time
 	buffers [][]byte
+	through uint64
+	armed   bool
+}
+
+// Reuse the selected ciphertext so a second move cannot erase the first recovery window.
+func (cache *coldwireReturnCache) holdReplies(identity [32]byte, birth time.Time, index uint32, address string, now time.Time, through uint64, buffers [][]byte) {
+	cache.Lock()
+	defer cache.Unlock()
+	cache.prunePending(now)
+	if _, ok := cache.pending[identity]; ok || len(buffers) == 0 || len(cache.pending) >= coldwirePendingPeers || cache.pendingPackets+len(buffers) > coldwirePendingPackets {
+		return
+	}
+	size := 0
+	for _, buffer := range buffers {
+		size += len(buffer)
+	}
+	if cache.pendingBytes+size > coldwirePendingBytes {
+		return
+	}
+	if cache.pending == nil {
+		cache.pending = make(map[[32]byte]coldwireReturnPending)
+	}
+	cache.pending[identity] = coldwireReturnPending{birth: birth, index: index, address: address, due: now.Add(coldwirePeerReplayInterval), expires: now.Add(coldwirePendingAge), buffers: append([][]byte(nil), buffers...), through: through}
+	cache.pendingBytes += size
+	cache.pendingPackets += len(buffers)
 }
 
 func (cache *coldwireReturnCache) dropPending(identity [32]byte) {
@@ -63,6 +88,21 @@ func (cache *coldwireReturnCache) retargetPending(identity [32]byte, birth time.
 		return false
 	}
 	value.address = address
+	value.armed = true
+	cache.prune(now)
+	for i := 0; i < cache.count && cache.pendingPackets < coldwirePendingPackets; i++ {
+		packet := &cache.packets[(cache.head+i)%coldwireReturnSlots]
+		if packet.serial <= value.through || packet.peer != identity || packet.birth != birth || packet.index != index || now.Sub(packet.sent) >= coldwireReturnAge {
+			continue
+		}
+		if cache.pendingBytes+len(packet.payload) > coldwirePendingBytes {
+			break
+		}
+		value.buffers = append(value.buffers, append([]byte(nil), packet.payload...))
+		value.through = packet.serial
+		cache.pendingBytes += len(packet.payload)
+		cache.pendingPackets++
+	}
 	cache.pending[identity] = value
 	return true
 }
@@ -75,7 +115,7 @@ func (cache *coldwireReturnCache) deferReplies(identity [32]byte, birth time.Tim
 		return
 	}
 	cache.prune(now)
-	value := coldwireReturnPending{birth: birth, index: index, address: address, due: due, expires: now.Add(coldwirePendingAge)}
+	value := coldwireReturnPending{birth: birth, index: index, address: address, due: due, expires: now.Add(coldwirePendingAge), through: cache.serial, armed: true}
 	if next := cache.lastReplay.Add(250 * time.Millisecond); next.After(value.due) {
 		value.due = next
 	}
@@ -117,10 +157,13 @@ func (cache *coldwireReturnCache) takePending(identity [32]byte, birth time.Time
 		cache.dropPending(identity)
 		return nil
 	}
-	if now.Before(value.due) || (!cache.lastReplay.IsZero() && now.Sub(cache.lastReplay) < 250*time.Millisecond) {
+	if !value.armed || now.Before(value.due) || (!cache.lastReplay.IsZero() && now.Sub(cache.lastReplay) < 250*time.Millisecond) {
 		return nil
 	}
-	cache.dropPending(identity)
+	// The authenticated destination can disappear before this attempt arrives.
+	value.armed = false
+	value.due = now.Add(coldwirePeerReplayInterval)
+	cache.pending[identity] = value
 	cache.lastReplay = now
 	return value.buffers
 }
@@ -129,7 +172,7 @@ func (peer *Peer) coldwireDeferReplies(identity [32]byte, keypair *Keypair, endp
 	if !peer.isRunning.Load() {
 		return
 	}
-	due := peer.coldwireReturnLast.Add(time.Second)
+	due := peer.coldwireReturnLast.Add(coldwirePeerReplayInterval)
 	if due.Before(now) {
 		due = now
 	}
@@ -154,7 +197,7 @@ func (peer *Peer) coldwireRetryReplies(identity [32]byte, keypair *Keypair, endp
 		return
 	}
 	now := time.Now()
-	if (!peer.coldwireReturnLast.IsZero() && now.Sub(peer.coldwireReturnLast) < time.Second) || !coldwireReplaySending.TryLock() {
+	if (!peer.coldwireReturnLast.IsZero() && now.Sub(peer.coldwireReturnLast) < coldwirePeerReplayInterval) || !coldwireReplaySending.TryLock() {
 		return
 	}
 	defer coldwireReplaySending.Unlock()

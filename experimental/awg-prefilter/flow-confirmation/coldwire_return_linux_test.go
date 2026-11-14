@@ -21,28 +21,28 @@ func TestColdwireReturnIsolationExpiryAndOwnership(t *testing.T) {
 	data := []byte("encrypted reply")
 	cache.remember(coldwireReturnPacket{peer: identity, birth: now, index: 7, sent: now, payload: data})
 	data[0] = 'X'
-	if got := cache.selectReplies([32]byte{2}, now, 7, now); len(got) != 0 {
+	if got, _ := cache.selectReplies([32]byte{2}, now, 7, now); len(got) != 0 {
 		t.Fatal("another peer received ciphertext")
 	}
-	if got := cache.selectReplies(identity, now.Add(time.Second), 7, now); len(got) != 0 {
+	if got, _ := cache.selectReplies(identity, now.Add(time.Second), 7, now); len(got) != 0 {
 		t.Fatal("another epoch received ciphertext")
 	}
-	if got := cache.selectReplies(identity, now, 8, now); len(got) != 0 {
+	if got, _ := cache.selectReplies(identity, now, 8, now); len(got) != 0 {
 		t.Fatal("another key index received ciphertext")
 	}
-	got := cache.selectReplies(identity, now, 7, now)
+	got, _ := cache.selectReplies(identity, now, 7, now)
 	if len(got) != 1 || !bytes.Equal(got[0], []byte("encrypted reply")) {
 		t.Fatal("pooled input buffer retained")
 	}
 	got[0][0] = 'Y'
-	if got := cache.selectReplies(identity, now, 7, now.Add(249*time.Millisecond)); len(got) != 0 {
+	if got, _ := cache.selectReplies(identity, now, 7, now.Add(249*time.Millisecond)); len(got) != 0 {
 		t.Fatal("global replay frequency unbounded")
 	}
-	got = cache.selectReplies(identity, now, 7, now.Add(250*time.Millisecond))
+	got, _ = cache.selectReplies(identity, now, 7, now.Add(250*time.Millisecond))
 	if len(got) != 1 || got[0][0] != 'e' {
 		t.Fatal("replay write modified cached ciphertext")
 	}
-	if got := cache.selectReplies(identity, now, 7, now.Add(coldwireReturnAge)); len(got) != 0 || cache.count != 0 || cache.bytes != 0 {
+	if got, _ := cache.selectReplies(identity, now, 7, now.Add(coldwireReturnAge)); len(got) != 0 || cache.count != 0 || cache.bytes != 0 {
 		t.Fatal("expired ciphertext retained")
 	}
 	for _, packet := range cache.packets {
@@ -146,7 +146,7 @@ func TestColdwireReturnCapacityAndReplayOrder(t *testing.T) {
 	if cache.count != coldwireReturnSlots || cache.bytes != coldwireReturnSlots*128 {
 		t.Fatal("packet bound failed")
 	}
-	got := cache.selectReplies(identity, now, 9, now)
+	got, _ := cache.selectReplies(identity, now, 9, now)
 	if len(got) != coldwireReplaySlots {
 		t.Fatal("replay packet bound failed")
 	}
@@ -163,7 +163,7 @@ func TestColdwireReturnCapacityAndReplayOrder(t *testing.T) {
 	if cache.bytes > coldwireReturnBytes || cache.count != coldwireReturnBytes/len(data) {
 		t.Fatal("global byte bound failed")
 	}
-	got = cache.selectReplies(identity, now, 9, now)
+	got, _ = cache.selectReplies(identity, now, 9, now)
 	if len(got)*len(data) != coldwireReplayBytes {
 		t.Fatal("replay byte bound failed")
 	}

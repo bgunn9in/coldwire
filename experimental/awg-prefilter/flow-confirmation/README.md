@@ -11,7 +11,9 @@ adds an optional 500-ms history of B's encrypted replies. Six final trials
 had no network UDP loss or late probes, with CPU recorded without a
 threshold. The option is off by default; its repeated wire packets have
 not been tested against DPI. The [deferred-recovery study](../validation-v24.md)
-adds one bounded pending snapshot for fast moves. The preceding
+adds one bounded pending snapshot for fast moves. The
+[successive-move study](../validation-v25.md) preserves and merges it across
+attempts. The preceding
 [boundary study](../validation-v23.md) tests larger RTTs and delayed discovery.
 Earlier results are in the [300-ms follow-up](../validation-v21.md),
 [original WAN tests](../validation-v20.md), [local-link mobility tests](../validation-v19.md)
@@ -125,37 +127,43 @@ endpoint, B commits that endpoint before taking the recovery snapshot.
 The sender records each encrypted packet before reading its destination,
 so packets created after the snapshot already use the new path. B can
 resend this peer's current-epoch ciphertext towards it.
-Each attempt takes at most 4096 packets and 2 MiB, in original order.
-There is at most one attempt per second per peer, including empty immediate
+Each attempt takes at most 8192 packets and 2 MiB, in original order.
+There is at most one attempt per 250 ms per peer, including empty immediate
 lookups, and one nonempty attempt per 250 ms globally. Only one send can be
 in progress. Ordinary endpoint updates continue while recovery waits.
 Clients use their existing replay filter to discard copies already seen.
 
-If a move hits a cooldown or a busy sender, B can retain one pending snapshot
-for that peer. All pending snapshots together hold at most 16 peers, 4096
-packets and 2 MiB. They contain ciphertext, the peer-key hash, scalar key
-epoch fields and an address string. A later authenticated move retargets
-the same snapshot without copying it or extending its lifetime.
+After an immediate attempt, B retains the selected ciphertext without another
+payload copy. Stationary traffic cannot rearm it. A move blocked by cooldown
+or a busy sender can also create a pending snapshot from the ordinary ring.
+All retained snapshots together hold at most 16 peers, 8192 packets and 2 MiB.
+They contain ciphertext, the peer-key hash, scalar key epoch/order fields
+and an address string. A fresh authenticated move retargets the snapshot
+and appends newer eligible replies from the ring within those same budgets.
+A local insertion sequence prevents overlap from being copied twice.
 
-After the cooldown, the next fresh transport notification can consume one
-deferred attempt. Its current key, source policy and endpoint must still
+After cooldown, a fresh transport notification can make one deferred attempt
+for that move. Its current key, source policy and endpoint must still
 match. A stopped peer, closed device or disabled roaming prevents the retry;
 each send batch checks the current key and endpoint again. Already submitted
-network packets cannot be recalled. Pending state expires after 1100 ms;
-the existing 100-ms cleanup tick also releases idle snapshots. There are no
+network packets cannot be recalled. After an attempt, the snapshot becomes
+unarmed and remains available for another fresh move until its original
+1100-ms deadline. Retargeting and sending never extend that deadline.
+The existing 100-ms cleanup tick also releases idle snapshots. There are no
 new per-peer timers or workers. Without another qualifying client packet
 before expiry, no deferred attempt occurs.
 
-The ordinary ring still selects only packets younger than 500 ms. A pending
-snapshot can outlive that ring; it does not collect later replies. More
-moves can therefore leave new loss, and a client's replay window can reject
-old copies. The [v24 report](../validation-v24.md) records these limits.
+The ordinary ring still selects only packets younger than 500 ms. A retained
+snapshot can outlive that ring; newer replies are added only on another
+authenticated move. The [v25 report](../validation-v25.md) compares the changes
+with v24 and records the remaining delivery and deadline limits.
 
-The [boundary study](../validation-v23.md) measures where these bounds leave
-loss. At 6000 datagrams/s, the 500-ms age is tighter than the 4096-packet
-replay limit. Larger packets can hit the 2-MiB byte budget first. The cache
-is shared between peers, so another peer can evict recent replies. v23's
-baseline skipped blocked moves; the pending snapshot above is new in v24.
+The [boundary study](../validation-v23.md) used the earlier 4096-packet limit;
+[v24](../validation-v24.md) added a frozen pending snapshot. V25 preserves
+and merges snapshots across attempts. The 2-MiB byte budgets are unchanged,
+but one peer can now use the global four-attempts/s allowance. Larger packets
+can exhaust the byte budget first. The cache is shared between peers, so
+another peer can evict recent replies.
 The helper also uses a one-second
 TCP connect and server TLS-handshake timeout; startup at RTT 1400 ms failed
 in the lab. Longer-timeout raw TCP success does not establish mTLS support
@@ -278,8 +286,9 @@ sudo python3 agent.py --vm-test entry /root/flow-confirmation/config.json
 Both status files report connection state and bounded counters. A also
 records grants, expiry and replaced tuples. Measure early client discards,
 NFQUEUE loss, useful throughput, probe delivery and whole-VM CPU together.
-The [latest report](../validation-v24.md) records deferred recovery and the
-corrected lab NAT model. [v23](../validation-v23.md) records the separate
+The [latest report](../validation-v25.md) studies repeated-move recovery.
+[v24](../validation-v24.md) records the corrected lab NAT model.
+[v23](../validation-v23.md) records the separate
 startup limit. The [v22 study](../validation-v22.md) contains
 the original recovery controls and measurement corrections. Earlier admission and
 cold-start controls are in [v19](../validation-v19.md).

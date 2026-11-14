@@ -14,7 +14,7 @@ func TestColdwireReturnExactAgeBoundary(t *testing.T) {
 	for _, age := range []time.Duration{coldwireReturnAge - time.Nanosecond, coldwireReturnAge, coldwireReturnAge + time.Nanosecond} {
 		cache := new(coldwireReturnCache)
 		cache.remember(coldwireReturnPacket{peer: [32]byte{1}, birth: now, index: 1, sent: now, payload: []byte{1}})
-		got := cache.selectReplies([32]byte{1}, now, 1, now.Add(age))
+		got, _ := cache.selectReplies([32]byte{1}, now, 1, now.Add(age))
 		want := 0
 		if age < coldwireReturnAge {
 			want = 1
@@ -32,7 +32,7 @@ func TestColdwireReturnSharedCacheCanEvictAnotherPeer(t *testing.T) {
 	for i := 0; i < coldwireReturnSlots; i++ {
 		cache.remember(coldwireReturnPacket{peer: [32]byte{2}, birth: now, index: 2, sent: now, payload: []byte{2}})
 	}
-	if got := cache.selectReplies([32]byte{1}, now, 1, now.Add(time.Millisecond)); len(got) != 0 {
+	if got, _ := cache.selectReplies([32]byte{1}, now, 1, now.Add(time.Millisecond)); len(got) != 0 {
 		t.Fatal("the globally evicted peer unexpectedly retained a reply")
 	}
 	if cache.count != coldwireReturnSlots || cache.bytes != coldwireReturnSlots {
@@ -50,7 +50,7 @@ func TestColdwireReturnByteBudgetSelectsNewestSuffix(t *testing.T) {
 		binary.BigEndian.PutUint32(payload, uint32(i))
 		cache.remember(coldwireReturnPacket{peer: [32]byte{1}, birth: now, index: 1, sent: now, payload: payload})
 	}
-	got := cache.selectReplies([32]byte{1}, now, 1, now.Add(time.Millisecond))
+	got, _ := cache.selectReplies([32]byte{1}, now, 1, now.Add(time.Millisecond))
 	want := coldwireReplayBytes / size
 	if len(got) != want || cache.count != count {
 		t.Fatalf("selected %d of %d packets, want %d", len(got), cache.count, want)
