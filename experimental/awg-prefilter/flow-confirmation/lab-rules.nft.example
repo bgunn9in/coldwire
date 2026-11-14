@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: MIT
+# Disposable IPv4 lab only. Lease helpers must start before client measurements.
+table ip awg_kernel_guard_lab {
+    set unknown_sources {
+        type ipv4_addr
+        flags dynamic,timeout
+        timeout 5s
+        gc-interval 1s
+        size 4096
+    }
+    set trusted {
+        typeof ip saddr . udp sport . ct id
+        flags timeout
+        timeout 10s
+        gc-interval 1s
+        size 4096
+    }
+    set handshake_sources {
+        type ipv4_addr
+        flags dynamic,timeout
+        timeout 5s
+        gc-interval 1s
+        size 4096
+    }
+    chain handshake_aggregate {
+        limit rate over 100/second burst 16 packets counter drop
+        counter return
+    }
+    chain handshake_guard {
+        update @handshake_sources { ip saddr limit rate 20/second burst 8 packets } counter goto handshake_aggregate
+        counter drop
+    }
+    chain aggregate {
+        limit rate over 6000/second burst 1024 packets counter drop
+        counter return
+    }
+    chain guard {
+        update @unknown_sources { ip saddr limit rate 1500/second burst 4096 packets } counter goto aggregate
+        # A new source also fails closed if the bounded set cannot allocate it.
+        counter drop
+    }
+    chain trusted_flow {
+        ip saddr 192.168.76.40 counter comment "trusted_noise"
+        counter return comment "trusted_total"
+    }
+    chain early {
+        type filter hook prerouting priority -150; policy accept;
+        iifname "enp0s3" ip daddr 192.168.76.10 ip saddr 192.168.76.20 udp sport 32497 ct direction reply return
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark set meta mark & 0x8fffffff
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 ip saddr . udp sport . ct id @trusted meta mark set meta mark | 0x10000000 goto trusted_flow
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 jump guard
+    }
+    chain queued {
+        type filter hook prerouting priority -140; policy accept;
+        iifname "enp0s3" ip daddr 192.168.76.10 ip saddr 192.168.76.20 udp sport 32497 ct direction reply return
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark & 0x10000000 != 0 return
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 queue num 100
+    }
+    chain classified_handshakes {
+        type filter hook prerouting priority -138; policy accept;
+        iifname "enp0s3" ip daddr 192.168.76.10 ip saddr 192.168.76.20 udp sport 32497 ct direction reply return
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark & 0x10000000 != 0 return
+        # An older filter without classification must fail closed.
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark & 0x40000000 == 0 counter drop
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark & 0x20000000 != 0 jump handshake_guard
+    }
+}

@@ -202,20 +202,42 @@ static int flush_verdicts(void) {
 }
 #endif
 
-static int submit_verdict(struct nfq_q_handle *queue, uint32_t id, uint32_t verdict) {
+static uint32_t verdict_mark(enum verdict reason, uint32_t existing) {
+#ifdef PREFILTER_HANDSHAKE_MARK
+    const uint32_t handshake = UINT32_C(0x20000000);
+    const uint32_t classified = UINT32_C(0x40000000);
+    return (existing & ~(handshake | classified)) | classified |
+           ((reason == INIT || reason == RESPONSE || reason == COOKIE) ? handshake : 0);
+#else
+    (void)reason;
+    return existing;
+#endif
+}
+
+static int submit_verdict(struct nfq_q_handle *queue, uint32_t id, uint32_t verdict, uint32_t mark) {
+#ifndef PREFILTER_HANDSHAKE_MARK
+    (void)mark;
+#endif
 #ifdef PREFILTER_BATCH
     (void)queue;
     /* Each message addresses one inspected packet, including across ID gaps/wrap. */
     struct nlmsghdr *header = nfq_nlmsg_put(verdict_buffers[verdict_count], NFQNL_MSG_VERDICT, queue_number);
     header->nlmsg_flags = NLM_F_REQUEST;
     nfq_nlmsg_verdict_put(header, (int)id, (int)verdict);
+#ifdef PREFILTER_HANDSHAKE_MARK
+    nfq_nlmsg_verdict_put_mark(header, mark);
+#endif
     verdict_iov[verdict_count] = (struct iovec){ .iov_base = header, .iov_len = header->nlmsg_len };
     verdict_count++;
     return verdict_count == BATCH_SIZE ? flush_verdicts() : 0;
 #else
     TIMER_START(verdict_start);
     send_calls++;
+#ifdef PREFILTER_HANDSHAKE_MARK
+    int result = nfq_set_verdict2(queue, id, verdict, mark, 0, NULL);
+#else
     int result = nfq_set_verdict(queue, id, verdict, 0, NULL);
+#endif
     int send_errno = errno;
     TIMER_STOP(verdict_start, verdict_ns);
     if (result >= 0) submitted_verdicts++;
@@ -237,7 +259,8 @@ static int callback(struct nfq_q_handle *queue, struct nfgenmsg *message, struct
     TIMER_STOP(inspect_start, inspect_ns);
     counts[reason]++;
     if (length > 0) { bytes += original_length; copied_bytes += (unsigned int)length; }
-    return submit_verdict(queue, ntohl(header->packet_id), reason >= INIT ? NF_ACCEPT : NF_DROP);
+    return submit_verdict(queue, ntohl(header->packet_id), reason >= INIT ? NF_ACCEPT : NF_DROP,
+                          verdict_mark(reason, nfq_get_nfmark(data)));
 }
 
 static int handle_datagram(struct nfq_handle *handle, char *buffer, int length, size_t *original_length) {

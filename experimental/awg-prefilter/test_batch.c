@@ -43,7 +43,9 @@ int main(int argc, char **argv) {
         uint32_t id = ntohl(frame[0]), original = ntohl(frame[1]), copied = ntohl(frame[2]);
         if (copied >= sizeof(packet) || fread(packet, 1, copied, stdin) != copied) return 1;
         enum verdict reason = inspect(packet, copied, original);
-        if (submit_verdict(NULL, id, reason >= INIT ? NF_ACCEPT : NF_DROP) < 0) return 1;
+        const char *mark_text = getenv("BATCH_TEST_MARK");
+        uint32_t mark = mark_text ? (uint32_t)strtoul(mark_text, NULL, 0) : 0;
+        if (submit_verdict(NULL, id, reason >= INIT ? NF_ACCEPT : NF_DROP, verdict_mark(reason, mark)) < 0) return 1;
     }
     if (ferror(stdin) || flush_verdicts() < 0) return 1;
     return 0;

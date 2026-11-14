@@ -17,7 +17,7 @@
 #define INPUT_CAP 262144u
 #define OUTPUT_CAP (4u * 1024u * 1024u)
 #define FRAME_CAP 65536u
-#define BINS 20000u
+#define BINS 4096u
 
 typedef struct {
     SOCKET fd;
@@ -115,19 +115,27 @@ static int enqueue(Peer *p, const unsigned char *data, size_t size) {
     return 1;
 }
 
-static void observe_noise(const unsigned char *f, uint32_t size) {
-    static const unsigned char addresses[] = {192, 168, 76, 40, 192, 168, 76, 10};
-    if (size < 46 || f[16] != 8 || f[17] || f[18] != 0x45 || f[27] != 17 ||
-        memcmp(f + 30, addresses, 8) || be16(f + 38) != 46000 ||
-        be16(f + 40) != 32497 || be16(f + 42) != 264) return;
-    uint64_t stamp = now_ns(), bucket = stamp / UINT64_C(100000000);
+static void record_noise(uint64_t stamp) {
+    uint64_t bucket = stamp / UINT64_C(100000000);
     if (!bin_count || bins[bin_count - 1].bucket != bucket) {
-        assert(bin_count < BINS);
         if (bin_count) assert(bucket > bins[bin_count - 1].bucket);
+        if (bin_count == BINS) {
+            /* Observation history must not terminate Ethernet forwarding. */
+            memmove(bins, bins + 1, (BINS - 1) * sizeof(*bins));
+            bin_count--;
+        }
         bins[bin_count++] = (Bin){bucket, 0, stamp};
     }
     bins[bin_count - 1].count++; noise_frames++; noise_last_ns = stamp;
     if (!noise_first_ns) noise_first_ns = stamp;
+}
+
+static void observe_noise(const unsigned char *f, uint32_t size) {
+    static const unsigned char addresses[] = {192, 168, 76, 40, 192, 168, 76, 10};
+    if (size < 46 || f[16] != 8 || f[17] || f[18] != 0x45 || f[27] != 17 ||
+        memcmp(f + 30, addresses, 8) ||
+        be16(f + 40) != 32497 || be16(f + 42) != 264) return;
+    record_noise(now_ns());
 }
 
 static void forward_frame(int source, const unsigned char *f, uint32_t size) {
@@ -228,7 +236,11 @@ static void self_test(void) {
     const unsigned char invalid[] = {0,1,0,1};
     memcpy(peers[0].input, invalid, 4); peers[0].input_len = 4; parse_input(0);
     assert(!peers[0].active && malformed_connections == 1);
-    puts("PASS ring wrap/bounds, MAC eviction/disconnect and incremental frame parsing");
+    for (uint64_t i = 1; i <= BINS + 3; i++) record_noise(i * UINT64_C(100000000));
+    assert(bin_count == BINS && bins[0].bucket == 4 && bins[BINS-1].bucket == BINS + 3);
+    record_noise((BINS + 3) * UINT64_C(100000000) + 1);
+    assert(bin_count == BINS && bins[BINS-1].count == 2 && noise_frames == BINS + 4);
+    puts("PASS ring wrap/bounds, MAC eviction/disconnect, incremental parsing and rolling noise history");
 }
 
 static BOOL WINAPI control(DWORD event) {

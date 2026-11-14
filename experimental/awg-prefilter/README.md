@@ -11,6 +11,12 @@ receives the HeaderProtectionKey and the exit's public key. It does not
 receive the exit's VPN private key, client private keys, PSK or session keys.
 User traffic remains encrypted between client and exit.
 
+The separate [exit-confirmed flow experiment](flow-confirmation/README.md)
+adds short kernel leases after B authenticates transport traffic. It needs
+server-side changes on A and B, while clients keep their profiles and may
+change IP or NAT port. [v18](validation-v18.md) records multi-flow noise,
+cold connections, movement and the limits of tuple admission.
+
 ## What it checks
 
 For incoming IPv4/UDP packets selected by the example rules, the process:
@@ -185,6 +191,33 @@ limits the aggregate to 50,000 packets/s with a 5000-packet burst. These are
 lab settings. Measure clean traffic, including simultaneous clients, before
 choosing rates for another environment.
 
+The [protective admission example](lab-kernel-guard-protect15k.nft.example)
+uses 15,000/s with burst 512 per tuple and 30,000/s with burst 2048 in aggregate.
+In [v16](validation-v16.md), it preserved both clients under one offered
+25,000/s noise flow by discarding excess before NFQUEUE. Legitimate high-PPS
+clients receive the same limits. This remains a lab option; normal installers
+do not load it. A static client-IP allowlist is not required.
+
+The [multi-flow tests](validation-v17.md) found client drops and missing ping
+replies when noise was spread across source ports, including trials below
+the 90% CPU threshold. The shared aggregate bucket reserves no capacity for
+authenticated clients. Check early client drops as well as NFQUEUE drops
+before treating this guard as a protection policy.
+
+Choose one guard example: both declare `awg_kernel_guard_lab`. To replace an
+already loaded lab guard, check and apply one nftables transaction after
+arming the rollback timer:
+
+```bash
+guard_replace=$(mktemp)
+printf 'delete table ip awg_kernel_guard_lab\ninclude "%s/lab-kernel-guard-protect15k.nft.example"\n' "$PWD" > "$guard_replace"
+sudo nft -c -f "$guard_replace" && sudo nft -f "$guard_replace"
+rm -- "$guard_replace"
+```
+
+Run this from the example directory with matching lab addresses and interface.
+For an absent guard table, check and load the chosen file directly.
+
 Also count client-origin drops before NFQUEUE. In the
 [burst study](validation-v4.md), tighter buckets removed queue overflow
 while dropping some client packets earlier. Zero queue drops alone do not
@@ -212,17 +245,74 @@ normal relay table remains responsible for DNAT/SNAT.
 
 ## Authentication and camouflage decisions
 
-The prototype continues checking every selected packet. A future flow cache
-would need authenticated confirmation from B, tied to the exact flow and a
-short expiry. A response-shaped packet or conntrack state alone can also
-come from unauthenticated traffic. Reused IP addresses must start a fresh
-check, and one admitted client must never admit every client behind its NAT.
+The default C-only path checks every selected packet. The separate
+[flow-lease variant](flow-confirmation/README.md) uses fresh authenticated
+confirmation from B, tied to the exact conntrack flow and a short expiry.
+A response-shaped packet or conntrack state alone can come from
+unauthenticated traffic. Reused IP addresses must start a fresh check, and
+one admitted client must never admit every client behind its NAT.
 
-The prototype keeps its strict I1/Jc policy. Dropping those packets changes
-the A-to-B packet pattern. Preserving that pattern would require a separately
-bounded allowance for camouflage packets and measurements on both links.
+The C filter keeps its strict I1/Jc policy. Dropping those packets changes
+the A-to-B packet pattern. In the flow-lease variant, an active lease bypasses
+this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
+
+The [mobility study](validation-v19.md) and [data](results-v19.json) locate
+early client losses before a changed source tuple receives its fresh proof.
+The final rules give data a larger initial credit and limit unknown control
+messages separately after C classification. All 12 qualified mobility trials
+passed with zero client/NFQUEUE/UDP loss and peak CPU 78.26%. Client
+profiles and the proof protocol are unchanged; v18 measurements are retained.
+
+The [exit-confirmed flow study](validation-v18.md) and [data](results-v18.json)
+test temporary admission after successful transport authentication on B.
+They retain failures during development, cold-start and address-change
+checks, and a reproduced source-spoofing limit. The ordinary installers
+remain unchanged.
+
+The [multi-flow and high-PPS study](validation-v17.md) and
+[results](results-v17.json) extend the protective guard tests beyond one
+noise tuple. They expose losses in the shared aggregate limiter and track
+native client CPU separately from the relay. The lab switch's timing counter
+now recognizes every source port from the isolated noise endpoint; its
+forwarding path is unchanged. Initial acquisitions without native timing
+were retained and repeated with the corrected counter.
+
+The [NFQUEUE study](validation-v16.md) and [results](results-v16.json) confirm
+client-origin drops when the shared queue fills. The optional protective guard
+passed eleven 70-second trials with 25,000 offered noise packets/s: about
+100 Mbit/s, 2200/2200 echo replies, no NFQUEUE or client-guard drops and peak
+VM CPU 70.83%. It deliberately reduced admitted noise to about 10,280–12,835/s.
+These are protective admission results, not capacity to inspect every offered
+packet. Original-console and isolated source-IP/port-change checks also passed;
+Multi-flow noise and clean high-PPS clients were outside that series;
+[v17](validation-v17.md) tests them separately.
+
+The [longer repeats](validation-v15.md) and [results](results-v15.json)
+extend noise to 70 seconds and TCP to 60 seconds. All ten trials verified
+25,000 offered packets/s, but none met the full service criteria. The helpers
+and captures agreed on 1983/2000 replies; all seven filtered runs had
+NFQUEUE overflow. A lighter collector reduced observation cost without
+establishing repeatable service. The short v14 successes remain observations
+of those runs; they do not establish sustained 25,000/s capacity.
+
+The [Virtio and egress study](validation-v14.md) and [results](results-v14.json)
+localize new output loss to entry's egress path. FIFO removed that deficit
+in six controls but did not resolve their service failures; no NIC/qdisc
+tuning was adopted. After correcting lab service lifecycle checks and
+controlling host load, the unchanged defaults passed six short return
+trials at 25,000/s and about 100 Mbit/s: 1200/1200 echo replies, peak VM CPU
+60%. Failed acquisitions remain in the report; sustained VPS capacity is
+not established.
+
+The [recognizable-junk study](validation-v13.md) and [results](results-v13.json)
+keep the 4096-packet queue: doubling it did not meet throughput/CPU criteria.
+Random and invalid-MAC1 noise passed at 25,000/s; recognizable junk did not
+pass reliably. Twelve final repeats at 15,000/s kept about 100 Mbit/s and
+2400/2400 echo replies, with peak guest CPU 80.77%. Small exit noise-count
+deficits and egress AQM drops remain explicit; this is not a lossless-relay
+or production-capacity claim.
 
 The [last-ping study](validation-v12.md) and [results](results-v12.json)
 reproduce an early probe timeout while every reply reaches the client.

@@ -25,7 +25,8 @@ python test_switch.py --binary "$lab\native-switch.exe" --workdir "$lab\selftest
 Keep assertions enabled. The source refuses `NDEBUG`, because checks and
 checked API calls use assertions. Tests cover queue wrap and overflow,
 MAC eviction/disconnection, partial/coalesced input, the maximum frame,
-opaque payloads, learned unicast, the peer limit and noise counting.
+opaque payloads, learned unicast, the peer limit, noise counting and expiry
+of the oldest timing bins. A rejected connection may close with EOF or reset.
 The test uses localhost port 62591 and leaves its statistics in `--workdir`.
 
 To run a lab switch on port 62590:
@@ -118,12 +119,17 @@ ignored. Valid frame bytes and their order within each destination queue
 are preserved. `TCP_NODELAY` is enabled on accepted sockets.
 
 The noise counter recognizes the lab fixture only: IPv4 without options,
-UDP from `192.168.76.40:46000` to `192.168.76.10:32497`, UDP length 264.
+UDP from `192.168.76.40` on any source port to `192.168.76.10:32497`,
+UDP length 264.
 Other traffic is forwarded normally and is absent from that counter.
 This address check is telemetry, not a firewall or client allowlist.
 
-Arrival times use QPC, with 100-ms bins. At most 20,000 nonempty bins fit;
-the process stops on overflow instead of silently losing observations.
+Arrival times use QPC, with a rolling history of 4096 nonempty 100-ms bins.
+The oldest bin is evicted when full. This retains at least 409.6 seconds
+of active timing history; cumulative frame counts and first/last timestamps
+continue across eviction. Save the bins before a longer workload exceeds
+that history. This replaces the old 20,000-bin assertion that stopped the
+switch during the [v19 series](../validation-v19.md).
 `max_pending_age_ns` measures a queue's nonempty period, not individual
 packet latency. Counters for partial/blocked sends describe this process's
 sockets; they do not measure every buffer inside QEMU or Windows.

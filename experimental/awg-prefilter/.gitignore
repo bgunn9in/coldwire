@@ -1,4 +1,6 @@
 /prefilter
 /prefilter-asan
+/prefilter-handshake
+/test-batch-handshake
 *.pcap
 /keys

@@ -83,16 +83,20 @@ def main():
         noise = bytearray(284)
         noise[0], noise[9] = 0x45, 17
         noise[12:20] = bytes([192, 168, 76, 40, 192, 168, 76, 10])
-        noise[20:26] = struct.pack('!HHH', 46000, 32497, 264)
-        packet = frame(mb, md, noise)
-        d.sendall(packet)
-        assert receive(b, len(packet)) == packet
+        for source_port in (46000, 40000, 40063, 40064, 65535):
+            noise[20:26] = struct.pack('!HHH', source_port, 32497, 264)
+            packet = frame(mb, md, noise)
+            d.sendall(packet)
+            assert receive(b, len(packet)) == packet
         noise[23] ^= 1
         unrelated = frame(mb, md, noise)
         d.sendall(unrelated)
         assert receive(b, len(unrelated)) == unrelated
         a.sendall(struct.pack('!I', 65537)); time.sleep(.05)
-        assert a.recv(1) == b''
+        try:
+            assert a.recv(1) == b''
+        except ConnectionResetError:
+            pass  # Windows may reset an intentionally closed malformed stream.
         d.sendall(packet)
         assert receive(b, len(packet)) == packet
         stamp = time.monotonic_ns()
@@ -103,7 +107,7 @@ def main():
             time.sleep(.05)
         else:
             raise AssertionError('Stale native-switch statistics')
-        assert stats['noise_frames'] == 2 and sum(stats['noise_bins_100ms'].values()) == 2
+        assert stats['noise_frames'] == 6 and sum(stats['noise_bins_100ms'].values()) == 6
         assert stats['dropped'] == 0 and stats['malformed_connections'] == 1
         assert stats['rejected_connections'] == 1 and stats['tcp_nodelay']
         print('PASS TCP framing, maximum length, ring wrap/order, unicast, opaque payload, peer cap and exact counter')
