@@ -258,6 +258,15 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [deferred-retry study](validation-v24.md) and [data](results-v24.json)
+add one bounded pending ciphertext snapshot for the latest authenticated
+address. With two NAT moves 250 ms apart at 300-ms RTT, UDP loss fell from
+3768 to 1077 packets for IP changes, from 3491 to 982 for port changes,
+and from 3358 to 663 for both. Loss and late replies remain. Ten primary
+trials use the same corrected gateway model; the permissive-NAT failure
+and preliminary trials are reported separately. Each VM has one vCPU and
+1024 MiB, without a CPU threshold. Recovery stays off by default.
+
 The [recovery boundary study](validation-v23.md) and [data](results-v23.json)
 test the same 500-ms build at larger RTTs, repeated NAT moves and delayed
 outbound discovery. The port-only move passed at 300-ms RTT; 600-ms and

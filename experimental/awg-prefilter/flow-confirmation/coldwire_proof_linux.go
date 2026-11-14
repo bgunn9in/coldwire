@@ -83,6 +83,8 @@ func (peer *Peer) coldwireProof(endpoint conn.Endpoint, keypair *Keypair, counte
 	if moved && coldwireReturnEnabled {
 		peer.coldwireCommitEndpoint(endpoint, keypair, counter)
 		peer.coldwireReplayReplies(identity, keypair, endpoint)
+	} else if coldwireReturnEnabled {
+		peer.coldwireRetryReplies(identity, keypair, endpoint)
 	}
 	copy(event[18:34], identity[:16])
 	binary.BigEndian.PutUint64(event[34:42], counter)

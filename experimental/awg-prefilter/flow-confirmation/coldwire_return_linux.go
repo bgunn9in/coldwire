@@ -37,6 +37,9 @@ type coldwireReturnCache struct {
 	packets            [coldwireReturnSlots]coldwireReturnPacket
 	head, count, bytes int
 	lastReplay         time.Time
+	pending            map[[32]byte]coldwireReturnPending
+	pendingBytes       int
+	pendingPackets     int
 }
 
 func (cache *coldwireReturnCache) discard() {
@@ -108,6 +111,7 @@ func coldwireReturnStorage() *coldwireReturnCache {
 			for now := range time.Tick(100 * time.Millisecond) {
 				coldwireReturns.Lock()
 				coldwireReturns.prune(now)
+				coldwireReturns.prunePending(now)
 				coldwireReturns.Unlock()
 			}
 		}()
@@ -130,19 +134,44 @@ func (peer *Peer) coldwireReplayReplies(identity [32]byte, keypair *Keypair, end
 	if !coldwireReturnEnabled || keypair == nil || peer.keypairs.Current() != keypair {
 		return
 	}
-	if !coldwireReplaySending.TryLock() {
-		return
-	}
-	defer coldwireReplaySending.Unlock()
+	cache := coldwireReturnStorage()
 	peer.endpoint.Lock()
 	disabled := peer.endpoint.disableRoaming
 	peer.endpoint.Unlock()
 	now := time.Now()
-	if disabled || (!peer.coldwireReturnLast.IsZero() && now.Sub(peer.coldwireReturnLast) < time.Second) {
+	if disabled {
+		cache.cancelPending(identity)
+		return
+	}
+	if cache.retargetPending(identity, keypair.created, keypair.localIndex, endpoint.DstToString(), now) {
+		peer.coldwireRetryReplies(identity, keypair, endpoint)
+		return
+	}
+	if !peer.coldwireReturnLast.IsZero() && now.Sub(peer.coldwireReturnLast) < time.Second {
+		peer.coldwireDeferReplies(identity, keypair, endpoint, now)
+		return
+	}
+	if !coldwireReplaySending.TryLock() {
+		peer.coldwireDeferReplies(identity, keypair, endpoint, now)
+		return
+	}
+	defer coldwireReplaySending.Unlock()
+	cache.Lock()
+	delayed := !cache.lastReplay.IsZero() && now.Sub(cache.lastReplay) < 250*time.Millisecond
+	cache.Unlock()
+	if delayed {
+		peer.coldwireDeferReplies(identity, keypair, endpoint, now)
 		return
 	}
 	peer.coldwireReturnLast = now
-	buffers := coldwireReturnStorage().selectReplies(identity, keypair.created, keypair.localIndex, now)
+	buffers := cache.selectReplies(identity, keypair.created, keypair.localIndex, now)
+	if len(buffers) > 0 {
+		peer.device.log.Verbosef("%v - Lab return attempt kind=immediate packets=%d target=%s", peer, len(buffers), endpoint.DstToString())
+	}
+	peer.coldwireSendReplies(keypair, endpoint, buffers)
+}
+
+func (peer *Peer) coldwireSendReplies(keypair *Keypair, endpoint conn.Endpoint, buffers [][]byte) {
 	if len(buffers) == 0 {
 		return
 	}
@@ -153,6 +182,15 @@ func (peer *Peer) coldwireReplayReplies(identity [32]byte, keypair *Keypair, end
 	}
 	batch := peer.device.net.bind.BatchSize()
 	for offset := 0; offset < len(buffers); offset += batch {
+		if peer.keypairs.Current() != keypair {
+			return
+		}
+		peer.endpoint.Lock()
+		current := !peer.endpoint.disableRoaming && peer.endpoint.val != nil && peer.endpoint.val.DstToString() == endpoint.DstToString()
+		peer.endpoint.Unlock()
+		if !current {
+			return
+		}
 		end := min(offset+batch, len(buffers))
 		if err := peer.device.net.bind.Send(buffers[offset:end], endpoint); err != nil {
 			peer.device.log.Errorf("%v - Lab return replay stopped: %v", peer, err)

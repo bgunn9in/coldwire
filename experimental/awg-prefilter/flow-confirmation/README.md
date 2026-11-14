@@ -10,8 +10,9 @@ do not install or enable it. The [return-recovery study](../validation-v22.md)
 adds an optional 500-ms history of B's encrypted replies. Six final trials
 had no network UDP loss or late probes, with CPU recorded without a
 threshold. The option is off by default; its repeated wire packets have
-not been tested against DPI. The [boundary study](../validation-v23.md)
-extends these tests to larger RTTs, repeated moves and delayed discovery.
+not been tested against DPI. The [deferred-recovery study](../validation-v24.md)
+adds one bounded pending snapshot for fast moves. The preceding
+[boundary study](../validation-v23.md) tests larger RTTs and delayed discovery.
 Earlier results are in the [300-ms follow-up](../validation-v21.md),
 [original WAN tests](../validation-v20.md), [local-link mobility tests](../validation-v19.md)
 and [v18 measurements](../validation-v18.md).
@@ -125,16 +126,37 @@ The sender records each encrypted packet before reading its destination,
 so packets created after the snapshot already use the new path. B can
 resend this peer's current-epoch ciphertext towards it.
 Each attempt takes at most 4096 packets and 2 MiB, in original order.
-There is at most one attempt per second per peer and one per 250 ms
-globally. Only one send can be in progress; another move skips recovery
-instead of queuing another copy. Ordinary endpoint updates still proceed.
+There is at most one attempt per second per peer, including empty immediate
+lookups, and one nonempty attempt per 250 ms globally. Only one send can be
+in progress. Ordinary endpoint updates continue while recovery waits.
 Clients use their existing replay filter to discard copies already seen.
+
+If a move hits a cooldown or a busy sender, B can retain one pending snapshot
+for that peer. All pending snapshots together hold at most 16 peers, 4096
+packets and 2 MiB. They contain ciphertext, the peer-key hash, scalar key
+epoch fields and an address string. A later authenticated move retargets
+the same snapshot without copying it or extending its lifetime.
+
+After the cooldown, the next fresh transport notification can consume one
+deferred attempt. Its current key, source policy and endpoint must still
+match. A stopped peer, closed device or disabled roaming prevents the retry;
+each send batch checks the current key and endpoint again. Already submitted
+network packets cannot be recalled. Pending state expires after 1100 ms;
+the existing 100-ms cleanup tick also releases idle snapshots. There are no
+new per-peer timers or workers. Without another qualifying client packet
+before expiry, no deferred attempt occurs.
+
+The ordinary ring still selects only packets younger than 500 ms. A pending
+snapshot can outlive that ring; it does not collect later replies. More
+moves can therefore leave new loss, and a client's replay window can reject
+old copies. The [v24 report](../validation-v24.md) records these limits.
 
 The [boundary study](../validation-v23.md) measures where these bounds leave
 loss. At 6000 datagrams/s, the 500-ms age is tighter than the 4096-packet
 replay limit. Larger packets can hit the 2-MiB byte budget first. The cache
-is shared between peers, so another peer can evict recent replies. A skipped
-move does not schedule a later retry. The helper also uses a one-second
+is shared between peers, so another peer can evict recent replies. v23's
+baseline skipped blocked moves; the pending snapshot above is new in v24.
+The helper also uses a one-second
 TCP connect and server TLS-handshake timeout; startup at RTT 1400 ms failed
 in the lab. Longer-timeout raw TCP success does not establish mTLS support
 at that RTT.
@@ -160,6 +182,8 @@ servers while evaluating these tradeoffs in the lab.
 | `coldwire_proof_linux_test.go` | Event format/rate, endpoint reorder, key rotation and snapshot-handoff tests |
 | `coldwire_return_linux_test.go` | Cache isolation, expiry/capacity, replay bounds and encrypted recovery/duplicate tests |
 | `coldwire_return_boundary_linux_test.go` | Exact age, shared-cache eviction, byte-budget order and pinned client replay-window boundaries |
+| `coldwire_return_deferred_linux.go` | Bounded pending snapshots and a retry on fresh authenticated transport |
+| `coldwire_return_deferred_linux_test.go` | Retargeting, expiry, budgets, runtime guards, concurrent cleanup and encrypted recovery |
 
 From this directory:
 
@@ -254,8 +278,9 @@ sudo python3 agent.py --vm-test entry /root/flow-confirmation/config.json
 Both status files report connection state and bounded counters. A also
 records grants, expiry and replaced tuples. Measure early client discards,
 NFQUEUE loss, useful throughput, probe delivery and whole-VM CPU together.
-The [latest report](../validation-v23.md) records recovery boundaries and
-the separate startup limit. The [v22 study](../validation-v22.md) contains
+The [latest report](../validation-v24.md) records deferred recovery and the
+corrected lab NAT model. [v23](../validation-v23.md) records the separate
+startup limit. The [v22 study](../validation-v22.md) contains
 the original recovery controls and measurement corrections. Earlier admission and
 cold-start controls are in [v19](../validation-v19.md).
 

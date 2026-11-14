@@ -197,6 +197,7 @@ func TestColdwireReturnAuthenticatedMoveAndCooldown(t *testing.T) {
 	peer.device = new(Device)
 	peer.device.net.bind = bind
 	peer.device.log = NewLogger(LogLevelSilent, "")
+	peer.endpoint.val = endpoint
 	keypair := &Keypair{created: time.Now(), localIndex: 11}
 	peer.keypairs.current = keypair
 	identity := [32]byte{4}
