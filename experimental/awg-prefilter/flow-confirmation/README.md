@@ -10,7 +10,9 @@ do not install or enable it. The [return-recovery study](../validation-v22.md)
 adds an optional 500-ms history of B's encrypted replies. Six final trials
 had no network UDP loss or late probes, with CPU recorded without a
 threshold. The option is off by default; its repeated wire packets have
-not been tested against DPI. Earlier results are in the [300-ms follow-up](../validation-v21.md),
+not been tested against DPI. The [boundary study](../validation-v23.md)
+extends these tests to larger RTTs, repeated moves and delayed discovery.
+Earlier results are in the [300-ms follow-up](../validation-v21.md),
 [original WAN tests](../validation-v20.md), [local-link mobility tests](../validation-v19.md)
 and [v18 measurements](../validation-v18.md).
 
@@ -128,6 +130,15 @@ globally. Only one send can be in progress; another move skips recovery
 instead of queuing another copy. Ordinary endpoint updates still proceed.
 Clients use their existing replay filter to discard copies already seen.
 
+The [boundary study](../validation-v23.md) measures where these bounds leave
+loss. At 6000 datagrams/s, the 500-ms age is tighter than the 4096-packet
+replay limit. Larger packets can hit the 2-MiB byte budget first. The cache
+is shared between peers, so another peer can evict recent replies. A skipped
+move does not schedule a later retry. The helper also uses a one-second
+TCP connect and server TLS-handshake timeout; startup at RTT 1400 ms failed
+in the lab. Longer-timeout raw TCP success does not establish mTLS support
+at that RTT.
+
 Recovery can miss old packets, key changes, frequent or concurrent moves,
 cache eviction and packets outside the client's replay window. It adds
 traffic during movement. A registered peer that can send valid transport
@@ -148,6 +159,7 @@ servers while evaluating these tradeoffs in the lab.
 | `test_agent.py` | Freshness, replay, movement, bounds, streams and immediate kernel-update tests |
 | `coldwire_proof_linux_test.go` | Event format/rate, endpoint reorder, key rotation and snapshot-handoff tests |
 | `coldwire_return_linux_test.go` | Cache isolation, expiry/capacity, replay bounds and encrypted recovery/duplicate tests |
+| `coldwire_return_boundary_linux_test.go` | Exact age, shared-cache eviction, byte-budget order and pinned client replay-window boundaries |
 
 From this directory:
 
@@ -242,8 +254,9 @@ sudo python3 agent.py --vm-test entry /root/flow-confirmation/config.json
 Both status files report connection state and bounded counters. A also
 records grants, expiry and replaced tuples. Measure early client discards,
 NFQUEUE loss, useful throughput, probe delivery and whole-VM CPU together.
-The [latest report](../validation-v22.md) records the workload, recovery
-controls, measurement corrections and limits. Earlier admission and
+The [latest report](../validation-v23.md) records recovery boundaries and
+the separate startup limit. The [v22 study](../validation-v22.md) contains
+the original recovery controls and measurement corrections. Earlier admission and
 cold-start controls are in [v19](../validation-v19.md).
 
 For rollback, stop A's helper while its table still exists, remove the

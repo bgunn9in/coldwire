@@ -172,7 +172,7 @@ def serve(config,role):
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     stream=None;last_status=0;next_tick=0
     if role=='exit':
-        state=Exit(config['entry']);listener=socket.socket();listener.bind((config['exit'],39101));listener.listen(4);listener.setblocking(False)
+        state=Exit(config['entry']);listener=socket.socket();listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);listener.bind((config['exit'],39101));listener.listen(4);listener.setblocking(False)
         path=Path(config['events']);assert path.parent.stat().st_uid==0 and stat.S_IMODE(path.parent.stat().st_mode)==0o700
         if path.exists():assert stat.S_ISSOCK(path.lstat().st_mode) and path.lstat().st_uid==0;path.unlink()
         events=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM);events.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1);events.bind(str(path));path.chmod(0o600)

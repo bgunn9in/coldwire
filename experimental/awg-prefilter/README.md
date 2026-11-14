@@ -258,6 +258,13 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [recovery boundary study](validation-v23.md) and [data](results-v23.json)
+test the same 500-ms build at larger RTTs, repeated NAT moves and delayed
+outbound discovery. The port-only move passed at 300-ms RTT; 600-ms and
+1000-ms RTT left UDP loss. At 1400 ms, the helper's one-second TCP connect
+timeout prevented startup before traffic testing. Recovery remains off by
+default. CPU is recorded without a threshold.
+
 The [return-recovery study](validation-v22.md) and [data](results-v22.json)
 add an optional 500-ms ciphertext history on B. All six final trials
 delivered 2,164,522 useful UDP datagrams, 1200 ordinary replies and 600

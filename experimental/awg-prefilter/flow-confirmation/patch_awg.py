@@ -29,7 +29,7 @@ def patch(source):
     send=source/'device/send.go';outbound=send.read_text();marker_send='\t\t\t\tdataSent = true'
     assert outbound.count(marker_send)==1
     send.write_text(outbound.replace(marker_send,marker_send+'\n\t\t\t\tpeer.coldwireRememberReply(elem.packet, elem.keypair)'),encoding='utf-8',newline='\n')
-    for name in ('coldwire_proof_linux.go','coldwire_proof_linux_test.go','coldwire_return_linux.go','coldwire_return_linux_test.go'):
+    for name in ('coldwire_proof_linux.go','coldwire_proof_linux_test.go','coldwire_return_linux.go','coldwire_return_linux_test.go','coldwire_return_boundary_linux_test.go'):
         (source/'device'/name).write_bytes(Path(__file__).with_name(name).read_bytes())
 
 if __name__=='__main__':
