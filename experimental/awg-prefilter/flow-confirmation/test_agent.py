@@ -3,6 +3,7 @@ from pathlib import Path
 import struct
 import sys
 import unittest
+from unittest import mock
 
 spec=importlib.util.spec_from_file_location('flow_agent',Path(__file__).with_name('agent.py'))
 agent=importlib.util.module_from_spec(spec);sys.modules[spec.name]=agent;spec.loader.exec_module(agent)
@@ -66,10 +67,46 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(len(self.exit.event(self.event(10000000124),10.1)),1)
         class BufferedTLS:
             def __init__(self):self.blocks=[b'{"n":1}\n',b'{"n":2}\n']
+            def setsockopt(self,level,option,value):
+                assert (level,option,value)==(agent.socket.IPPROTO_TCP,agent.socket.TCP_NODELAY,1)
             def setblocking(self,value):pass
             def recv(self,size):
                 if self.blocks:return self.blocks.pop(0)
                 raise agent.ssl.SSLWantReadError()
         self.assertEqual(agent.Stream(BufferedTLS()).read(),[{'n':1},{'n':2}])
+
+    def test_confirm_and_disconnect_update_kernel_before_next_poll(self):
+        clock=[10.0];steps=[0];handlers={};queries=[];installs=[]
+        connection=mock.Mock()
+        class FakeStream:
+            def __init__(self,sock):self.socket=sock;self.outgoing=bytearray()
+            def queue(self,message):queries.append(message)
+            def read(self):
+                if steps[0]==3:raise EOFError
+                return [{'nonce':queries[0]['nonce'],'peer':'ab'*16,'stamp':100}]
+        def select(readers,writers,errors,timeout):
+            steps[0]+=1;clock[0]=10+(steps[0]-1)*.02
+            if steps[0] in (2,3):return [connection],[],[]
+            if steps[0]==4:handlers[agent.signal.SIGTERM]()
+            return [],[],[]
+        def install(state,flows,now):installs.append((now,set(state.leases)))
+        context=mock.Mock();context.wrap_socket.return_value=connection
+        config={'entry':'192.168.76.10','exit':'192.168.76.20','vpn_port':32497,'status':'unused'}
+        with mock.patch.object(agent.os,'geteuid',return_value=0,create=True), \
+             mock.patch.object(agent.Path,'read_text',return_value='kit-entry'), \
+             mock.patch.object(agent,'context',return_value=context), \
+             mock.patch.object(agent.signal,'signal',side_effect=lambda sig,fn:handlers.__setitem__(sig,fn)), \
+             mock.patch.object(agent.socket,'create_connection',return_value=connection), \
+             mock.patch.object(agent,'Stream',FakeStream), \
+             mock.patch.object(agent.select,'select',side_effect=select), \
+             mock.patch.object(agent.time,'monotonic',side_effect=lambda:clock[0]), \
+             mock.patch.object(agent,'read_flows',return_value={self.flow}), \
+             mock.patch.object(agent,'install_leases',side_effect=install), \
+             mock.patch.object(agent,'snapshot'):
+            agent.serve(config,'entry')
+        self.assertEqual(installs[0],(10.0,set()))
+        self.assertEqual(installs[1],(10.02,{self.flow}))
+        self.assertEqual(installs[2],(10.04,set()))
+        self.assertLess(installs[2][0],10+agent.POLL_SECONDS)
 
 if __name__=='__main__':unittest.main()

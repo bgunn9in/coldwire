@@ -22,6 +22,7 @@ import time
 TABLE='awg_kernel_guard_lab'
 LEASE_SECONDS=10
 MAX_PENDING=128
+POLL_SECONDS=.1
 EVENT=struct.Struct('!4sQ4sH16sQ')
 
 @dataclasses.dataclass(frozen=True)
@@ -111,6 +112,7 @@ class Exit:
 
 class Stream:
     def __init__(self,connection):
+        connection.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
         self.socket=connection;self.incoming=bytearray();self.outgoing=bytearray();connection.setblocking(False)
     def queue(self,message):
         data=json.dumps(message,separators=(',',':'),sort_keys=True).encode()+b'\n'
@@ -186,6 +188,7 @@ def serve(config,role):
             readers=([listener,events] if role=='exit' else [])+([stream.socket] if stream else [])
             writable=[stream.socket] if stream and stream.outgoing else []
             ready,writes,_=select.select(readers,writable,[],.05)
+            lease_changed=False
             try:
                 if role=='exit' and listener in ready:
                     connection,address=listener.accept()
@@ -197,7 +200,9 @@ def serve(config,role):
                 if stream and stream.socket in ready:
                     for message in stream.read():
                         if role=='exit':state.query(message,time.monotonic(),time.monotonic_ns())
-                        else:state.confirm(message,read_flows(config),time.monotonic())
+                        else:
+                            flows=read_flows(config)
+                            lease_changed=state.confirm(message,flows,time.monotonic()) or lease_changed
                 if role=='exit' and events in ready:
                     data,ancillary,flags,_=events.recvmsg(256,socket.CMSG_SPACE(12))
                     trusted=any(level==socket.SOL_SOCKET and kind==socket.SCM_CREDENTIALS and struct.unpack('3i',value[:12])[1]==0 for level,kind,value in ancillary)
@@ -208,17 +213,18 @@ def serve(config,role):
                 if stream and stream.socket in writes:stream.write()
             except (OSError,ssl.SSLError,EOFError,AssertionError,ValueError):
                 if stream:stream.socket.close();stream=None
-                if role=='entry':state=Entry();last_lease_shape=None
+                if role=='entry':state=Entry();last_lease_shape=None;lease_changed=True
             now=time.monotonic()
-            if role=='entry' and now>=next_tick:
-                try:flows=read_flows(config)
-                except (OSError,subprocess.SubprocessError,AssertionError):flows=set()
-                requests=state.queries(flows,now) if stream else []
-                for message in requests:stream.queue(message)
+            if role=='entry' and (now>=next_tick or lease_changed):
+                if now>=next_tick:
+                    try:flows=read_flows(config)
+                    except (OSError,subprocess.SubprocessError,AssertionError):flows=set()
+                    requests=state.queries(flows,now) if stream else []
+                    for message in requests:stream.queue(message)
+                    next_tick=now+POLL_SECONDS
                 shape=tuple(sorted((f.source,f.port,f.identity,v[0],v[1]) for f,v in state.leases.items()))
                 if shape!=last_lease_shape:
                     install_leases(state,flows,now);last_lease_shape=shape
-                next_tick=now+.25
             if now-last_status>=.5:
                 values={'connected':stream is not None,'pending':len(state.pending)}
                 if role=='entry':

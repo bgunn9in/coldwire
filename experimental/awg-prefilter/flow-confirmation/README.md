@@ -6,8 +6,13 @@ This experiment gives an authenticated client's flow a short kernel bypass
 around the entry's shared unknown-traffic budget and NFQUEUE. Existing AWG
 3.1 clients keep their applications, profiles and keys. Their public IP and
 NAT port may change. Both servers need extra code; normal COLDWIRE installers
-do not install or enable it. See the [mobility tests](../validation-v19.md)
-and the [earlier v18 measurements](../validation-v18.md).
+do not install or enable it. The [return-recovery study](../validation-v22.md)
+adds an optional 500-ms history of B's encrypted replies. Six final trials
+had no network UDP loss or late probes, with CPU recorded without a
+threshold. The option is off by default; its repeated wire packets have
+not been tested against DPI. Earlier results are in the [300-ms follow-up](../validation-v21.md),
+[original WAN tests](../validation-v20.md), [local-link mobility tests](../validation-v19.md)
+and [v18 measurements](../validation-v18.md).
 
 ## How admission works
 
@@ -35,6 +40,14 @@ The IPv4 lab fixes the destination interface, address and VPN port in its
 rules. This is not a general multi-destination connection cache. NAT port
 translation is read from conntrack rather than inferred from a client's
 source port.
+
+A polls conntrack every 100 ms and applies an accepted confirmation to
+nftables immediately. B can emit a fresh same-endpoint event every 50 ms;
+the TLS stream uses `TCP_NODELAY`. B selects endpoints and proof events
+by the greatest accepted transport counter in its current keypair, with
+a fresh counter epoch on key rotation. Late valid data can still be
+delivered, but cannot select an older endpoint. With return recovery
+disabled, replies already sent to a vanished NAT mapping remain lost.
 
 A receives a hash of B's authenticated peer public key, not VPN session
 keys or client private keys. The control channel has separate certificates.
@@ -92,16 +105,49 @@ bypasses that filter for its tuple, including camouflage packets. Client
 wire formats are unchanged; the resulting A-to-B camouflage has not been
 validated against DPI.
 
+## Optional return recovery
+
+The patched binary includes a separate lab option, disabled by default:
+`COLDWIRE_LAB_RETURN_REPLAY=1`. It also requires the existing
+`COLDWIRE_LAB_PROOF_SOCKET` setup. Installers do not enable either option.
+
+B copies outbound encrypted transport packets into a shared ring. The ring
+holds at most 8192 packets and 8 MiB of ciphertext, plus fixed metadata.
+Only packets younger than 500 ms are eligible; an idle cleanup runs every
+100 ms. It stores a hash of the peer's public key and scalar keypair epoch
+fields, without retaining plaintext, session keys or keypair pointers.
+
+After a fresh, source-policy-valid transport packet selects a changed
+endpoint, B commits that endpoint before taking the recovery snapshot.
+The sender records each encrypted packet before reading its destination,
+so packets created after the snapshot already use the new path. B can
+resend this peer's current-epoch ciphertext towards it.
+Each attempt takes at most 4096 packets and 2 MiB, in original order.
+There is at most one attempt per second per peer and one per 250 ms
+globally. Only one send can be in progress; another move skips recovery
+instead of queuing another copy. Ordinary endpoint updates still proceed.
+Clients use their existing replay filter to discard copies already seen.
+
+Recovery can miss old packets, key changes, frequent or concurrent moves,
+cache eviction and packets outside the client's replay window. It adds
+traffic during movement. A registered peer that can send valid transport
+can also trigger bounded retransmissions; the limits do not establish
+return reachability. Repeated ciphertext is visible on the wire, so this
+option has no DPI or unlinkability guarantee. Leave it disabled on active
+servers while evaluating these tradeoffs in the lab.
+
 ## Files and local checks
 
 | File | Purpose |
 |---|---|
 | `agent.py` | B's authenticated-event receiver and A's conntrack/lease controller |
 | `lab-rules.nft.example` | Combined unknown-source/aggregate guard, lease lookup and queue hook |
-| `coldwire_proof_linux.go` | B's nonblocking post-authentication notification |
+| `coldwire_proof_linux.go` | B's authenticated notification and counter-ordered endpoint selection |
+| `coldwire_return_linux.go` | Optional bounded ciphertext cache and authenticated-move retransmission |
 | `patch_awg.py` | Inserts the hook into one exact, clean AWG source revision |
-| `test_agent.py` | Freshness, replay, conntrack reuse, movement, bounds and stream tests |
-| `coldwire_proof_linux_test.go` | Local event format, rate bound and source-port movement test |
+| `test_agent.py` | Freshness, replay, movement, bounds, streams and immediate kernel-update tests |
+| `coldwire_proof_linux_test.go` | Event format/rate, endpoint reorder, key rotation and snapshot-handoff tests |
+| `coldwire_return_linux_test.go` | Cache isolation, expiry/capacity, replay bounds and encrypted recovery/duplicate tests |
 
 From this directory:
 
@@ -117,7 +163,7 @@ In a disposable Linux source checkout, run:
 python3 /path/to/flow-confirmation/patch_awg.py /path/to/clean/amneziawg-go
 cd /path/to/clean/amneziawg-go
 go mod verify
-sudo env GOMAXPROCS=1 go test -p 1 ./device -run '^TestColdwireProofLocalEvents$' -count=1
+sudo env GOMAXPROCS=1 go test -p 1 ./device ./replay -count=1
 env GOMAXPROCS=1 GOMEMLIMIT=384MiB GOGC=50 CGO_ENABLED=0 go build -p 1 -trimpath -ldflags='-s -w -buildid=' -o amneziawg-go-proof .
 ```
 
@@ -196,8 +242,9 @@ sudo python3 agent.py --vm-test entry /root/flow-confirmation/config.json
 Both status files report connection state and bounded counters. A also
 records grants, expiry and replaced tuples. Measure early client discards,
 NFQUEUE loss, useful throughput, probe delivery and whole-VM CPU together.
-The [report](../validation-v19.md) describes the accepted workloads and the
-failed development attempts.
+The [latest report](../validation-v22.md) records the workload, recovery
+controls, measurement corrections and limits. Earlier admission and
+cold-start controls are in [v19](../validation-v19.md).
 
 For rollback, stop A's helper while its table still exists, remove the
 combined experimental table, then stop the C filter. Restore B's original

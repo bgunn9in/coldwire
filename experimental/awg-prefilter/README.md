@@ -258,6 +258,29 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [return-recovery study](validation-v22.md) and [data](results-v22.json)
+add an optional 500-ms ciphertext history on B. All six final trials
+delivered 2,164,522 useful UDP datagrams, 1200 ordinary replies and 600
+frequent replies without network loss, plaintext duplicates or late probes.
+VMs retain one vCPU and 1024 MiB; CPU is informational in this stage and
+peaked at 95.83%. Recovery is off by default. Repeated ciphertext changes
+the wire pattern; DPI and unlinkability remain untested.
+
+The [300-ms follow-up](validation-v21.md) and [data](results-v21.json)
+shorten fresh-proof waits and prevent late transport counters from rewinding
+B's return endpoint. All eight primary final-candidate runs had zero early
+client discards and peak VM CPU at most 79.31%. The frequent probe still
+lost replies around NAT moves. One extra diagnostic reached 92.86% client
+CPU; the full lossless-service criterion remains unmet. Clients, C code
+and admission rules are unchanged; this is a lab-only server patch.
+
+The [WAN roaming study](validation-v20.md) and [data](results-v20.json) test
+50/150/300-ms RTT with and without normal jitter. The unchanged v19 guard
+had no client discards in 9 of 12 primary trials, but lost packets at
+300 ms. A capture control received all 360,006 UDP datagrams inside B
+while iperf reported 35 lost; two separate ICMP replies were lost after B.
+Lossless roaming across the tested conditions is not established.
+
 The [mobility study](validation-v19.md) and [data](results-v19.json) locate
 early client losses before a changed source tuple receives its fresh proof.
 The final rules give data a larger initial credit and limit unknown control
