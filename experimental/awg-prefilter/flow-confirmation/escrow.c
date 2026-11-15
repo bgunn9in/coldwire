@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter/nf_conntrack_common.h>
@@ -17,33 +18,43 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
 #define CAPACITY 32768U
-#define FLOW_LIMIT 128U
-#define PER_FLOW 4096U
-#define BYTE_LIMIT (8U * 1024U * 1024U)
+#define FLOW_LIMIT 8192U
+#define GRANT_LIMIT 128U
+#define BUCKETS (2U*FLOW_LIMIT)
+#define PER_FLOW 8192U
+#define BYTE_LIMIT (16U * 1024U * 1024U)
 #define TTL_NS UINT64_C(1000000000)
 #define RELEASE_MARK UINT32_C(0x08000000)
 #define BATCH 16U
 #define QUEUE 101
 
 struct key { uint32_t ip, ct; uint16_t port; };
-struct flow { struct key key; unsigned count; };
+struct flow { struct key key; unsigned count; uint16_t next; };
 struct grant { struct key key; uint64_t until; };
 struct packet { uint64_t until; uint32_t id, mark; uint16_t length, flow; };
 static struct flow flows[FLOW_LIMIT];
-static struct grant grants[FLOW_LIMIT];
+static struct grant grants[GRANT_LIMIT];
+static uint16_t buckets[BUCKETS],free_flows[FLOW_LIMIT];
+static unsigned free_count;
+static uint64_t hash_seed;
 static struct packet packets[CAPACITY];
 static uint64_t head, tail;
 static unsigned grant_count, held, held_bytes;
 static uint64_t received, released, expired, bounded, invalid, control_bad, control_ok;
 static uint64_t high_packets, high_bytes, netlink_enobufs, send_calls;
+static uint64_t ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow;
+static uint64_t verdict_missing;
 static volatile sig_atomic_t stopping, reporting;
 static int queue_fd, testing;
+static int candidate_fd=-1;
+static uint64_t candidate_sent,candidate_failed;
 static unsigned verdict_count;
 static char verdict_buffers[BATCH][256] __attribute__((aligned));
 static struct iovec verdict_iov[BATCH];
@@ -57,10 +68,41 @@ static uint64_t clock_ns(void) {
 static int equal(struct key a, struct key b) {
     return a.ip == b.ip && a.ct == b.ct && a.port == b.port;
 }
+static unsigned bucket(struct key key) {
+    uint64_t v=((uint64_t)key.ip<<32)^key.ct^((uint64_t)key.port<<16)^hash_seed;
+    v^=v>>30;v*=UINT64_C(0xbf58476d1ce4e5b9);v^=v>>27;v*=UINT64_C(0x94d049bb133111eb);v^=v>>31;
+    return (unsigned)v&(BUCKETS-1);
+}
+static void init_flows(void) {
+    free_count=FLOW_LIMIT;
+    for (unsigned i=0;i<FLOW_LIMIT;i++) free_flows[i]=(uint16_t)(FLOW_LIMIT-1-i);
+    if (testing) hash_seed=123;
+    else if (getrandom(&hash_seed,sizeof(hash_seed),0)!=(ssize_t)sizeof(hash_seed)) fatal("hash seed");
+}
+static unsigned find_flow(struct key key) {
+    for (unsigned id=buckets[bucket(key)];id;id=flows[id-1].next)
+        if (equal(flows[id-1].key,key)) return id-1;
+    return FLOW_LIMIT;
+}
+static void free_flow(unsigned index) {
+    uint16_t *link=&buckets[bucket(flows[index].key)];
+    while (*link && *link!=index+1) link=&flows[*link-1].next;
+    assert(*link && free_count<FLOW_LIMIT);
+    *link=flows[index].next;flows[index].next=0;
+    free_flows[free_count++]=(uint16_t)index;
+}
 static uint16_t read16(const void *p) { uint16_t v; memcpy(&v,p,2); return ntohs(v); }
 static uint32_t read32(const void *p) { uint32_t v; memcpy(&v,p,4); return ntohl(v); }
 static uint64_t read64(const void *p) {
     return ((uint64_t)read32(p) << 32) | read32((const char *)p + 4);
+}
+static int missing_verdict(const struct nlmsghdr *h) {
+    if (h->nlmsg_type!=NLMSG_ERROR || h->nlmsg_len<NLMSG_LENGTH(sizeof(struct nlmsgerr)+sizeof(struct nfgenmsg))) return 0;
+    struct nlmsgerr error;struct nfgenmsg family;
+    memcpy(&error,NLMSG_DATA(h),sizeof(error));
+    memcpy(&family,(const char *)NLMSG_DATA(h)+sizeof(error),sizeof(family));
+    return error.error==-ENOENT && error.msg.nlmsg_type==((NFNL_SUBSYS_QUEUE<<8)|NFQNL_MSG_VERDICT) &&
+        error.msg.nlmsg_len>=NLMSG_LENGTH(sizeof(family)) && read16(&family.res_id)==QUEUE;
 }
 static int flush(void) {
     if (!verdict_count) return 0;
@@ -86,7 +128,9 @@ static void verdict(uint32_t id, uint32_t mark, int accept) {
 static void remove_packet(struct packet *p, int accept) {
     assert(p->length && flows[p->flow].count);
     verdict(p->id,p->mark,accept);
-    flows[p->flow].count--; held--; held_bytes-=p->length; p->length=0;
+    flows[p->flow].count--;
+    if (!flows[p->flow].count) free_flow(p->flow);
+    held--; held_bytes-=p->length; p->length=0;
     if (accept) released++; else expired++;
 }
 static void expire(uint64_t now) {
@@ -102,19 +146,34 @@ static int authorized(struct key key, uint64_t now) {
         if (grants[i].until>now && equal(grants[i].key,key)) return 1;
     return 0;
 }
+static void candidate(struct key key) {
+    if (testing) return;
+    const char *path="/run/coldwire-escrow/candidates.sock";
+    struct stat st;
+    if (lstat(path,&st) || !S_ISSOCK(st.st_mode) || st.st_uid || (st.st_mode&0777)!=0600) { candidate_failed++;return; }
+    unsigned char data[14];memcpy(data,"CWC1",4);memcpy(data+4,&key.ip,4);
+    uint16_t port=htons(key.port);uint32_t ct=htonl(key.ct);
+    memcpy(data+8,&port,2);memcpy(data+10,&ct,4);
+    struct sockaddr_un addr={.sun_family=AF_UNIX};strcpy(addr.sun_path,path);
+    if (sendto(candidate_fd,data,sizeof(data),MSG_DONTWAIT,(struct sockaddr *)&addr,sizeof(addr))==(ssize_t)sizeof(data)) candidate_sent++;
+    else candidate_failed++;
+}
 static void hold(struct key key, uint32_t id, uint32_t mark, unsigned length, uint64_t now) {
     received++; expire(now);
     if (authorized(key,now)) { verdict(id,mark,1); released++; return; }
-    unsigned f, free_flow=FLOW_LIMIT;
-    for (f=0;f<FLOW_LIMIT;f++) {
-        if (flows[f].count && equal(flows[f].key,key)) break;
-        if (!flows[f].count) free_flow=f;
-    }
-    if (f==FLOW_LIMIT) f=free_flow;
-    if (f==FLOW_LIMIT || tail-head==CAPACITY || held_bytes+length>BYTE_LIMIT || flows[f].count>=PER_FLOW) {
+    unsigned f=find_flow(key);
+    if ((f==FLOW_LIMIT && !free_count) || tail-head==CAPACITY || held_bytes+length>BYTE_LIMIT || (f<FLOW_LIMIT && flows[f].count>=PER_FLOW)) {
+        if (f==FLOW_LIMIT && !free_count) bound_flows++;
+        if (tail-head==CAPACITY) bound_packets++;
+        if (held_bytes+length>BYTE_LIMIT) bound_bytes++;
+        if (f<FLOW_LIMIT && flows[f].count>=PER_FLOW) bound_perflow++;
         bounded++; verdict(id,mark,0); return;
     }
-    if (!flows[f].count) flows[f].key=key;
+    if (f==FLOW_LIMIT) {
+        f=free_flows[--free_count];flows[f].key=key;
+        unsigned b=bucket(key);flows[f].next=buckets[b];buckets[b]=(uint16_t)(f+1);
+        candidate(key);
+    }
     struct packet *p=&packets[tail++%CAPACITY];
     *p=(struct packet){.until=now+TTL_NS,.id=id,.mark=mark,.length=(uint16_t)length,.flow=(uint16_t)f};
     flows[f].count++; held++; held_bytes+=length;
@@ -124,8 +183,8 @@ static void hold(struct key key, uint32_t id, uint32_t mark, unsigned length, ui
 static int control(const unsigned char *data, size_t size, int root, uint64_t now) {
     if (!root || size<6 || memcmp(data,"CWE1",4)) return 0;
     unsigned count=read16(data+4);
-    if (count>FLOW_LIMIT || size!=6+18*count) return 0;
-    struct grant next[FLOW_LIMIT];
+    if (count>GRANT_LIMIT || size!=6+18*count) return 0;
+    struct grant next[GRANT_LIMIT];
     for (unsigned i=0;i<count;i++) {
         const unsigned char *r=data+6+18*i;
         memcpy(&next[i].key.ip,r,4);
@@ -145,11 +204,30 @@ static void report(void) {
     printf("{\"received\":%"PRIu64",\"released\":%"PRIu64",\"expired\":%"PRIu64
            ",\"bounded\":%"PRIu64",\"invalid\":%"PRIu64",\"control_bad\":%"PRIu64
            ",\"control_ok\":%"PRIu64",\"held\":%u,\"held_bytes\":%u,\"high_packets\":%"PRIu64
-           ",\"high_bytes\":%"PRIu64",\"netlink_enobufs\":%"PRIu64",\"send_calls\":%"PRIu64"}\n",
-           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls);
+           ",\"high_bytes\":%"PRIu64",\"netlink_enobufs\":%"PRIu64",\"send_calls\":%"PRIu64",\"candidate_sent\":%"PRIu64",\"candidate_failed\":%"PRIu64
+           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64"}\n",
+           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing);
     fflush(stdout);
 }
 static void signal_handler(int sig) { if (sig==SIGUSR1) reporting=1; else stopping=1; }
+
+static int prepare_socket(const char *path) {
+    struct stat before,after;
+    if (lstat(path,&before)) return errno==ENOENT?0:-1;
+    if (!S_ISSOCK(before.st_mode) || before.st_uid || (before.st_mode&0777)!=0600) { errno=EPERM;return -1; }
+    int fd=socket(AF_UNIX,SOCK_DGRAM|SOCK_NONBLOCK|SOCK_CLOEXEC,0);
+    if (fd<0) return -1;
+    struct sockaddr_un addr={.sun_family=AF_UNIX};
+    if (strlen(path)>=sizeof(addr.sun_path)) { close(fd);errno=ENAMETOOLONG;return -1; }
+    strcpy(addr.sun_path,path);
+    int result=connect(fd,(struct sockaddr *)&addr,sizeof(addr)),error=errno;
+    close(fd);
+    if (!result) { errno=EADDRINUSE;return -1; }
+    if (error==ENOENT) return 0;
+    if (error!=ECONNREFUSED) { errno=error;return -1; }
+    if (lstat(path,&after) || before.st_dev!=after.st_dev || before.st_ino!=after.st_ino) { errno=ESTALE;return -1; }
+    return unlink(path);
+}
 
 static int conntrack(struct nlattr *attr, uint32_t *id) {
     if (!attr || attr->nla_len<NLA_HDRLEN) return 0;
@@ -185,7 +263,8 @@ static int parse_packet(struct nlmsghdr *h) {
     struct key key={0};
     size_t size=a[NFQA_PAYLOAD]?a[NFQA_PAYLOAD]->nla_len-NLA_HDRLEN:0;
     const unsigned char *ip=a[NFQA_PAYLOAD]?(unsigned char *)a[NFQA_PAYLOAD]+NLA_HDRLEN:NULL;
-    if (ph.hook!=NF_INET_PRE_ROUTING || !conntrack(a[NFQA_CT],&key.ct) || size<28 ||
+    if (!conntrack(a[NFQA_CT],&key.ct)) { ct_rejected++;goto reject; }
+    if (ph.hook!=NF_INET_PRE_ROUTING || size<28 ||
         (ip[0]>>4)!=4 || (ip[0]&15)<5 || ip[9]!=IPPROTO_UDP || (read16(ip+6)&0x3fff)) goto reject;
     unsigned ihl=(ip[0]&15)*4U, length=read16(ip+2);
     if (size<ihl+8 || length<ihl+8 || length>1536 || read16(ip+ihl+4)!=length-ihl || read16(ip+ihl+2)!=32497) goto reject;
@@ -197,7 +276,32 @@ reject:
     invalid++; verdict(id,mark,0); return 0;
 }
 static void selftest(void) {
-    testing=1;
+    testing=1;init_flows();
+    unsigned char reply[128] __attribute__((aligned))={0};
+    struct nlmsghdr *header=(struct nlmsghdr *)reply;
+    header->nlmsg_type=NLMSG_ERROR;header->nlmsg_len=NLMSG_LENGTH(sizeof(struct nlmsgerr)+sizeof(struct nfgenmsg));
+    struct nlmsgerr error={.error=-ENOENT,.msg={.nlmsg_type=(NFNL_SUBSYS_QUEUE<<8)|NFQNL_MSG_VERDICT,.nlmsg_len=NLMSG_LENGTH(sizeof(struct nfgenmsg))}};
+    struct nfgenmsg family={.res_id=htons(QUEUE)};
+    memcpy(NLMSG_DATA(header),&error,sizeof(error));memcpy((char *)NLMSG_DATA(header)+sizeof(error),&family,sizeof(family));
+    assert(missing_verdict(header));
+    error.error=-EPERM;memcpy(NLMSG_DATA(header),&error,sizeof(error));assert(!missing_verdict(header));
+    error.error=-ENOENT;error.msg.nlmsg_type=(NFNL_SUBSYS_QUEUE<<8)|NFQNL_MSG_CONFIG;memcpy(NLMSG_DATA(header),&error,sizeof(error));assert(!missing_verdict(header));
+    error.msg.nlmsg_type=(NFNL_SUBSYS_QUEUE<<8)|NFQNL_MSG_VERDICT;memcpy(NLMSG_DATA(header),&error,sizeof(error));
+    family.res_id=htons(100);memcpy((char *)NLMSG_DATA(header)+sizeof(error),&family,sizeof(family));assert(!missing_verdict(header));
+    header->nlmsg_len=NLMSG_LENGTH(sizeof(struct nlmsgerr))-1;assert(!missing_verdict(header));
+    if (!geteuid()) {
+        char directory[]="/tmp/coldwire-escrow-XXXXXX",path[128];assert(mkdtemp(directory));
+        assert(snprintf(path,sizeof(path),"%s/control.sock",directory)>0);
+        int fd=socket(AF_UNIX,SOCK_DGRAM,0);assert(fd>=0);
+        struct sockaddr_un addr={.sun_family=AF_UNIX};strcpy(addr.sun_path,path);
+        assert(!bind(fd,(struct sockaddr *)&addr,sizeof(addr)) && !chmod(path,0600));
+        assert(prepare_socket(path)==-1 && errno==EADDRINUSE);
+        close(fd);assert(!prepare_socket(path) && access(path,F_OK)==-1);
+        fd=open(path,O_CREAT|O_EXCL|O_WRONLY,0600);assert(fd>=0);close(fd);
+        assert(prepare_socket(path)==-1 && errno==EPERM);assert(!unlink(path));
+        assert(!symlink("missing",path));assert(prepare_socket(path)==-1 && errno==EPERM);
+        assert(!unlink(path) && !rmdir(directory));
+    }
     unsigned char attrs[20] __attribute__((aligned))={0};
     struct nlattr *outer=(struct nlattr *)attrs,*identity=(struct nlattr *)(attrs+4),*state=(struct nlattr *)(attrs+12);
     outer->nla_len=sizeof(attrs);identity->nla_len=8;identity->nla_type=CTA_ID;
@@ -230,9 +334,10 @@ static void selftest(void) {
     for (unsigned i=0;i<CAPACITY+1;i++) { k.ct=i%8+1; hold(k,i,0,128,6*TTL_NS); }
     assert(held==CAPACITY && bounded==3);
     expire(7*TTL_NS); assert(!held && head==tail);
-    for (unsigned i=0;i<6000;i++) { k.ct=i%8+1; hold(k,i,0,1536,8*TTL_NS); }
+    for (unsigned i=0;i<BYTE_LIMIT/1536+100;i++) { k.ct=i%8+1; hold(k,i,0,1536,8*TTL_NS); }
     assert(held_bytes<=BYTE_LIMIT && bounded>3);
-    expire(9*TTL_NS); assert(!held && !held_bytes);
+    expire(9*TTL_NS); assert(!held && !held_bytes && free_count==FLOW_LIMIT);
+    for (unsigned i=0;i<BUCKETS;i++) assert(!buckets[i]);
     message[4]=0; message[5]=129; assert(!control(message,sizeof(message),1,2));
     puts("PASS escrow identity, revocation, expiry, packet/flow/byte bounds and root-only snapshots");
 }
@@ -243,14 +348,16 @@ int main(int argc, char **argv) {
     }
     char hostname[256];
     if (gethostname(hostname,sizeof(hostname)) || strcmp(hostname,"kit-entry")) return 1;
+    init_flows();
     const char *directory="/run/coldwire-escrow", *path="/run/coldwire-escrow/grants.sock";
     struct stat st;
     if (lstat(directory,&st) || !S_ISDIR(st.st_mode) || st.st_uid || (st.st_mode&0777)!=0700) fatal("private directory");
     int control_fd=socket(AF_UNIX,SOCK_DGRAM|SOCK_NONBLOCK|SOCK_CLOEXEC,0), one=1;
     struct sockaddr_un addr={.sun_family=AF_UNIX};
     strcpy(addr.sun_path,path);
-    if (control_fd<0 || setsockopt(control_fd,SOL_SOCKET,SO_PASSCRED,&one,sizeof(one)) ||
+    if (prepare_socket(path) || control_fd<0 || setsockopt(control_fd,SOL_SOCKET,SO_PASSCRED,&one,sizeof(one)) ||
         bind(control_fd,(struct sockaddr *)&addr,sizeof(addr)) || chmod(path,0600)) fatal("control socket");
+    candidate_fd=control_fd;
     struct sigaction sa={.sa_handler=signal_handler}; sigemptyset(&sa.sa_mask);
     if (sigaction(SIGTERM,&sa,NULL) || sigaction(SIGINT,&sa,NULL) || sigaction(SIGUSR1,&sa,NULL)) fatal("signals");
     struct nfq_handle *handle=nfq_open();
@@ -267,7 +374,7 @@ int main(int argc, char **argv) {
         iov[i]=(struct iovec){.iov_base=buffers[i],.iov_len=sizeof(buffers[i])};
         incoming[i].msg_hdr.msg_iov=&iov[i]; incoming[i].msg_hdr.msg_iovlen=1;
     }
-    puts("ready queue=101 copy=128 max=32768 ttl_ms=1000 byte_limit=8388608"); fflush(stdout);
+    printf("ready queue=%d copy=128 max=%u ttl_ms=1000 byte_limit=%u flow_limit=%u per_flow=%u\n",QUEUE,CAPACITY,BYTE_LIMIT,FLOW_LIMIT,PER_FLOW); fflush(stdout);
     int status=0;
     while (!stopping) {
         expire(clock_ns()); if (flush()) { status=1; break; }
@@ -278,7 +385,7 @@ int main(int argc, char **argv) {
             fputs("poll: control/queue closed\n",stderr); status=1; break;
         }
         if (fds[0].revents&POLLIN) {
-            unsigned char data[6+18*FLOW_LIMIT]; char ancillary[CMSG_SPACE(sizeof(struct ucred))] __attribute__((aligned));
+            unsigned char data[6+18*GRANT_LIMIT]; char ancillary[CMSG_SPACE(sizeof(struct ucred))] __attribute__((aligned));
             struct iovec v={.iov_base=data,.iov_len=sizeof(data)};
             struct msghdr msg={.msg_iov=&v,.msg_iovlen=1,.msg_control=ancillary,.msg_controllen=sizeof(ancillary)};
             ssize_t n=recvmsg(control_fd,&msg,MSG_DONTWAIT); int root=0;
@@ -302,7 +409,8 @@ int main(int argc, char **argv) {
                 int left=(int)incoming[i].msg_len;
                 struct nlmsghdr *h=(struct nlmsghdr *)buffers[i];
                 while (NLMSG_OK(h,left)) {
-                    if (h->nlmsg_type!=((NFNL_SUBSYS_QUEUE<<8)|NFQNL_MSG_PACKET) || parse_packet(h)) {
+                    if (missing_verdict(h)) verdict_missing++;
+                    else if (h->nlmsg_type!=((NFNL_SUBSYS_QUEUE<<8)|NFQNL_MSG_PACKET) || parse_packet(h)) {
                         fprintf(stderr,"netlink type=%u bytes=%u errno=%d",h->nlmsg_type,h->nlmsg_len,errno);
                         if (h->nlmsg_type==NLMSG_ERROR && h->nlmsg_len>=NLMSG_LENGTH(sizeof(struct nlmsgerr))) {
                             struct nlmsgerr e;memcpy(&e,NLMSG_DATA(h),sizeof(e));fprintf(stderr," kernel_error=%d",e.error);

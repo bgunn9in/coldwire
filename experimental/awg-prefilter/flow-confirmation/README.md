@@ -24,6 +24,12 @@ and [v18 measurements](../validation-v18.md).
 
 ## How admission works
 
+The [v30 follow-up](../validation-v30.md) removes global conntrack scans,
+tests helper restarts and increases bounded recovery capacity for large
+packets. Final trials delivered all useful UDP; some probes still arrived
+after one second.
+This remains a lab option, disabled in the normal installers.
+
 1. A forwards an unknown flow through the bounded admission guard and the
    existing Header Protection/MAC1 filter. These checks do not authenticate
    a client.
@@ -31,8 +37,8 @@ and [v18 measurements](../validation-v18.md).
    decryption, replay checking and the inner source-address check. An
    authenticated keepalive can also produce an event. Handshake-shaped
    traffic and conntrack state cannot produce this confirmation.
-3. A reads the original tuple, conntrack ID and translated source port from
-   its own conntrack table. It asks B to confirm that port using a fresh
+3. A reads the original tuple, conntrack ID and translated source port with
+   an exact conntrack GET. It asks B to confirm that port using a fresh
    random 128-bit nonce. B must observe another authenticated transport
    event after receiving the request. Both timestamps are compared on B's
    monotonic clock; this check does not need synchronized server clocks.
@@ -41,16 +47,20 @@ and [v18 measurements](../validation-v18.md).
    lease for `original source IPv4 . UDP source port . conntrack ID`.
 5. Active traffic can refresh the lease. A new confirmed flow for the same
    peer replaces its old flow. Idle leases expire. Losing the control
-   connection clears A's state; a stopped helper cannot prevent kernel
-   expiry.
+   connection leaves existing leases valid only until their original expiry.
+   It cannot refresh them. A stopped helper cannot prevent kernel expiry.
 
 The IPv4 lab fixes the destination interface, address and VPN port in its
 rules. This is not a general multi-destination connection cache. NAT port
 translation is read from conntrack rather than inferred from a client's
 source port.
 
-A polls conntrack every 100 ms and applies an accepted confirmation to
-nftables immediately. B can emit a fresh same-endpoint event every 50 ms;
+A schedules known flows every 100 ms and applies an accepted confirmation to
+nftables immediately. It discovers flows from B's authenticated port hints
+and, with forward escrow, early root-only candidate notices from the holding
+process. Candidates and hints start a challenge; neither grants a lease.
+The exact mapping and generation are checked again when the proof arrives.
+B can emit a fresh same-endpoint event every 50 ms;
 the TLS stream uses `TCP_NODELAY`. B selects endpoints and proof events
 by the greatest accepted transport counter in its current keypair, with
 a fresh counter epoch on key rotation. Late valid data can still be
@@ -66,7 +76,7 @@ every forwarded VPN packet cryptographically.
 
 ## Bounds and security limits
 
-The current rules allow unknown traffic up to 1500 packets/s with burst 4096
+The basic `lab-rules.nft.example` allows unknown traffic up to 1500 packets/s with burst 4096
 per source IPv4 address, followed by a shared 6000/s budget with burst 1024.
 The larger initial credits cover the measured wait for a moving flow's fresh
 proof. They replenish at the same sustained rates and allocate no packet
@@ -84,7 +94,11 @@ Confirmed flows bypass both unknown-traffic budgets.
 
 The lease set holds at most 4096 flows. Helpers bound pending requests to
 128, issue at most sixteen requests per tick, expire requests after three
-seconds and bound peer/history/stream state. The C filter retains queue
+seconds and bound peer/history/stream state. Sixteen pending slots are reserved
+for authenticated hints and lease renewals; other candidates may use at most
+four slots per source IP. These are learned addresses, not an allowlist.
+The observed-flow cache holds at most 128 mappings. B's hints have a shared
+64/s, burst-16 limit. The C filter retains queue
 4096, copy range 212 and grouped individual verdicts.
 The same `S1-S4=12` and `H1-H4=1,2,3,4` filter restrictions apply. IPv6
 outer transport is unsupported.
@@ -104,9 +118,10 @@ and checks cold starts.
 Clients at one source IP also share the control-message allowance. Large
 simultaneous client populations, set exhaustion and adaptive cookie/MAC2
 attacks have not been tested.
-Exceeding the 4096-candidate conntrack bound can clear existing leases and
-interrupt clients. The bound controls memory use; it does not prevent that
-form of exhaustion.
+The helper no longer dumps conntrack or clears leases when the global table
+exceeds 4096 entries. V30 tested 8192 noise sockets. The kernel's own
+conntrack capacity and memory remain finite, and unconfirmed first packets
+can still be lost while discovery credits are exhausted.
 
 Unknown flows retain the strict filter's I1/Jc drops. An active lease
 bypasses that filter for its tuple, including camouflage packets. Client
@@ -139,17 +154,26 @@ sudo ./flow-confirmation/escrow --vm-test
 ```
 
 The example splits the existing 6000/s, burst-2048 aggregate allowance into
-5936/s with burst 1984 for bulk traffic and 64/s with burst 64 for the first
-packet of a conntrack flow. The latter still goes through header inspection;
+4976/s with burst 1024 for bulk traffic and 1024/s with burst 1024 for discovery
+samples from unleased traffic. Samples still go through header inspection;
 it cannot authenticate a client. Excess traffic enters queue 101, with no
 queue bypass or fail-open option. Only confirmed IPv4/UDP conntrack entries
 and individual IP packets up to 1536 bytes are eligible for holding.
 Conntrack confirmation is kernel tracking state; it grants no VPN identity.
 
+Discovery also uses a learned per-source bucket: 32/s with burst 256,
+at most 4096 addresses and five seconds of idle time. This prevents a few
+sources repeatedly creating flows from taking the entire discovery budget.
+Exhausted discovery credits fall back to the ordinary bounded guard. Many
+sources can still exhaust the shared budget; this is not source authentication.
+Discovery also covers reused NAT tuples whose conntrack entry is still alive;
+requiring `ct original packets 1` would miss them.
+
 The process keeps kernel packet IDs and metadata, with a 128-byte netlink
 copy. Linux retains the original encrypted skb and its conntrack reference.
-Bounds are one second, 32768 packets, 128 pending flow identities, 4096
-packets per identity and 8 MiB of wire bytes. Kernel skb overhead is additional;
+Bounds are one second, 32768 packets, 8192 pending flow identities, 8192
+packets per identity and 16 MiB of wire bytes. A salted hash table replaces
+the linear flow search. Kernel skb overhead is additional;
 the byte limit is not a total-RAM limit. Expired or excess packets are dropped.
 
 A root-only Unix socket receives up to 128 lease records per snapshot for the exact source
@@ -170,6 +194,18 @@ stop A's helper while its table exists, remove the experimental table, then
 stop both queue processes. Restore the saved conntrack-accounting setting
 after the experiment. A missing queue listener drops matching traffic.
 
+The helper resends its current lease snapshot every 250 ms without extending
+any deadline. The holding process can replace an orphaned root-owned 0600
+socket after a crash; it refuses a live socket, regular file or symlink.
+The three `coldwire-*.service.example` files provide restart settings for
+the disposable `kit-entry` and `kit-exit` hosts only. They are not VPS units
+or an installer. V30 tested their automatic restarts and control-channel
+expiry with native clients; it did not test failure under a saturated link.
+An `ENOENT` reply to this process's queue-101 verdict is counted rather than
+stopping all forwarding: the kernel has already removed that packet. Other
+netlink errors remain fatal. V30 exercises this with a real hook reload.
+Packets discarded by a hook change remain lost.
+
 ## Optional return recovery
 
 The patched binary includes a separate lab option, disabled by default:
@@ -187,7 +223,7 @@ endpoint, B commits that endpoint before taking the recovery snapshot.
 The sender records each encrypted packet before reading its destination,
 so packets created after the snapshot already use the new path. B can
 resend this peer's current-epoch ciphertext towards it.
-Each attempt takes at most 8192 packets and 2 MiB, in original order.
+Each attempt takes at most 8192 packets and 8 MiB, in original order.
 There is at most one attempt per 250 ms per peer, including empty immediate
 lookups, and one nonempty attempt per 250 ms globally. Only one send can be
 in progress. Ordinary endpoint updates continue while recovery waits.
@@ -201,14 +237,14 @@ are unchanged; no timer or worker was added.
 Recovery copies one current batch into a reusable contiguous workspace.
 This gives the standard bind room for UDP GSO coalescing while keeping the
 retained ciphertext intact. The workspace is temporary and bounded by the
-current batch, at most the 2-MiB attempt budget. A successful individual-send
+current batch, at most the 8-MiB attempt budget. A successful individual-send
 fallback after GSO is disabled continues with the remaining batches; a failed
 fallback stops the attempt. Both paths are tested.
 
 After an immediate attempt, B retains the selected ciphertext without another
 payload copy. Stationary traffic cannot rearm it. A move blocked by cooldown
 or a busy sender can also create a pending snapshot from the ordinary ring.
-All retained snapshots together hold at most 16 peers, 8192 packets and 2 MiB.
+All retained snapshots together hold at most 16 peers, 8192 packets and 16 MiB.
 They contain ciphertext, the peer-key hash, scalar key epoch/order fields
 and an address string. A fresh authenticated move retargets the snapshot
 and appends newer eligible replies from the ring within those same budgets.
@@ -232,9 +268,10 @@ with v24 and records the remaining delivery and deadline limits.
 
 The [boundary study](../validation-v23.md) used the earlier 4096-packet limit;
 [v24](../validation-v24.md) added a frozen pending snapshot. V25 preserves
-and merges snapshots across attempts. The 2-MiB byte budgets are unchanged,
-but one peer can now use the global four-attempts/s allowance. Larger packets
-can exhaust the byte budget first. The cache is shared between peers, so
+and merges snapshots across attempts. V30 raises the attempt budget to 8 MiB
+and the global pending budget to 16 MiB so large packets can use the slot
+budget across successive moves. Neither change extends a deadline or enables
+recovery without a fresh authenticated move. The cache is shared between peers, so
 another peer can evict recent replies.
 The helper also uses a one-second
 TCP connect and server TLS-handshake timeout; startup at RTT 1400 ms failed
@@ -254,6 +291,8 @@ servers while evaluating these tradeoffs in the lab.
 | File | Purpose |
 |---|---|
 | `agent.py` | B's authenticated-event receiver and A's conntrack/lease controller |
+| `conntrack.py` | Exact original/reply tuple GET with generation and kernel-origin checks |
+| `test_conntrack.py` | Netlink encoding, identity, malformed reply and error tests |
 | `lab-rules.nft.example` | Combined unknown-source/aggregate guard, lease lookup and queue hook |
 | `coldwire_proof_linux.go` | B's authenticated notification and counter-ordered endpoint selection |
 | `coldwire_return_linux.go` | Optional bounded ciphertext cache and authenticated-move retransmission |
@@ -269,6 +308,7 @@ From this directory:
 
 ```sh
 python3 test_agent.py
+python3 test_conntrack.py
 ```
 
 The patcher accepts only clean AWG commit
@@ -295,7 +335,9 @@ private IPv4 endpoints and `--vm-test`. They are not production services.
 Use a lab that already has working DNAT/SNAT, two native AWG clients and the
 [C prefilter](../README.md). Keep original binaries and service definitions.
 
-Install `conntrack` on A and provide Python 3, nftables and OpenSSL. Place
+Provide Python 3, nftables and OpenSSL. Place `agent.py` and `conntrack.py`
+together on both hosts. The `conntrack` CLI remains useful for lab setup and
+diagnostics; the helper uses netlink directly. Place
 each helper's config and its private key in a root-only directory, with mode
 0600 on both files. The config has these fields; use the role's own
 certificate/key and the other role's pinned certificate as `ca`:
@@ -326,9 +368,9 @@ sudo python3 agent.py --vm-test exit /root/flow-confirmation/config.json
 ```
 
 Start the separate patched AWG binary with
-`COLDWIRE_LAB_PROOF_SOCKET=/run/coldwire-flow/events.sock`. The socket must
-exist before its first authenticated packet: this prototype initializes
-its notification socket once. Keep the original AWG binary intact.
+`COLDWIRE_LAB_PROOF_SOCKET=/run/coldwire-flow/events.sock`. The listener may
+start later or restart: subsequent authenticated notifications check the
+current root-owned 0600 socket again. Keep the original AWG binary intact.
 
 On A, use the classification-enabled C variant on queue 100. Build it in the parent
 directory with `make check-handshake`, then run `prefilter-handshake` with

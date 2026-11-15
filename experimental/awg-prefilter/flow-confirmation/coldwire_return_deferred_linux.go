@@ -10,7 +10,7 @@ import (
 const (
 	coldwirePendingPeers   = 16
 	coldwirePendingAge     = 1100 * time.Millisecond
-	coldwirePendingBytes   = 2 << 20
+	coldwirePendingBytes   = 16 << 20
 	coldwirePendingPackets = coldwireReplaySlots
 )
 

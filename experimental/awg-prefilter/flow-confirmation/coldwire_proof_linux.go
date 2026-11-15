@@ -51,14 +51,6 @@ func (peer *Peer) coldwireProof(endpoint conn.Endpoint, keypair *Keypair, counte
 		return
 	}
 	coldwireProofOnce.Do(func() {
-		info, err := os.Lstat(coldwireProofPath)
-		if err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0600 {
-			return
-		}
-		var stat unix.Stat_t
-		if unix.Lstat(coldwireProofPath, &stat) != nil || stat.Uid != 0 {
-			return
-		}
 		coldwireProofFD, _ = unix.Socket(unix.AF_UNIX, unix.SOCK_DGRAM|unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC, 0)
 	})
 	if coldwireProofFD < 0 {
@@ -85,6 +77,11 @@ func (peer *Peer) coldwireProof(endpoint conn.Endpoint, keypair *Keypair, counte
 	}
 	// Recovery eligibility is independent of the rate-limited local notification.
 	if !notificationDue {
+		return
+	}
+	// A missing/replaced listener must not permanently disable notifications.
+	var stat unix.Stat_t
+	if unix.Lstat(coldwireProofPath, &stat) != nil || stat.Uid != 0 || stat.Mode&unix.S_IFMT != unix.S_IFSOCK || stat.Mode&0777 != 0600 {
 		return
 	}
 	var event [42]byte

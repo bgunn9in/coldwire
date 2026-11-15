@@ -15,16 +15,17 @@ class ConfirmationTests(unittest.TestCase):
         self.entry=agent.Entry();self.exit=agent.Exit('192.168.76.10')
     def event(self,stamp,port=32497):
         return agent.EVENT.pack(b'CWP1',stamp,bytes([192,168,76,10]),port,bytes.fromhex('ab'*16),42)
+    def proofs(self,messages):return [m for m in messages if 'nonce' in m]
     def test_new_authenticated_event_required(self):
         query=self.entry.queries({self.flow},10)[0];self.exit.query(query,10.1)
-        self.assertEqual(self.exit.event(self.event(10000000000),10.2),[])
-        proof=self.exit.event(self.event(10200000000),10.3)[0]
+        self.assertEqual(self.proofs(self.exit.event(self.event(10000000000),10.2)),[])
+        proof=self.proofs(self.exit.event(self.event(10200000000),10.3))[0]
         self.assertTrue(self.entry.confirm(proof,{self.flow},10.4))
         self.assertEqual(self.entry.leases[self.flow][1],20.4)
         self.assertFalse(self.entry.confirm(proof,{self.flow},10.5))
     def test_nat_port_reuse_and_flow_generation(self):
         query=self.entry.queries({self.flow},10)[0];self.exit.query(query,10.1)
-        proof=self.exit.event(self.event(10200000000),10.3)[0]
+        proof=self.proofs(self.exit.event(self.event(10200000000),10.3))[0]
         replacement=agent.Flow('192.168.76.40',40000,124,32497)
         self.assertFalse(self.entry.confirm(proof,{replacement},10.4))
         self.assertFalse(self.entry.leases)
@@ -44,7 +45,7 @@ class ConfirmationTests(unittest.TestCase):
         self.assertFalse(self.entry.confirm({'nonce':query3['nonce'],'peer':'ab'*16,'stamp':150},{self.flow,moved},4.1))
     def test_expiry_limits_and_unrelated_events(self):
         query=self.entry.queries({self.flow},1)[0];self.exit.query(query,1)
-        self.assertEqual(self.exit.event(self.event(1100000000,40000),1.2),[])
+        self.assertEqual(self.proofs(self.exit.event(self.event(1100000000,40000),1.2)),[])
         self.assertEqual(self.exit.event(b'bad',1.2),[])
         self.assertEqual(self.exit.event(self.event(5000000000),1.2),[])
         self.assertEqual(self.exit.event(self.event(1100000000),5),[])
@@ -54,18 +55,72 @@ class ConfirmationTests(unittest.TestCase):
         self.entry.leases[self.flow]=('ab'*16,11)
         self.entry.queries({self.flow},12);self.assertFalse(self.entry.leases)
         large={agent.Flow('192.168.76.40',40000+i,i+1,40000+i) for i in range(256)}
-        self.assertEqual(len(self.entry.queries(large,20)),16)
-    def test_conntrack_mapping_and_input_validation(self):
-        text='udp 17 180 src=192.168.76.30 dst=192.168.76.10 sport=32497 dport=32497 src=192.168.76.20 dst=192.168.76.10 sport=32497 dport=32497 [ASSURED] mark=0 use=1 id=123\n'
-        self.assertEqual(agent.parse_conntrack(text,'192.168.76.10','192.168.76.20',32497),{self.flow})
-        self.assertEqual(agent.parse_conntrack(text.replace('id=123','id=0'),'192.168.76.10','192.168.76.20',32497),set())
-        self.assertEqual(agent.parse_conntrack(text.replace('sport=32497 dport=32497 [ASSURED]','sport=123 dport=32497 [ASSURED]'),'192.168.76.10','192.168.76.20',32497),set())
-        self.assertEqual(agent.parse_conntrack('unrelated','192.168.76.10','192.168.76.20',32497),set())
+        self.assertEqual(len(self.entry.queries(large,20)),4)
+
+    def test_unknown_query_pressure_reserves_slots_for_authenticated_hints(self):
+        flows={agent.Flow(f'192.168.77.{i//4+1}',40000+i,i+1,40000+i) for i in range(256)}
+        for step in range(16):self.entry.queries(flows,20+step*.01)
+        self.assertEqual(len(self.entry.pending),agent.MAX_PENDING-16)
+        self.entry.auth_hints[self.flow]=30
+        requests=self.entry.queries(flows|{self.flow},21)
+        self.assertTrue(any(self.entry.pending[v['nonce']][0]==self.flow for v in requests))
+    def test_hints_lookup_one_mapping_without_candidate_table(self):
+        config={'entry':'192.168.76.10','exit':'192.168.76.20','vpn_port':32497}
+        with mock.patch.object(agent,'read_flow',return_value=self.flow) as lookup:
+            for value in ({'hint':True},{'hint':0},{'hint':65536},{'hint':'32497'},{'hint':32497,'peer':'ab'*16}):self.assertFalse(self.entry.hint(value,config,10))
+            lookup.assert_not_called()
+            self.assertTrue(self.entry.hint({'hint':32497},config,10))
+            self.assertFalse(self.entry.hint({'hint':32497},config,10.1));self.assertEqual(lookup.call_count,1)
+            self.assertEqual(self.entry.current_flows(10.2),{self.flow})
+            self.assertFalse(self.entry.leases)
+            self.assertEqual(len(self.entry.queries(self.entry.current_flows(10.2),10.2)),1)
+        self.assertEqual(self.entry.current_flows(21),set())
+
+    def test_early_local_candidate_still_needs_generation_and_fresh_proof(self):
+        config={'entry':'192.168.76.10','exit':'192.168.76.20','vpn_port':32497}
+        event=agent.CANDIDATE.pack(b'CWC1',bytes([192,168,76,30]),32497,123)
+        value=(self.flow.source,self.flow.port,self.flow.identity,self.flow.translated_port)
+        with mock.patch.object(agent.conntrack,'lookup',return_value=value) as lookup,mock.patch.object(agent,'read_flow',return_value=self.flow):
+            self.assertTrue(self.entry.candidate(event,config,10))
+            lookup.assert_called_once_with(config['entry'],config['exit'],32497,None,original=('192.168.76.30',32497),identity=123)
+            self.assertFalse(self.entry.leases)
+            query=self.entry.queries(self.entry.current_flows(10),10)[0]
+            self.assertIn(query['nonce'],self.entry.pending)
+        with mock.patch.object(agent.conntrack,'lookup',side_effect=ValueError('generation changed')):
+            self.assertFalse(self.entry.candidate(event,config,11))
+        for bad in (b'bad',event.replace(b'CWC1',b'CWC0'),agent.CANDIDATE.pack(b'CWC1',bytes([192,168,76,30]),0,123)):
+            self.assertFalse(self.entry.candidate(bad,config,12))
+
+    def test_hint_pressure_never_evicts_protected_flows_and_caches_stay_bounded(self):
+        self.entry.flows[32497]=self.flow;self.entry.observed[32497]=1;self.entry.leases[self.flow]=('ab'*16,100)
+        config={'entry':'192.168.76.10','exit':'192.168.76.20','vpn_port':32497}
+        with mock.patch.object(agent,'read_flow',side_effect=OSError('temporary netlink failure')):
+            for port in range(10000,20000):self.entry.hint({'hint':port},config,2)
+        self.assertIn(self.flow,self.entry.current_flows(2))
+        self.assertIn(self.flow,self.entry.leases)
+        self.assertLessEqual(len(self.entry.flows),agent.MAX_PENDING)
+        self.assertLessEqual(len(self.entry.observed),agent.MAX_PENDING)
+        self.assertLessEqual(len(self.entry.looked_up),agent.MAX_PENDING)
+        self.assertFalse(self.entry.current_flows(20))
+
+    def test_escrow_snapshot_retries_without_extending_lease(self):
+        self.entry.escrow_socket=agent.ESCROW_SOCKET;self.entry.leases[self.flow]=('ab'*16,20)
+        with mock.patch.object(agent,'notify_escrow',side_effect=[False,True]) as notify:
+            agent.sync_escrow(self.entry,10);agent.sync_escrow(self.entry,10.25)
+        self.assertEqual(notify.call_count,2);self.assertEqual(self.entry.leases[self.flow][1],20)
+        self.assertEqual(self.entry.stats['escrow_notify_failed'],1)
+
+    def test_exit_hint_rate_and_cache_are_bounded(self):
+        hints=[]
+        for i in range(1000):hints+=self.exit.event(self.event(1000000000,port=10000+i),1)
+        self.assertEqual(len([m for m in hints if 'hint' in m]),16)
+        for i in range(1000):self.exit.event(self.event(2000000000+i*10000000,port=10000+i),2+i*.01)
+        self.assertLessEqual(len(self.exit.hinted),agent.MAX_PENDING)
     def test_nanosecond_cutoff_and_buffered_TLS_records(self):
         request={'nonce':'cd'*16,'port':32497}
         self.exit.query(request,10,cutoff_ns=10000000123)
-        self.assertEqual(self.exit.event(self.event(10000000122),10.1),[])
-        self.assertEqual(len(self.exit.event(self.event(10000000124),10.1)),1)
+        self.assertEqual(self.proofs(self.exit.event(self.event(10000000122),10.1)),[])
+        self.assertEqual(len(self.proofs(self.exit.event(self.event(10000000124),10.1))),1)
         class BufferedTLS:
             def __init__(self):self.blocks=[b'{"n":1}\n',b'{"n":2}\n']
             def setsockopt(self,level,option,value):
@@ -76,18 +131,19 @@ class ConfirmationTests(unittest.TestCase):
                 raise agent.ssl.SSLWantReadError()
         self.assertEqual(agent.Stream(BufferedTLS()).read(),[{'n':1},{'n':2}])
 
-    def test_confirm_and_disconnect_update_kernel_before_next_poll(self):
+    def test_confirm_is_immediate_disconnect_keeps_bounded_lease(self):
         clock=[10.0];steps=[0];handlers={};queries=[];installs=[]
         connection=mock.Mock()
         class FakeStream:
             def __init__(self,sock):self.socket=sock;self.outgoing=bytearray()
             def queue(self,message):queries.append(message)
             def read(self):
+                if steps[0]==1:return [{'hint':32497}]
                 if steps[0]==3:raise EOFError
                 return [{'nonce':queries[0]['nonce'],'peer':'ab'*16,'stamp':100}]
         def select(readers,writers,errors,timeout):
             steps[0]+=1;clock[0]=10+(steps[0]-1)*.02
-            if steps[0] in (2,3):return [connection],[],[]
+            if steps[0] in (1,2,3):return [connection],[],[]
             if steps[0]==4:handlers[agent.signal.SIGTERM]()
             return [],[],[]
         def install(state,flows,now):installs.append((now,set(state.leases)))
@@ -101,13 +157,13 @@ class ConfirmationTests(unittest.TestCase):
              mock.patch.object(agent,'Stream',FakeStream), \
              mock.patch.object(agent.select,'select',side_effect=select), \
              mock.patch.object(agent.time,'monotonic',side_effect=lambda:clock[0]), \
-             mock.patch.object(agent,'read_flows',return_value={self.flow}), \
+             mock.patch.object(agent,'read_flow',return_value=self.flow), \
              mock.patch.object(agent,'install_leases',side_effect=install), \
              mock.patch.object(agent,'snapshot'):
             agent.serve(config,'entry')
         self.assertEqual(installs[0],(10.0,set()))
         self.assertEqual(installs[1],(10.02,{self.flow}))
-        self.assertEqual(installs[2],(10.04,set()))
+        self.assertEqual(installs[2],(10.06,set()))
         self.assertLess(installs[2][0],10+agent.POLL_SECONDS)
 
     def test_escrow_is_optional_and_follows_successful_kernel_install(self):

@@ -258,6 +258,13 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [v30 follow-up](validation-v30.md) and [data](results-v30.json) address
+conntrack churn, helper restarts and large-packet recovery. Exact tuple
+lookups replace global scans. Holding uses a bounded hash table; replay
+budgets now cover larger packets across successive moves. Final trials
+delivered all useful UDP; some ICMP replies still arrived after one second.
+The prototype remains disabled in normal installations.
+
 The [forward-escrow study](validation-v29.md) and [data](results-v29.json)
 add an optional bounded queue while A waits for B to confirm a changed
 client tuple. With 4 or 16 noise IPs, all 1,443,921 unique useful UDP packets

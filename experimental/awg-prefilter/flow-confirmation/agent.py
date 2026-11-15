@@ -8,7 +8,6 @@ import ipaddress
 import json
 import os
 from pathlib import Path
-import re
 import secrets
 import select
 import signal
@@ -18,6 +17,7 @@ import stat
 import struct
 import subprocess
 import time
+import conntrack
 
 TABLE='awg_kernel_guard_lab'
 LEASE_SECONDS=10
@@ -26,6 +26,7 @@ POLL_SECONDS=.1
 EVENT=struct.Struct('!4sQ4sH16sQ')
 ESCROW_RECORD=struct.Struct('!4sHIQ')
 ESCROW_SOCKET='/run/coldwire-escrow/grants.sock'
+CANDIDATE=struct.Struct('!4s4sHI')
 
 @dataclasses.dataclass(frozen=True)
 class Flow:
@@ -34,45 +35,79 @@ class Flow:
     identity: int
     translated_port: int
 
-def parse_conntrack(text,entry,exit,port):
-    flows=set()
-    for line in text.splitlines():
-        tuples=re.findall(r'src=([0-9.]+) dst=([0-9.]+) sport=(\d+) dport=(\d+)',line)
-        identity=re.search(r'\bid=(\d+)\b',line)
-        if len(tuples)!=2 or not identity:continue
-        original,reply=tuples
-        if original[1]!=entry or int(original[3])!=port or reply[:2]!=(exit,entry) or int(reply[2])!=port:continue
-        address=str(ipaddress.IPv4Address(original[0]))
-        values=(int(original[2]),int(identity[1]),int(reply[3]))
-        if not (1<=values[0]<=65535 and 0<values[1]<2**32 and 1<=values[2]<=65535):continue
-        flows.add(Flow(address,*values))
-    assert len(flows)<=4096,'Conntrack lab bound exceeded'
-    return flows
-
-def read_flows(config):
-    result=subprocess.run(['conntrack','-L','-p','udp','--orig-dst',config['entry'],'--dport',str(config['vpn_port']),'-o','extended,id'],capture_output=True,text=True,timeout=2,check=True)
-    return parse_conntrack(result.stdout,config['entry'],config['exit'],config['vpn_port'])
+def read_flow(config,port):
+    value=conntrack.lookup(config['entry'],config['exit'],config['vpn_port'],port)
+    return Flow(*value) if value else None
 
 def nonce(value):
-    return isinstance(value,str) and re.fullmatch('[0-9a-f]{32}',value) is not None
+    return isinstance(value,str) and len(value)==32 and all(c in '0123456789abcdef' for c in value)
 
 class Entry:
     def __init__(self,escrow_socket=None):
         self.escrow_socket=escrow_socket
+        self.flows={};self.observed={};self.looked_up={};self.auth_hints={};self.last_escrow=0
         self.pending={};self.leases={};self.last_query={};self.peer_stamp={};self.history=[];self.stats={'queries':0,'grants':0,'rejected':0,'moves':0}
+    def hint(self,message,config,now,authenticated=True):
+        if set(message)!={'hint'} or type(message['hint']) is not int or not 1<=message['hint']<=65535:
+            self.stats['rejected']+=1;return False
+        port=message['hint']
+        if port not in self.observed and len(self.observed)>=MAX_PENDING:
+            protected=set(self.leases)|{v[0] for v in self.pending.values()}|{f for f,t in self.auth_hints.items() if t>now}
+            available=[p for p in self.observed if self.flows.get(p) not in protected]
+            if not available:self.stats['rejected']+=1;return False
+            old=min(available,key=lambda p:self.observed[p]);stale=self.flows.pop(old,None);self.auth_hints.pop(stale,None);self.observed.pop(old);self.looked_up.pop(old,None)
+        self.observed[port]=now
+        if now-self.looked_up.get(port,-10)<.5:
+            if authenticated and port in self.flows:self.auth_hints[self.flows[port]]=now+3
+            return False
+        self.looked_up[port]=now
+        try:flow=read_flow(config,port)
+        except (OSError,ValueError):
+            self.stats['lookup_failed']=self.stats.get('lookup_failed',0)+1;return False
+        if flow:
+            previous=self.flows.get(port)
+            if previous!=flow:self.auth_hints.pop(previous,None)
+            self.flows[port]=flow
+            if authenticated:self.auth_hints[flow]=now+3
+        else:self.auth_hints.pop(self.flows.pop(port,None),None)
+        if not flow:self.observed.pop(port,None);self.looked_up.pop(port,None)
+        return flow is not None
+    def current_flows(self,now):
+        for port in list(self.observed):
+            if now-self.observed[port]>=LEASE_SECONDS:
+                self.auth_hints.pop(self.flows.pop(port,None),None);self.observed.pop(port);self.looked_up.pop(port,None)
+        return set(self.flows.values())
+    def candidate(self,data,config,now):
+        if len(data)!=CANDIDATE.size:return False
+        magic,address,port,identity=CANDIDATE.unpack(data)
+        if magic!=b'CWC1' or not port or not identity:return False
+        try:
+            value=conntrack.lookup(config['entry'],config['exit'],config['vpn_port'],None,original=(str(ipaddress.IPv4Address(address)),port),identity=identity)
+        except (OSError,ValueError):return False
+        if not value:return False
+        previous=self.flows.get(value[3])
+        if previous and previous.identity!=identity:self.looked_up.pop(value[3],None)
+        return self.hint({'hint':value[3]},config,now,authenticated=False)
     def queries(self,flows,now):
         self.pending={n:v for n,v in self.pending.items() if v[0] in flows and v[1]>now}
         self.leases={f:v for f,v in self.leases.items() if f in flows and v[1]>now}
         self.last_query={f:t for f,t in self.last_query.items() if f in flows}
+        self.auth_hints={f:t for f,t in self.auth_hints.items() if f in flows and t>now}
         busy={v[0] for v in self.pending.values()}
-        candidates=sorted(flows,key=lambda f:(f not in self.leases,self.last_query.get(f,-1),f.source,f.port))
+        priority=set(self.leases)|set(self.auth_hints)
+        unknown=[v[0] for v in self.pending.values() if v[0] not in priority]
+        source_pending={f.source:sum(v.source==f.source for v in unknown) for f in unknown}
+        candidates=sorted(flows,key=lambda f:(f not in priority,self.last_query.get(f,-1),f.source,f.port))
         result=[]
         for flow in candidates:
             if flow in busy or now-self.last_query.get(flow,-10)<1 or len(self.pending)>=MAX_PENDING:continue
+            # Reserve challenges for authenticated hints/renewals; one IP cannot occupy all unknown slots.
+            if flow not in priority and (len(unknown)>=MAX_PENDING-16 or source_pending.get(flow.source,0)>=4):continue
             if flow in self.leases and self.leases[flow][1]-now>LEASE_SECONDS-2:continue
             request=secrets.token_hex(16)
             self.pending[request]=(flow,now+3);self.last_query[flow]=now
             result.append({'nonce':request,'port':flow.translated_port});self.stats['queries']+=1
+            if flow not in priority:unknown.append(flow);source_pending[flow.source]=source_pending.get(flow.source,0)+1
             if len(result)==16:break
         return result
     def confirm(self,message,flows,now):
@@ -94,7 +129,7 @@ class Entry:
 
 class Exit:
     def __init__(self,entry):
-        self.entry=ipaddress.IPv4Address(entry).packed;self.pending={};self.stats={'queries':0,'proofs':0,'events':0,'rejected':0}
+        self.entry=ipaddress.IPv4Address(entry).packed;self.pending={};self.hinted={};self.hint_tokens=16;self.hint_time=0;self.stats={'queries':0,'proofs':0,'events':0,'rejected':0,'hints':0}
     def query(self,message,now,cutoff_ns=None):
         self.pending={n:v for n,v in self.pending.items() if v[2]>now}
         if set(message)!={'nonce','port'} or not nonce(message['nonce']) or type(message['port']) is not int or not 1<=message['port']<=65535 or message['nonce'] in self.pending or len(self.pending)>=MAX_PENDING:
@@ -104,9 +139,13 @@ class Exit:
         self.stats['events']+=1
         if len(data)!=EVENT.size:self.stats['rejected']+=1;return []
         magic,stamp,address,port,peer,counter=EVENT.unpack(data)
-        if magic!=b'CWP1' or address!=self.entry or stamp>int(now*1e9) or int(now*1e9)-stamp>10**9:
+        if magic!=b'CWP1' or address!=self.entry or not port or stamp>int(now*1e9) or int(now*1e9)-stamp>10**9:
             self.stats['rejected']+=1;return []
         messages=[]
+        self.hint_tokens=min(16,self.hint_tokens+max(0,now-self.hint_time)*64);self.hint_time=now
+        if now-self.hinted.get(port,-10)>=.25 and self.hint_tokens>=1:
+            if port not in self.hinted and len(self.hinted)>=MAX_PENDING:del self.hinted[min(self.hinted,key=self.hinted.get)]
+            self.hinted[port]=now;self.hint_tokens-=1;messages.append({'hint':port});self.stats['hints']+=1
         for request,(expected,cutoff,deadline) in list(self.pending.items()):
             if deadline<=now:del self.pending[request]
             elif expected==port and stamp>cutoff:
@@ -159,8 +198,11 @@ def install_leases(state,flows,now):
     elements=[f'{f.source} . {f.port} . {f.identity} timeout {max(1,int((v[1]-now)*1000))}ms' for f,v in state.leases.items()]
     if elements:command+=f'add element ip {TABLE} trusted {{ '+', '.join(elements)+' }\n'
     subprocess.run(['nft','-f','-'],input=command,text=True,capture_output=True,timeout=2,check=True)
-    if state.escrow_socket and not notify_escrow(state):
-        state.stats['escrow_notify_failed']=state.stats.get('escrow_notify_failed',0)+1
+    if state.escrow_socket:sync_escrow(state,now)
+
+def sync_escrow(state,now):
+    state.last_escrow=now
+    if not notify_escrow(state):state.stats['escrow_notify_failed']=state.stats.get('escrow_notify_failed',0)+1
 
 def notify_escrow(state):
     """A notification cannot grant more than the kernel set just installed."""
@@ -191,26 +233,45 @@ def serve(config,role):
         nonlocal alive
         alive=False
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
-    stream=None;last_status=0;next_tick=0
+    stream=None;last_status=0;next_tick=0;candidates=None;candidate_path=None
     if role=='exit':
         state=Exit(config['entry']);listener=socket.socket();listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);listener.bind((config['exit'],39101));listener.listen(4);listener.setblocking(False)
         path=Path(config['events']);assert path.parent.stat().st_uid==0 and stat.S_IMODE(path.parent.stat().st_mode)==0o700
         if path.exists():assert stat.S_ISSOCK(path.lstat().st_mode) and path.lstat().st_uid==0;path.unlink()
         events=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM);events.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1);events.bind(str(path));path.chmod(0o600)
-    else:state=Entry(escrow_socket);flows=set();next_connect=0;last_lease_shape=None
+    else:
+        state=Entry(escrow_socket);flows=set();next_connect=0;last_lease_shape=None
+        if escrow_socket:
+            candidate_path=Path(escrow_socket).with_name('candidates.sock')
+            parent=candidate_path.parent.lstat();assert stat.S_ISDIR(parent.st_mode) and parent.st_uid==0 and stat.S_IMODE(parent.st_mode)==0o700
+            candidates=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM);candidates.setblocking(False);candidates.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
+            if candidate_path.exists():
+                info=candidate_path.lstat();assert stat.S_ISSOCK(info.st_mode) and info.st_uid==0 and stat.S_IMODE(info.st_mode)==0o600
+                with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as probe:
+                    try:probe.connect(str(candidate_path))
+                    except ConnectionRefusedError:candidate_path.unlink()
+                    else:raise OSError('Candidate helper is already running')
+            candidates.bind(str(candidate_path));candidate_path.chmod(0o600)
     try:
         while alive:
             now=time.monotonic()
             if role=='entry' and stream is None and now>=next_connect:
                 try:
                     connection=socket.create_connection((config['exit'],39101),timeout=1,source_address=(config['entry'],0))
-                    stream=Stream(ctx.wrap_socket(connection,server_hostname=config['exit']));state=Entry(escrow_socket)
+                    stream=Stream(ctx.wrap_socket(connection,server_hostname=config['exit']))
                 except (OSError,ssl.SSLError):next_connect=now+1
             readers=([listener,events] if role=='exit' else [])+([stream.socket] if stream else [])
+            if candidates:readers.append(candidates)
             writable=[stream.socket] if stream and stream.outgoing else []
             ready,writes,_=select.select(readers,writable,[],.05)
             lease_changed=False
             try:
+                if candidates and candidates in ready:
+                    for _ in range(64):
+                        try:data,ancillary,flags,_=candidates.recvmsg(256,socket.CMSG_SPACE(12))
+                        except BlockingIOError:break
+                        trusted=any(level==socket.SOL_SOCKET and kind==socket.SCM_CREDENTIALS and len(value)>=12 and struct.unpack('3i',value[:12])[1]==0 for level,kind,value in ancillary)
+                        if trusted and not flags and state.candidate(data,config,time.monotonic()):next_tick=0
                 if role=='exit' and listener in ready:
                     connection,address=listener.accept()
                     if stream or address[0]!=config['entry']:connection.close()
@@ -222,8 +283,17 @@ def serve(config,role):
                     for message in stream.read():
                         if role=='exit':state.query(message,time.monotonic(),time.monotonic_ns())
                         else:
-                            flows=read_flows(config)
-                            lease_changed=state.confirm(message,flows,time.monotonic()) or lease_changed
+                            if 'hint' in message:
+                                if state.hint(message,config,time.monotonic()):next_tick=0
+                            else:
+                                request=message.get('nonce');pending=state.pending.get(request) if nonce(request) else None
+                                fresh=set()
+                                if pending:
+                                    try:flow=read_flow(config,pending[0].translated_port)
+                                    except (OSError,ValueError):flow=None
+                                    if flow:fresh.add(flow)
+                                lease_changed=state.confirm(message,fresh,time.monotonic()) or lease_changed
+                            flows=state.current_flows(time.monotonic())
                 if role=='exit' and events in ready:
                     data,ancillary,flags,_=events.recvmsg(256,socket.CMSG_SPACE(12))
                     trusted=any(level==socket.SOL_SOCKET and kind==socket.SCM_CREDENTIALS and struct.unpack('3i',value[:12])[1]==0 for level,kind,value in ancillary)
@@ -234,18 +304,20 @@ def serve(config,role):
                 if stream and stream.socket in writes:stream.write()
             except (OSError,ssl.SSLError,EOFError,AssertionError,ValueError):
                 if stream:stream.socket.close();stream=None
-                if role=='entry':state=Entry(escrow_socket);last_lease_shape=None;lease_changed=True
+                if role=='entry':
+                    state.pending.clear();next_connect=time.monotonic()+.2
             now=time.monotonic()
             if role=='entry' and (now>=next_tick or lease_changed):
                 if now>=next_tick:
-                    try:flows=read_flows(config)
-                    except (OSError,subprocess.SubprocessError,AssertionError):flows=set()
+                    flows=state.current_flows(now)
+                    if not stream:state.leases={f:v for f,v in state.leases.items() if f in flows and v[1]>now}
                     requests=state.queries(flows,now) if stream else []
                     for message in requests:stream.queue(message)
                     next_tick=now+POLL_SECONDS
                 shape=tuple(sorted((f.source,f.port,f.identity,v[0],v[1]) for f,v in state.leases.items()))
                 if shape!=last_lease_shape:
                     install_leases(state,flows,now);last_lease_shape=shape
+                if state.escrow_socket and now-state.last_escrow>=.25:sync_escrow(state,now)
             if now-last_status>=.5:
                 values={'connected':stream is not None,'pending':len(state.pending)}
                 if role=='entry':
@@ -254,6 +326,7 @@ def serve(config,role):
                 snapshot(config['status'],state,**values);last_status=now
     finally:
         if stream:stream.socket.close()
+        if candidates:candidates.close();candidate_path.unlink(missing_ok=True)
         if role=='entry':state.leases.clear();install_leases(state,set(),time.monotonic())
         else:listener.close();events.close();path.unlink(missing_ok=True)
 

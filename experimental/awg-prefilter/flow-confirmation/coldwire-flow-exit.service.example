@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=COLDWIRE experimental exit proof helper (lab only)
+ConditionHost=kit-exit
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /root/flow-confirmation/agent.py --vm-test exit /root/flow-confirmation/config.json
+Restart=on-failure
+RestartSec=200ms
+RuntimeDirectory=coldwire-flow
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=restart
+UMask=0077
+MemoryMax=64M
+TimeoutStopSec=3
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -32,5 +32,13 @@ flow-confirmation/escrow: flow-confirmation/escrow.c
 check-escrow: flow-confirmation/escrow
 	./flow-confirmation/escrow --self-test
 	python3 flow-confirmation/test_agent.py
+	python3 flow-confirmation/test_conntrack.py
 
-.PHONY: check check-batch check-handshake check-escrow
+lab-switch/noise-multi-source: lab-switch/noise-multi-source.c
+	$(CC) $(CFLAGS) $< -o $@
+
+check-lab-tools: lab-switch/noise-multi-source
+	./lab-switch/noise-multi-source --self-test
+	python3 lab-switch/udp-capture.py --self-test
+
+.PHONY: check check-batch check-handshake check-escrow check-lab-tools

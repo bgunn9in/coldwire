@@ -108,7 +108,7 @@ replace whole-VM CPU, offered-rate or packet-capture checks.
 ## Multiple noise sources
 
 The Linux [noise sender](noise-multi-source.c) can bind up to 16 existing
-addresses on the disposable `kit-restore` guest. It distributes up to 64 UDP
+addresses on the disposable `kit-restore` guest. It distributes up to 8192 UDP
 sockets across them and reports successful sends per source. Its rate argument
 is the total rate across all sources. The destination stays fixed at the lab
 entry, `192.168.76.10:32497`; it cannot select an Internet destination.
@@ -129,8 +129,45 @@ For example, this lab-only invocation sends 25,000 packets/s in total for
 ./noise-multi-source 25000 70 4096 64 captured-prefix 16
 ```
 
+V30 adds up to 8192 sockets for conntrack churn, durations up to 900 seconds
+and optional source/port starts. The latter let separate processes use
+disjoint lab tuples and independent burst schedules. The sender raises its
+own descriptor soft limit within the existing hard limit. Addresses remain
+within `192.168.76.40` through `.55`; the destination remains fixed.
+The requested schedule must fit at most 16384 burst records; otherwise it
+is rejected before sending.
+
+```bash
+./noise-multi-source 25000 70 4096 8192 captured-prefix 16
+./noise-multi-source 6250 300 257 16 captured-prefix 4 40 40000
+```
+
 It creates no addresses or keys. The [v28 study](../validation-v28.md) checks
 the per-source send counts against the switch's independent observations.
+
+## Compact UDP sequence capture
+
+The lab-only [collector](udp-capture.py) records each actual iperf UDP
+counter and capture timestamp, including separate counters inside GSO
+frames. It stores no packet bodies. Payloads are limited to 128, 512 and
+1200 bytes. Fragmented UDP and truncated captures are rejected. Choose a
+payload below the native profile's MTU; do not change client MTU to make a
+benchmark pass.
+
+```bash
+python3 udp-capture.py --self-test
+sudo install -d -m700 /root/prefilter/pingtrace/smoke
+# Disposable kit-client, with the collector available at this path:
+sudo ip netns exec pf-client1 python3 /path/to/udp-capture.py pf1 1200 /root/prefilter/pingtrace/smoke/udp.seq
+```
+
+Stop with SIGINT. Retain the `.seq.meta.json` completion record and tcpdump's
+stderr loss report; incomplete files are not valid delivery evidence. The
+collector requires root, hostname `kit-client` or `kit-exit`, and an output
+under `/root/prefilter/pingtrace`. It uses installed tcpdump with immediate
+mode, a 65535-byte snapshot and a 64-MiB capture ring. V30 checks its actual
+counter sets and timestamps against a separate full capture at a lower
+calibration rate. These private captures are ignored by Git.
 
 ## Bounds and observations
 

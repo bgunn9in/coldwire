@@ -155,10 +155,15 @@ func TestColdwireDeferredOwnershipExpiryAndBounds(t *testing.T) {
 		t.Fatal("idle expiry did not release snapshot references and budget")
 	}
 	cache = new(coldwireReturnCache)
-	for i := 0; i < 64; i++ {
+	for i := 0; i < 256; i++ {
 		cache.remember(coldwireReturnPacket{peer: id, birth: now, index: 1, sent: now, payload: make([]byte, 65536)})
 	}
 	cache.deferReplies(id, now, 1, "current", now, now)
+	other := [32]byte{2}
+	for i := 0; i < 128; i++ {
+		cache.remember(coldwireReturnPacket{peer: other, birth: now, index: 1, sent: now, payload: make([]byte, 65536)})
+	}
+	cache.deferReplies(other, now, 1, "current", now, now)
 	if cache.pendingBytes != coldwirePendingBytes || cache.pendingPackets != coldwirePendingBytes/65536 {
 		t.Fatal("global pending byte budget failed")
 	}
@@ -170,6 +175,33 @@ func TestColdwireDeferredOwnershipExpiryAndBounds(t *testing.T) {
 	}
 	if len(cache.pending) != coldwirePendingPeers {
 		t.Fatal("global pending peer budget failed")
+	}
+}
+
+func TestColdwireLargePacketRecoveryAcrossMoves(t *testing.T) {
+	cache := new(coldwireReturnCache)
+	now := time.Now()
+	id := [32]byte{1}
+	remember := func(count int, stamp time.Time) {
+		for i := 0; i < count; i++ {
+			cache.remember(coldwireReturnPacket{peer: id, birth: now, index: 1, sent: stamp, payload: make([]byte, 1280)})
+		}
+	}
+	remember(3000, now)
+	buffers, through := cache.selectReplies(id, now, 1, now)
+	if len(buffers) != 3000 {
+		t.Fatalf("500ms at 6000pps retained only %d large replies", len(buffers))
+	}
+	cache.holdReplies(id, now, 1, "first", now, through, buffers)
+	expires := cache.pending[id].expires
+	count := 3000
+	for move, added := range []int{1500, 1500, 1000} {
+		stamp := now.Add(time.Duration(move+1) * 250 * time.Millisecond)
+		remember(added, stamp)
+		count += added
+		if !cache.retargetPending(id, now, 1, "latest", stamp) || len(cache.pending[id].buffers) != count || cache.pending[id].expires != expires {
+			t.Fatal("successive authenticated moves lost large replies or extended expiry")
+		}
 	}
 }
 

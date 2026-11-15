@@ -3,5 +3,8 @@
 /prefilter-handshake
 /test-batch-handshake
 /flow-confirmation/escrow
+/lab-switch/noise-multi-source
 *.pcap
+*.seq
+*.seq.meta.json
 /keys

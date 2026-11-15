@@ -160,6 +160,80 @@ func TestColdwireProofIntervalBoundary(t *testing.T) {
 	}
 }
 
+func TestColdwireProofListenerLifecycle(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned lab socket required")
+	}
+	path := filepath.Join(t.TempDir(), "events.sock")
+	oldReturn := coldwireReturnEnabled
+	coldwireReturnEnabled = false
+	coldwireProofPath, coldwireProofOnce, coldwireProofFD = path, sync.Once{}, -1
+	defer func() {
+		if coldwireProofFD >= 0 {
+			unix.Close(coldwireProofFD)
+		}
+		coldwireProofPath, coldwireProofOnce, coldwireProofFD = "", sync.Once{}, -1
+		coldwireReturnEnabled = oldReturn
+	}()
+	peer := new(Peer)
+	keypair := &Keypair{created: time.Now(), localIndex: 1}
+	peer.keypairs.current = keypair
+	endpoint, err := conn.NewDefaultBind().ParseEndpoint("127.0.0.1:32497")
+	if err != nil {
+		t.Fatal(err)
+	}
+	send := func(counter uint64) {
+		peer.coldwireProofLast = 0
+		peer.coldwireEndpointCandidate(keypair, counter)
+		peer.coldwireProof(endpoint, keypair, counter)
+	}
+	// The first authenticated packet arrives before the helper creates its socket.
+	send(1)
+	listen := func() int {
+		fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_DGRAM|unix.SOCK_NONBLOCK, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = unix.Bind(fd, &unix.SockaddrUnix{Name: path}); err != nil {
+			unix.Close(fd)
+			t.Fatal(err)
+		}
+		if err = os.Chmod(path, 0600); err != nil {
+			unix.Close(fd)
+			t.Fatal(err)
+		}
+		return fd
+	}
+	fd := listen()
+	buffer := make([]byte, 128)
+	check := func(counter uint64) {
+		send(counter)
+		n, _, err := unix.Recvfrom(fd, buffer, 0)
+		if err != nil || n != 42 || binary.BigEndian.Uint64(buffer[34:42]) != counter {
+			t.Fatalf("listener did not recover: n=%d err=%v", n, err)
+		}
+	}
+	check(2)
+	unix.Close(fd)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	fd = listen()
+	defer unix.Close(fd)
+	check(3)
+	if err := os.Chmod(path, 0666); err != nil {
+		t.Fatal(err)
+	}
+	send(4)
+	if _, _, err := unix.Recvfrom(fd, buffer, 0); err != unix.EAGAIN {
+		t.Fatal("insecure replacement listener received a proof", err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	check(5)
+}
+
 func TestColdwireEndpointReorderAndKeyRotation(t *testing.T) {
 	peer := new(Peer)
 	oldEndpoint, _ := conn.NewDefaultBind().ParseEndpoint("127.0.0.1:32497")

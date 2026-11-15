@@ -44,7 +44,7 @@ func TestColdwireReturnByteBudgetSelectsNewestSuffix(t *testing.T) {
 	cache := new(coldwireReturnCache)
 	now := time.Now()
 	const size = 1400
-	const count = 2000
+	const count = 8000
 	for i := 1; i <= count; i++ {
 		payload := make([]byte, size)
 		binary.BigEndian.PutUint32(payload, uint32(i))
@@ -52,7 +52,7 @@ func TestColdwireReturnByteBudgetSelectsNewestSuffix(t *testing.T) {
 	}
 	got, _ := cache.selectReplies([32]byte{1}, now, 1, now.Add(time.Millisecond))
 	want := coldwireReplayBytes / size
-	if len(got) != want || cache.count != count {
+	if len(got) != want || cache.count != coldwireReturnBytes/size {
 		t.Fatalf("selected %d of %d packets, want %d", len(got), cache.count, want)
 	}
 	for i, payload := range got {

@@ -1,8 +1,15 @@
 # SPDX-License-Identifier: MIT
 # Disposable IPv4 lab only: queue 101 must be alive; nf_conntrack_acct=1 required.
-# Split 6000/s + 2048 burst across bulk (5936/1984) and discovery (64/64).
+# Split 6000/s + 2048 burst across bulk (4976/1024) and discovery (1024/1024).
 table ip awg_kernel_guard_lab {
     set unknown_sources {
+        type ipv4_addr
+        flags dynamic,timeout
+        timeout 5s
+        gc-interval 1s
+        size 4096
+    }
+    set discovery_sources {
         type ipv4_addr
         flags dynamic,timeout
         timeout 5s
@@ -32,7 +39,7 @@ table ip awg_kernel_guard_lab {
         counter drop
     }
     chain aggregate {
-        limit rate over 5936/second burst 1984 packets counter queue num 101
+        limit rate over 4976/second burst 1024 packets counter queue num 101
         counter return
     }
     chain guard {
@@ -49,7 +56,8 @@ table ip awg_kernel_guard_lab {
         iifname "enp0s3" ip daddr 192.168.76.10 ip saddr 192.168.76.20 udp sport 32497 ct direction reply return
         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark set meta mark & 0x87ffffff
         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 ip saddr . udp sport . ct id @trusted meta mark set meta mark | 0x10000000 goto trusted_flow
-        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 ct original packets 1 limit rate 64/second burst 64 packets counter return comment "discovery_sample"
+        # Reused NAT tuples can retain conntrack; discovery must not require its first packet.
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 update @discovery_sources { ip saddr limit rate 32/second burst 256 packets } limit rate 1024/second burst 1024 packets counter return comment "discovery_sample"
         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 jump guard
     }
     chain escrow_recheck {

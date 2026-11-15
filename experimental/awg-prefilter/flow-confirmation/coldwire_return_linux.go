@@ -18,7 +18,7 @@ const (
 	coldwireReturnBytes        = 8 << 20
 	coldwireReturnAge          = 500 * time.Millisecond
 	coldwireReplaySlots        = 8192
-	coldwireReplayBytes        = 2 << 20
+	coldwireReplayBytes        = coldwireReturnBytes
 	coldwirePeerReplayInterval = 250 * time.Millisecond
 )
 
