@@ -258,6 +258,15 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [recovery timing study](validation-v27.md) and [data](results-v27.json)
+test recovery on authenticated packets between the 50-ms local notifications.
+A regression reproduces the unnecessary wait in v26. Recovery eligibility
+is now checked independently; notification rate, recovery spacing and memory
+budgets stay unchanged. Paired WAN tests also measure receive-path cost.
+An upload pair exposes admission losses before a new tuple is confirmed.
+A separate 2048-packet aggregate-burst diagnostic removes those losses in
+the measured setup; the default remains 1024 pending broader noise tests.
+
 The [late-response study](validation-v26.md) and [data](results-v26.json)
 reconstruct the seven late v25 replies from packet captures. Recovery now
 uses a GSO-friendly workspace and handles the standard bind's successful

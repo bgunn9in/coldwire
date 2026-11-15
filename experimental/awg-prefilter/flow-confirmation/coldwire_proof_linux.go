@@ -46,7 +46,8 @@ func (peer *Peer) coldwireProof(endpoint conn.Endpoint, keypair *Keypair, counte
 	now := clock.Nano()
 	address := endpoint.DstToString()
 	moved := peer.coldwireProofEndpoint != "" && peer.coldwireProofEndpoint != address
-	if !peer.coldwireProofDue(address, now) {
+	notificationDue := peer.coldwireProofDue(address, now)
+	if !notificationDue && !coldwireReturnEnabled {
 		return
 	}
 	coldwireProofOnce.Do(func() {
@@ -72,11 +73,6 @@ func (peer *Peer) coldwireProof(endpoint conn.Endpoint, keypair *Keypair, counte
 	if ip == nil || err != nil || port < 1 || port > 65535 {
 		return
 	}
-	var event [42]byte
-	copy(event[:4], "CWP1")
-	binary.BigEndian.PutUint64(event[4:12], uint64(now))
-	copy(event[12:16], ip)
-	binary.BigEndian.PutUint16(event[16:18], uint16(port))
 	peer.handshake.mutex.RLock()
 	identity := sha256.Sum256(peer.handshake.remoteStatic[:])
 	peer.handshake.mutex.RUnlock()
@@ -87,6 +83,15 @@ func (peer *Peer) coldwireProof(endpoint conn.Endpoint, keypair *Keypair, counte
 	} else if coldwireReturnEnabled {
 		peer.coldwireRetryReplies(identity, keypair, endpoint)
 	}
+	// Recovery eligibility is independent of the rate-limited local notification.
+	if !notificationDue {
+		return
+	}
+	var event [42]byte
+	copy(event[:4], "CWP1")
+	binary.BigEndian.PutUint64(event[4:12], uint64(now))
+	copy(event[12:16], ip)
+	binary.BigEndian.PutUint16(event[16:18], uint16(port))
 	copy(event[18:34], identity[:16])
 	binary.BigEndian.PutUint64(event[34:42], counter)
 	// Dropping a local notification never blocks or changes VPN packet processing.

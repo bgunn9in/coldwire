@@ -110,6 +110,38 @@ func TestColdwireProofLocalEvents(t *testing.T) {
 	if _, _, err = unix.Recvfrom(fd, buffer, 0); err != unix.EAGAIN {
 		t.Fatal("late old endpoint generated a fresh proof", err)
 	}
+	t.Run("retry-before-notification", func(t *testing.T) {
+		coldwireReturns = new(coldwireReturnCache)
+		now := time.Now()
+		payload := []byte("eligible deferred ciphertext")
+		coldwireReturns.remember(coldwireReturnPacket{peer: identity, birth: keypair.created, index: keypair.localIndex, sent: now, payload: payload})
+		coldwireReturns.deferReplies(identity, keypair.created, keypair.localIndex, changed.DstToString(), now, now)
+		peer.isRunning.Store(true)
+		peer.coldwireReturnLast = now.Add(-coldwirePeerReplayInterval)
+		var clock unix.Timespec
+		if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &clock); err != nil {
+			t.Fatal(err)
+		}
+		// Keep notifications ineligible while recovery is already due, without a sleep race.
+		peer.coldwireProofLast = clock.Nano() + coldwireProofIntervalNS
+		lastNotification, sent := peer.coldwireProofLast, peer.txBytes.Load()
+		peer.coldwireEndpointCandidate(keypair, 45)
+		peer.coldwireProof(changed, keypair, 45)
+		if peer.txBytes.Load() != sent+uint64(len(payload)) || coldwireReturns.pending[identity].armed {
+			t.Fatal("eligible recovery waited for an unrelated proof notification")
+		}
+		peer.coldwireEndpointCandidate(keypair, 46)
+		peer.coldwireProof(changed, keypair, 46)
+		if peer.txBytes.Load() != sent+uint64(len(payload)) {
+			t.Fatal("stationary transport rearmed a spent recovery")
+		}
+		if peer.coldwireProofLast != lastNotification {
+			t.Fatal("recovery changed the notification schedule")
+		}
+		if _, _, err := unix.Recvfrom(fd, buffer, 0); err != unix.EAGAIN {
+			t.Fatal("recovery bypassed the notification rate limit", err)
+		}
+	})
 }
 
 func TestColdwireProofIntervalBoundary(t *testing.T) {
