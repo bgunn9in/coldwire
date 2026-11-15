@@ -105,6 +105,33 @@ not a packet-loss result. Live regression controls accepted a delayed last
 reply and detected a deliberately dropped request. The probe does not
 replace whole-VM CPU, offered-rate or packet-capture checks.
 
+## Multiple noise sources
+
+The Linux [noise sender](noise-multi-source.c) can bind up to 16 existing
+addresses on the disposable `kit-restore` guest. It distributes up to 64 UDP
+sockets across them and reports successful sends per source. Its rate argument
+is the total rate across all sources. The destination stays fixed at the lab
+entry, `192.168.76.10:32497`; it cannot select an Internet destination.
+
+Build and run its offline self-test in a Linux guest:
+
+```bash
+gcc -O2 -std=c11 -Wall -Wextra -Werror noise-multi-source.c -o noise-multi-source
+./noise-multi-source --self-test
+```
+
+Traffic mode requires hostname `kit-restore`, the configured addresses starting
+at `192.168.76.40` and an existing 256-byte fixture in `/root/prefilter`.
+For example, this lab-only invocation sends 25,000 packets/s in total for
+70 seconds, with 4096-packet bursts, 64 sockets and 16 source addresses:
+
+```bash
+./noise-multi-source 25000 70 4096 64 captured-prefix 16
+```
+
+It creates no addresses or keys. The [v28 study](../validation-v28.md) checks
+the per-source send counts against the switch's independent observations.
+
 ## Bounds and observations
 
 The switch accepts four peers. It learns up to 64 MAC addresses, replacing
@@ -119,10 +146,12 @@ ignored. Valid frame bytes and their order within each destination queue
 are preserved. `TCP_NODELAY` is enabled on accepted sockets.
 
 The noise counter recognizes the lab fixture only: IPv4 without options,
-UDP from `192.168.76.40` on any source port to `192.168.76.10:32497`,
+UDP from `192.168.76.40` through `192.168.76.55` on any source port to `192.168.76.10:32497`,
 UDP length 264.
 Other traffic is forwarded normally and is absent from that counter.
 This address check is telemetry, not a firewall or client allowlist.
+The bounded `noise_source_frames` map has one cumulative counter for each of
+the sixteen addresses. Subtract before/after snapshots to check a workload.
 
 Arrival times use QPC, with a rolling history of 4096 nonempty 100-ms bins.
 The oldest bin is evicted when full. This retains at least 409.6 seconds

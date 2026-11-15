@@ -88,6 +88,12 @@ def main():
             packet = frame(mb, md, noise)
             d.sendall(packet)
             assert receive(b, len(packet)) == packet
+        for source_octet in (41, 43, 55, 39, 56):
+            noise[15] = source_octet
+            candidate = frame(mb, md, noise)
+            d.sendall(candidate)
+            assert receive(b, len(candidate)) == candidate
+        noise[15] = 40
         noise[23] ^= 1
         unrelated = frame(mb, md, noise)
         d.sendall(unrelated)
@@ -107,7 +113,12 @@ def main():
             time.sleep(.05)
         else:
             raise AssertionError('Stale native-switch statistics')
-        assert stats['noise_frames'] == 6 and sum(stats['noise_bins_100ms'].values()) == 6
+        assert stats['noise_frames'] == 9 and sum(stats['noise_bins_100ms'].values()) == 9
+        sources = stats['noise_source_frames']
+        assert len(sources) == 16 and sum(sources.values()) == 9
+        assert {ip: count for ip, count in sources.items() if count} == {
+            '192.168.76.40': 6, '192.168.76.41': 1,
+            '192.168.76.43': 1, '192.168.76.55': 1}
         assert stats['dropped'] == 0 and stats['malformed_connections'] == 1
         assert stats['rejected_connections'] == 1 and stats['tcp_nodelay']
         print('PASS TCP framing, maximum length, ring wrap/order, unicast, opaque payload, peer cap and exact counter')

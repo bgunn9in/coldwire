@@ -301,7 +301,8 @@ sudo python3 agent.py --vm-test entry /root/flow-confirmation/config.json
 Both status files report connection state and bounded counters. A also
 records grants, expiry and replaced tuples. Measure early client discards,
 NFQUEUE loss, useful throughput, probe delivery and whole-VM CPU together.
-The [latest report](../validation-v27.md) tests recovery independently of
+The [latest report](../validation-v28.md) compares admission bursts under
+multi-IP noise. [v27](../validation-v27.md) tests recovery independently of
 notification sampling. [v26](../validation-v26.md) separates late-response
 timing and submission cost. [v25](../validation-v25.md) studies repeated-move recovery.
 [v24](../validation-v24.md) records the corrected lab NAT model.

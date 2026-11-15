@@ -258,6 +258,13 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [multi-IP study](validation-v28.md) and [data](results-v28.json)
+compare 1024- and 2048-packet admission bursts with 4 or 16 noise sources,
+25,000 noise datagrams/s in total, useful UDP at 6000/s and a 300-ms WAN RTT
+with jitter. Independent sender/switch counts verify each source. The filter,
+native clients and recovery budgets are the v27 versions. Upload losses remain
+with both bursts, so the default stays 1024.
+
 The [recovery timing study](validation-v27.md) and [data](results-v27.json)
 test recovery on authenticated packets between the 50-ms local notifications.
 A regression reproduces the unnecessary wait in v26. Recovery eligibility

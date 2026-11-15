@@ -36,6 +36,7 @@ static Bin bins[BINS];
 static size_t bin_count;
 static uint64_t frequency, frames, copies, drops, peak_pending, max_pending_age;
 static uint64_t noise_frames, noise_first_ns, noise_last_ns, short_sends, blocked_sends;
+static uint64_t noise_source_frames[16];
 static uint64_t malformed_connections, rejected_connections;
 static volatile LONG stopping;
 
@@ -131,10 +132,12 @@ static void record_noise(uint64_t stamp) {
 }
 
 static void observe_noise(const unsigned char *f, uint32_t size) {
-    static const unsigned char addresses[] = {192, 168, 76, 40, 192, 168, 76, 10};
+    static const unsigned char prefix[] = {192, 168, 76}, destination[] = {192, 168, 76, 10};
     if (size < 46 || f[16] != 8 || f[17] || f[18] != 0x45 || f[27] != 17 ||
-        memcmp(f + 30, addresses, 8) ||
+        memcmp(f + 30, prefix, 3) || f[33] < 40 || f[33] > 55 ||
+        memcmp(f + 34, destination, 4) ||
         be16(f + 40) != 32497 || be16(f + 42) != 264) return;
+    noise_source_frames[f[33] - 40]++;
     record_noise(now_ns());
 }
 
@@ -186,7 +189,10 @@ static void write_stats(const char *path) {
             frames, copies, drops, peak_pending, max_pending_age, short_sends, blocked_sends,
             malformed_connections, rejected_connections, ports, learned, cpu_ns(), now_ns(), noise_frames);
     nullable(f, noise_first_ns); fputs(",\"noise_last_ns\":", f); nullable(f, noise_last_ns);
-    fputs(",\"noise_bins_100ms\":{", f);
+    fputs(",\"noise_source_frames\":{", f);
+    for (int i = 0; i < 16; i++)
+        fprintf(f, "%s\"192.168.76.%d\":%" PRIu64, i ? "," : "", 40 + i, noise_source_frames[i]);
+    fputs("},\"noise_bins_100ms\":{", f);
     for (size_t i = 0; i < bin_count; i++)
         fprintf(f, "%s\"%" PRIu64 "\":%" PRIu64, i ? "," : "", bins[i].bucket, bins[i].count);
     fputs("},\"noise_bin_first_ns\":{", f);
