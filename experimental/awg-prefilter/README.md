@@ -258,6 +258,12 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [v31 latency study](validation-v31.md) and [data](results-v31.json)
+reject shorter work-proportional replay pacing. It did not reliably reduce
+the long tail and selected more packets for intermediate NAT mappings.
+The runtime remains v30, with a new coalescing regression. A churn trial
+also exposed true admission losses. There is still no one-second guarantee.
+
 The [v30 follow-up](validation-v30.md) and [data](results-v30.json) address
 conntrack churn, helper restarts and large-packet recovery. Exact tuple
 lookups replace global scans. Holding uses a bounded hash table; replay

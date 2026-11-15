@@ -24,6 +24,11 @@ and [v18 measurements](../validation-v18.md).
 
 ## How admission works
 
+The [v31 latency study](../validation-v31.md) rejects shorter work-based
+replay pacing. It increased intermediate replay work in the fast-move test;
+tails around 1.6 seconds remain. The runtime keeps its 250-ms interval, with
+a regression protecting coalescing. The rejected patch is a research artifact.
+
 The [v30 follow-up](../validation-v30.md) removes global conntrack scans,
 tests helper restarts and increases bounded recovery capacity for large
 packets. Final trials delivered all useful UDP; some probes still arrived
@@ -223,7 +228,9 @@ endpoint, B commits that endpoint before taking the recovery snapshot.
 The sender records each encrypted packet before reading its destination,
 so packets created after the snapshot already use the new path. B can
 resend this peer's current-epoch ciphertext towards it.
-Each attempt takes at most 8192 packets and 8 MiB, in original order.
+An immediate selection takes at most 8192 packets and 8 MiB, in original
+order. A merged deferred snapshot can reach 16 MiB within the shared
+8192-packet pending limit. The earlier per-attempt 8-MiB claim was incorrect.
 There is at most one attempt per 250 ms per peer, including empty immediate
 lookups, and one nonempty attempt per 250 ms globally. Only one send can be
 in progress. Ordinary endpoint updates continue while recovery waits.
@@ -237,7 +244,7 @@ are unchanged; no timer or worker was added.
 Recovery copies one current batch into a reusable contiguous workspace.
 This gives the standard bind room for UDP GSO coalescing while keeping the
 retained ciphertext intact. The workspace is temporary and bounded by the
-current batch, at most the 8-MiB attempt budget. A successful individual-send
+current batch, at most the 16-MiB pending-snapshot budget. A successful individual-send
 fallback after GSO is disabled continues with the remaining batches; a failed
 fallback stops the attempt. Both paths are tested.
 

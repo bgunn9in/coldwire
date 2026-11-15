@@ -465,3 +465,25 @@ func TestColdwireDeferredEncryptedLossAndNoDuplicate(t *testing.T) {
 	case <-time.After(30 * time.Millisecond):
 	}
 }
+
+func TestColdwireDeferredCoalescesRapidMoves(t *testing.T) {
+	cache := new(coldwireReturnCache)
+	now := time.Now()
+	id := [32]byte{1}
+	cache.remember(coldwireReturnPacket{peer: id, birth: now, index: 1, sent: now, payload: []byte("ciphertext")})
+	buffers, through := cache.selectReplies(id, now, 1, now)
+	cache.holdReplies(id, now, 1, "first", now, through, buffers)
+	expires := cache.pending[id].expires
+	cache.retargetPending(id, now, 1, "intermediate", now.Add(100*time.Millisecond))
+	if len(cache.takePending(id, now, 1, "intermediate", now.Add(150*time.Millisecond))) != 0 {
+		t.Fatal("an intermediate move escaped coalescing")
+	}
+	cache.retargetPending(id, now, 1, "latest", now.Add(200*time.Millisecond))
+	got := cache.takePending(id, now, 1, "latest", now.Add(250*time.Millisecond))
+	if len(got) != 1 || string(got[0]) != "ciphertext" || cache.pending[id].expires != expires {
+		t.Fatal("coalescing lost ciphertext, the latest target or the original expiry")
+	}
+	if len(cache.takePending(id, now, 1, "latest", now.Add(500*time.Millisecond))) != 0 {
+		t.Fatal("coalescing armed a stationary retry")
+	}
+}
