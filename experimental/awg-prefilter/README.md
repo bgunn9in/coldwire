@@ -6,7 +6,7 @@ This is a lab prototype for COLDWIRE's entry relay. It checks AWG headers
 before forwarding packets to the exit. Existing AWG 3.1 clients keep their
 profiles and need no extra software. The normal installers do not enable it.
 
-The prototype uses one C process, OpenSSL 3 and nftables NFQUEUE. The entry
+The base prefilter uses one C process, OpenSSL 3 and nftables NFQUEUE. The entry
 receives the HeaderProtectionKey and the exit's public key. It does not
 receive the exit's VPN private key, client private keys, PSK or session keys.
 User traffic remains encrypted between client and exit.
@@ -257,6 +257,13 @@ the A-to-B packet pattern. In the flow-lease variant, an active lease bypasses
 this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
+
+The [forward-escrow study](validation-v29.md) and [data](results-v29.json)
+add an optional bounded queue while A waits for B to confirm a changed
+client tuple. With 4 or 16 noise IPs, all 1,443,921 unique useful UDP packets
+arrived across four candidate trials; the paired guard lost 2418. The extra
+entry process used at most 2676 KiB RSS. Some download replies still exceeded
+one second. This path needs server helpers and is off by default.
 
 The [multi-IP study](validation-v28.md) and [data](results-v28.json)
 compare 1024- and 2048-packet admission bursts with 4 or 16 noise sources,

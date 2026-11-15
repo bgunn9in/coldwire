@@ -27,4 +27,10 @@ check-handshake: prefilter-handshake test-batch-handshake
 	PREFILTER_BINARY="$(CURDIR)/prefilter-handshake" python3 test_prefilter.py
 	PREFILTER_BATCH_DRIVER="$(CURDIR)/test-batch-handshake" python3 test_handshake_mark.py
 
-.PHONY: check check-batch check-handshake
+flow-confirmation/escrow: flow-confirmation/escrow.c
+
+check-escrow: flow-confirmation/escrow
+	./flow-confirmation/escrow --self-test
+	python3 flow-confirmation/test_agent.py
+
+.PHONY: check check-batch check-handshake check-escrow

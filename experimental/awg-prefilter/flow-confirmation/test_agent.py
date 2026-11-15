@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import struct
+import stat
 import sys
 import unittest
 from unittest import mock
@@ -108,5 +109,39 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(installs[1],(10.02,{self.flow}))
         self.assertEqual(installs[2],(10.04,set()))
         self.assertLess(installs[2][0],10+agent.POLL_SECONDS)
+
+    def test_escrow_is_optional_and_follows_successful_kernel_install(self):
+        self.entry.leases[self.flow]=('ab'*16,20)
+        with mock.patch.object(agent.subprocess,'run') as nft, mock.patch.object(agent,'notify_escrow') as notify:
+            agent.install_leases(self.entry,{self.flow},10)
+            notify.assert_not_called()
+            self.entry.escrow_socket=agent.ESCROW_SOCKET
+            notify.side_effect=lambda state: bool(nft.call_count==2)
+            agent.install_leases(self.entry,{self.flow},10)
+            self.assertNotIn('escrow_notify_failed',self.entry.stats)
+            nft.side_effect=agent.subprocess.CalledProcessError(1,'nft')
+            with self.assertRaises(agent.subprocess.CalledProcessError):agent.install_leases(self.entry,{self.flow},10)
+            self.assertEqual(notify.call_count,1)
+
+    def test_escrow_encoding_revocation_and_unavailable_socket(self):
+        self.entry.escrow_socket=agent.ESCROW_SOCKET
+        self.entry.leases[self.flow]=('ab'*16,20)
+        directory=mock.Mock(st_mode=stat.S_IFDIR|0o700,st_uid=0)
+        endpoint=mock.Mock(st_mode=stat.S_IFSOCK|0o600,st_uid=0)
+        connection=mock.MagicMock();connection.__enter__.return_value=connection
+        sent=[]
+        connection.sendto.side_effect=lambda data,path: sent.append(data) or len(data)
+        with mock.patch.object(agent.Path,'lstat',side_effect=lambda path:directory if path==agent.Path(agent.ESCROW_SOCKET).parent else endpoint,autospec=True), mock.patch.object(agent.socket,'socket',return_value=connection),mock.patch.object(agent.socket,'AF_UNIX',1,create=True):
+            self.assertTrue(agent.notify_escrow(self.entry))
+            self.assertEqual(sent[-1],struct.pack('!4sH',b'CWE1',1)+agent.ESCROW_RECORD.pack(bytes([192,168,76,30]),32497,123,20000000000))
+            self.entry.leases.clear();self.assertTrue(agent.notify_escrow(self.entry));self.assertEqual(sent[-1],b'CWE1\0\0')
+            endpoint.st_mode=stat.S_IFSOCK|0o666
+            self.assertFalse(agent.notify_escrow(self.entry))
+            endpoint.st_mode=stat.S_IFLNK|0o600
+            self.assertFalse(agent.notify_escrow(self.entry))
+            self.entry.escrow_socket='/tmp/other.sock';self.assertFalse(agent.notify_escrow(self.entry))
+        with mock.patch.object(agent,'notify_escrow',return_value=False),mock.patch.object(agent.subprocess,'run'):
+            agent.install_leases(self.entry,set(),10)
+            self.assertEqual(self.entry.stats['escrow_notify_failed'],1)
 
 if __name__=='__main__':unittest.main()

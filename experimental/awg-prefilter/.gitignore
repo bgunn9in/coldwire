@@ -2,5 +2,6 @@
 /prefilter-asan
 /prefilter-handshake
 /test-batch-handshake
+/flow-confirmation/escrow
 *.pcap
 /keys

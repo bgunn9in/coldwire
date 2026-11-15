@@ -24,6 +24,8 @@ LEASE_SECONDS=10
 MAX_PENDING=128
 POLL_SECONDS=.1
 EVENT=struct.Struct('!4sQ4sH16sQ')
+ESCROW_RECORD=struct.Struct('!4sHIQ')
+ESCROW_SOCKET='/run/coldwire-escrow/grants.sock'
 
 @dataclasses.dataclass(frozen=True)
 class Flow:
@@ -55,7 +57,8 @@ def nonce(value):
     return isinstance(value,str) and re.fullmatch('[0-9a-f]{32}',value) is not None
 
 class Entry:
-    def __init__(self):
+    def __init__(self,escrow_socket=None):
+        self.escrow_socket=escrow_socket
         self.pending={};self.leases={};self.last_query={};self.peer_stamp={};self.history=[];self.stats={'queries':0,'grants':0,'rejected':0,'moves':0}
     def queries(self,flows,now):
         self.pending={n:v for n,v in self.pending.items() if v[0] in flows and v[1]>now}
@@ -156,6 +159,22 @@ def install_leases(state,flows,now):
     elements=[f'{f.source} . {f.port} . {f.identity} timeout {max(1,int((v[1]-now)*1000))}ms' for f,v in state.leases.items()]
     if elements:command+=f'add element ip {TABLE} trusted {{ '+', '.join(elements)+' }\n'
     subprocess.run(['nft','-f','-'],input=command,text=True,capture_output=True,timeout=2,check=True)
+    if state.escrow_socket and not notify_escrow(state):
+        state.stats['escrow_notify_failed']=state.stats.get('escrow_notify_failed',0)+1
+
+def notify_escrow(state):
+    """A notification cannot grant more than the kernel set just installed."""
+    try:
+        assert state.escrow_socket==ESCROW_SOCKET and len(state.leases)<=MAX_PENDING
+        path=Path(state.escrow_socket);parent=path.parent.lstat();info=path.lstat()
+        assert stat.S_ISDIR(parent.st_mode) and parent.st_uid==0 and stat.S_IMODE(parent.st_mode)==0o700
+        assert stat.S_ISSOCK(info.st_mode) and info.st_uid==0 and stat.S_IMODE(info.st_mode)==0o600
+        data=struct.pack('!4sH',b'CWE1',len(state.leases))
+        data+=b''.join(ESCROW_RECORD.pack(ipaddress.IPv4Address(f.source).packed,f.port,f.identity,int(v[1]*1e9)) for f,v in state.leases.items())
+        with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as connection:
+            connection.setblocking(False)
+            return connection.sendto(data,str(path))==len(data)
+    except (OSError,AssertionError,ValueError,struct.error):return False
 
 def snapshot(path,state,**values):
     value={'time_ns':time.monotonic_ns(),'stats':state.stats,**values}
@@ -165,6 +184,8 @@ def serve(config,role):
     assert os.geteuid()==0 and Path('/etc/hostname').read_text().strip()=='kit-'+role
     for name in ('entry','exit'):assert ipaddress.IPv4Address(config[name]).is_private
     assert type(config['vpn_port']) is int and 1<=config['vpn_port']<=65535
+    escrow_socket=config.get('escrow_socket') if role=='entry' else None
+    assert escrow_socket in (None,ESCROW_SOCKET)
     ctx=context(config,role);alive=True
     def stop(*_):
         nonlocal alive
@@ -176,14 +197,14 @@ def serve(config,role):
         path=Path(config['events']);assert path.parent.stat().st_uid==0 and stat.S_IMODE(path.parent.stat().st_mode)==0o700
         if path.exists():assert stat.S_ISSOCK(path.lstat().st_mode) and path.lstat().st_uid==0;path.unlink()
         events=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM);events.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1);events.bind(str(path));path.chmod(0o600)
-    else:state=Entry();flows=set();next_connect=0;last_lease_shape=None
+    else:state=Entry(escrow_socket);flows=set();next_connect=0;last_lease_shape=None
     try:
         while alive:
             now=time.monotonic()
             if role=='entry' and stream is None and now>=next_connect:
                 try:
                     connection=socket.create_connection((config['exit'],39101),timeout=1,source_address=(config['entry'],0))
-                    stream=Stream(ctx.wrap_socket(connection,server_hostname=config['exit']));state=Entry()
+                    stream=Stream(ctx.wrap_socket(connection,server_hostname=config['exit']));state=Entry(escrow_socket)
                 except (OSError,ssl.SSLError):next_connect=now+1
             readers=([listener,events] if role=='exit' else [])+([stream.socket] if stream else [])
             writable=[stream.socket] if stream and stream.outgoing else []
@@ -213,7 +234,7 @@ def serve(config,role):
                 if stream and stream.socket in writes:stream.write()
             except (OSError,ssl.SSLError,EOFError,AssertionError,ValueError):
                 if stream:stream.socket.close();stream=None
-                if role=='entry':state=Entry();last_lease_shape=None;lease_changed=True
+                if role=='entry':state=Entry(escrow_socket);last_lease_shape=None;lease_changed=True
             now=time.monotonic()
             if role=='entry' and (now>=next_tick or lease_changed):
                 if now>=next_tick:

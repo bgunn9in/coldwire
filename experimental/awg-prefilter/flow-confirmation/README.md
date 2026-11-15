@@ -113,6 +113,63 @@ bypasses that filter for its tuple, including camouflage packets. Client
 wire formats are unchanged; the resulting A-to-B camouflage has not been
 validated against DPI.
 
+## Optional forward escrow
+
+The [v29 study](../validation-v29.md) tests a separate holding queue for packets
+that exceed admission limits while A waits for B's proof. This requires the
+new `escrow.c` process and `escrow-rules.nft.example`; the normal rules and
+installers remain unchanged. Build and check it in the parent directory:
+
+```sh
+make check-escrow
+```
+
+In the disposable entry VM, enable `net.netfilter.nf_conntrack_acct=1` before
+creating test flows. Create `/run/coldwire-escrow` as root with mode 0700 and
+start `escrow --vm-test` before loading its rules. It accepts only hostname
+`kit-entry` and binds queue 101. Add
+`"escrow_socket": "/run/coldwire-escrow/grants.sock"` to A's private helper
+configuration. Queue 100 and the original classification-enabled prefilter
+remain in use. The helper must install its kernel lease before notifying
+the holding process.
+
+```sh
+sudo install -d -m700 /run/coldwire-escrow
+sudo ./flow-confirmation/escrow --vm-test
+```
+
+The example splits the existing 6000/s, burst-2048 aggregate allowance into
+5936/s with burst 1984 for bulk traffic and 64/s with burst 64 for the first
+packet of a conntrack flow. The latter still goes through header inspection;
+it cannot authenticate a client. Excess traffic enters queue 101, with no
+queue bypass or fail-open option. Only confirmed IPv4/UDP conntrack entries
+and individual IP packets up to 1536 bytes are eligible for holding.
+Conntrack confirmation is kernel tracking state; it grants no VPN identity.
+
+The process keeps kernel packet IDs and metadata, with a 128-byte netlink
+copy. Linux retains the original encrypted skb and its conntrack reference.
+Bounds are one second, 32768 packets, 128 pending flow identities, 4096
+packets per identity and 8 MiB of wire bytes. Kernel skb overhead is additional;
+the byte limit is not a total-RAM limit. Expired or excess packets are dropped.
+
+A root-only Unix socket receives up to 128 lease records per snapshot for the exact source
+IPv4, source port and conntrack ID. On release, the next nftables hook checks
+that identity against the current kernel lease again. The local mark
+`0x08000000` requests this check and is cleared on physical ingress. It is
+never carried on the wire. B still authenticates every forwarded packet.
+The [NFQUEUE API](https://netfilter.org/projects/libnetfilter_queue/doxygen/html/group__Queue.html)
+provides conntrack metadata; Linux resumes an accepted queued packet at the
+[next netfilter hook](https://github.com/torvalds/linux/blob/v6.12/net/netfilter/nfnetlink_queue.c#L292-L348),
+so this recheck uses a separate base chain.
+
+Holding adds latency and retains attack traffic too. It cannot guarantee
+delivery after its bounds are reached or before a proof arrives. Tuple
+spoofing, conntrack churn, excessive candidate counts and link saturation
+remain limits. This path has no GUI-client or DPI validation. For rollback,
+stop A's helper while its table exists, remove the experimental table, then
+stop both queue processes. Restore the saved conntrack-accounting setting
+after the experiment. A missing queue listener drops matching traffic.
+
 ## Optional return recovery
 
 The patched binary includes a separate lab option, disabled by default:
@@ -301,8 +358,9 @@ sudo python3 agent.py --vm-test entry /root/flow-confirmation/config.json
 Both status files report connection state and bounded counters. A also
 records grants, expiry and replaced tuples. Measure early client discards,
 NFQUEUE loss, useful throughput, probe delivery and whole-VM CPU together.
-The [latest report](../validation-v28.md) compares admission bursts under
-multi-IP noise. [v27](../validation-v27.md) tests recovery independently of
+The [latest report](../validation-v29.md) tests bounded forward escrow under
+multi-IP noise. [v28](../validation-v28.md) compares admission bursts.
+[v27](../validation-v27.md) tests recovery independently of
 notification sampling. [v26](../validation-v26.md) separates late-response
 timing and submission cost. [v25](../validation-v25.md) studies repeated-move recovery.
 [v24](../validation-v24.md) records the corrected lab NAT model.
