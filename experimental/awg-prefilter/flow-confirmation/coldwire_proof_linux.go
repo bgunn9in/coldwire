@@ -81,6 +81,7 @@ func (peer *Peer) coldwireProof(endpoint conn.Endpoint, keypair *Keypair, counte
 	identity := sha256.Sum256(peer.handshake.remoteStatic[:])
 	peer.handshake.mutex.RUnlock()
 	if moved && coldwireReturnEnabled {
+		peer.device.log.Verbosef("%v - Lab return endpoint target=%s", peer, address)
 		peer.coldwireCommitEndpoint(endpoint, keypair, counter)
 		peer.coldwireReplayReplies(identity, keypair, endpoint)
 	} else if coldwireReturnEnabled {

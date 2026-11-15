@@ -258,6 +258,14 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [late-response study](validation-v26.md) and [data](results-v26.json)
+reconstruct the seven late v25 replies from packet captures. Recovery now
+uses a GSO-friendly workspace and handles the standard bind's successful
+fallback without stopping later batches. Timed controls separate submission
+cost, waiting for a fresh endpoint and WAN delay. The one-second probe
+deadline and recovery budgets are unchanged; successive NAT changes can
+still leave late replies.
+
 The [successive-move study](validation-v25.md) and [data](results-v25.json)
 preserve the selected ciphertext across attempts and merge newer replies
 on another authenticated move. The ordinary 500-ms ring and ciphertext

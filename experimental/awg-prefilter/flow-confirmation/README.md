@@ -13,7 +13,8 @@ threshold. The option is off by default; its repeated wire packets have
 not been tested against DPI. The [deferred-recovery study](../validation-v24.md)
 adds one bounded pending snapshot for fast moves. The
 [successive-move study](../validation-v25.md) preserves and merges it across
-attempts. The preceding
+attempts. The [late-response study](../validation-v26.md) adds send timing,
+a GSO-friendly workspace and a tested individual-send fallback. The preceding
 [boundary study](../validation-v23.md) tests larger RTTs and delayed discovery.
 Earlier results are in the [300-ms follow-up](../validation-v21.md),
 [original WAN tests](../validation-v20.md), [local-link mobility tests](../validation-v19.md)
@@ -132,6 +133,13 @@ There is at most one attempt per 250 ms per peer, including empty immediate
 lookups, and one nonempty attempt per 250 ms globally. Only one send can be
 in progress. Ordinary endpoint updates continue while recovery waits.
 Clients use their existing replay filter to discard copies already seen.
+
+Recovery copies one current batch into a reusable contiguous workspace.
+This gives the standard bind room for UDP GSO coalescing while keeping the
+retained ciphertext intact. The workspace is temporary and bounded by the
+current batch, at most the 2-MiB attempt budget. A successful individual-send
+fallback after GSO is disabled continues with the remaining batches; a failed
+fallback stops the attempt. Both paths are tested.
 
 After an immediate attempt, B retains the selected ciphertext without another
 payload copy. Stationary traffic cannot rearm it. A move blocked by cooldown
@@ -286,7 +294,8 @@ sudo python3 agent.py --vm-test entry /root/flow-confirmation/config.json
 Both status files report connection state and bounded counters. A also
 records grants, expiry and replaced tuples. Measure early client discards,
 NFQUEUE loss, useful throughput, probe delivery and whole-VM CPU together.
-The [latest report](../validation-v25.md) studies repeated-move recovery.
+The [latest report](../validation-v26.md) separates late-response timing and
+submission cost. [v25](../validation-v25.md) studies repeated-move recovery.
 [v24](../validation-v24.md) records the corrected lab NAT model.
 [v23](../validation-v23.md) records the separate
 startup limit. The [v22 study](../validation-v22.md) contains

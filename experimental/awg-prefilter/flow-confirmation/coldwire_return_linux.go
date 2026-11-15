@@ -4,6 +4,7 @@ package device
 
 import (
 	"crypto/sha256"
+	"errors"
 	"os"
 	"sync"
 	"time"
@@ -182,12 +183,19 @@ func (peer *Peer) coldwireSendReplies(keypair *Keypair, endpoint conn.Endpoint, 
 	if len(buffers) == 0 {
 		return
 	}
+	started := time.Now()
+	sent, batches := 0, 0
+	defer func() {
+		peer.device.log.Verbosef("%v - Lab return timing sent=%d selected=%d elapsed_us=%d batches=%d target=%s", peer, sent, len(buffers), time.Since(started).Microseconds(), batches, endpoint.DstToString())
+	}()
 	peer.device.net.RLock()
 	defer peer.device.net.RUnlock()
 	if peer.device.isClosed() {
 		return
 	}
 	batch := peer.device.net.bind.BatchSize()
+	work := make([][]byte, batch)
+	var arena []byte
 	for offset := 0; offset < len(buffers); offset += batch {
 		if peer.keypairs.Current() != keypair {
 			return
@@ -199,10 +207,36 @@ func (peer *Peer) coldwireSendReplies(keypair *Keypair, endpoint conn.Endpoint, 
 			return
 		}
 		end := min(offset+batch, len(buffers))
-		if err := peer.device.net.bind.Send(buffers[offset:end], endpoint); err != nil {
+		size := 0
+		for _, packet := range buffers[offset:end] {
+			size += len(packet)
+		}
+		if cap(arena) < size {
+			arena = make([]byte, size)
+		} else {
+			arena = arena[:size]
+		}
+		position := 0
+		for i, packet := range buffers[offset:end] {
+			copy(arena[position:], packet)
+			// Spare contiguous capacity lets the standard bind coalesce without changing retained ciphertext.
+			work[i] = arena[position : position+len(packet)]
+			position += len(packet)
+		}
+		err := peer.device.net.bind.Send(work[:end-offset], endpoint)
+		if err != nil {
+			var disabled conn.ErrUDPGSODisabled
+			if errors.As(err, &disabled) {
+				peer.device.log.Verbosef("%s", disabled.Error())
+				err = disabled.RetryErr
+			}
+		}
+		if err != nil {
 			peer.device.log.Errorf("%v - Lab return replay stopped: %v", peer, err)
 			return
 		}
+		batches++
+		sent += end - offset
 		for _, packet := range buffers[offset:end] {
 			peer.txBytes.Add(uint64(len(packet)))
 		}

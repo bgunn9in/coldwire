@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"net"
 	"sync"
 	"testing"
@@ -56,6 +57,92 @@ type coldwireDropBind struct {
 	conn.Bind
 	dropped chan struct{}
 	once    sync.Once
+}
+
+type coldwireBatchTestBind struct {
+	conn.Bind
+	send func([][]byte, conn.Endpoint) error
+}
+
+func (bind *coldwireBatchTestBind) BatchSize() int { return 2 }
+func (bind *coldwireBatchTestBind) Send(buffers [][]byte, endpoint conn.Endpoint) error {
+	return bind.send(buffers, endpoint)
+}
+
+func TestColdwireReturnBatchWorkspaceAndGSOFallback(t *testing.T) {
+	for _, kind := range []string{"success", "fallback", "fallback-failure", "failure", "endpoint-change"} {
+		t.Run(kind, func(t *testing.T) {
+			base := conn.NewDefaultBind()
+			endpoint, err := base.ParseEndpoint("127.0.0.1:9")
+			if err != nil {
+				t.Fatal(err)
+			}
+			peer := new(Peer)
+			peer.device = new(Device)
+			peer.device.log = NewLogger(LogLevelSilent, "")
+			peer.endpoint.val = endpoint
+			key := &Keypair{created: time.Now(), localIndex: 1}
+			peer.keypairs.current = key
+			var originals, received [][]byte
+			for i := 0; i < 5; i++ {
+				originals = append(originals, bytes.Repeat([]byte{byte(i + 1)}, 4))
+			}
+			calls := 0
+			peer.device.net.bind = &coldwireBatchTestBind{Bind: base, send: func(buffers [][]byte, _ conn.Endpoint) error {
+				calls++
+				size := 0
+				for _, buffer := range buffers {
+					size += len(buffer)
+					received = append(received, append([]byte(nil), buffer...))
+				}
+				if cap(buffers[0]) < size {
+					t.Fatal("batch has no room for the standard GSO coalescer")
+				}
+				if len(buffers) > 1 {
+					joined := append(buffers[0], buffers[1]...)
+					if !bytes.Equal(joined[4:], buffers[1]) {
+						t.Fatal("overlapping coalescing changed the next datagram")
+					}
+				}
+				buffers[0][0] ^= 0xff
+				if calls == 1 {
+					switch kind {
+					case "fallback":
+						return conn.ErrUDPGSODisabled{}
+					case "fallback-failure":
+						return conn.ErrUDPGSODisabled{RetryErr: errors.New("retry failed")}
+					case "failure":
+						return errors.New("send failed")
+					case "endpoint-change":
+						peer.endpoint.Lock()
+						peer.endpoint.val, _ = base.ParseEndpoint("127.0.0.1:10")
+						peer.endpoint.Unlock()
+					}
+				}
+				return nil
+			}}
+			peer.coldwireSendReplies(key, endpoint, originals)
+			for i, original := range originals {
+				if !bytes.Equal(original, bytes.Repeat([]byte{byte(i + 1)}, 4)) {
+					t.Fatal("send workspace modified retained ciphertext")
+				}
+			}
+			wantCalls, wantBytes := 3, uint64(20)
+			if kind == "failure" || kind == "fallback-failure" {
+				wantCalls, wantBytes = 1, 0
+			} else if kind == "endpoint-change" {
+				wantCalls, wantBytes = 1, 8
+			}
+			if calls != wantCalls || peer.txBytes.Load() != wantBytes {
+				t.Fatalf("calls=%d bytes=%d, want %d/%d", calls, peer.txBytes.Load(), wantCalls, wantBytes)
+			}
+			for i, packet := range received {
+				if !bytes.Equal(packet, originals[i]) {
+					t.Fatal("batch order or workspace reuse changed a datagram")
+				}
+			}
+		})
+	}
 }
 
 func (bind *coldwireDropBind) Send(_ [][]byte, _ conn.Endpoint) error {
