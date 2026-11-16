@@ -258,6 +258,13 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [v34 follow-up](validation-v34.md) adds an optional routed-bridge path
+that holds first packets after conntrack confirmation. A forced native-client
+test under multi-source noise preserved all three first packets that v33
+dropped. Generation checks and header inspection for untrusted probes remain;
+full tables and moving-client latency still have limits. The normal installers
+do not enable the bridge or the filter.
+
 The [v33 follow-up](validation-v33.md) and [data](results-v33.json)
 add a bounded forward probe after B acknowledges the nonce request. Fresh
 authentication of reordered data can release an old queue without selecting

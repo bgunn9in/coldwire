@@ -1,6 +1,6 @@
 # Exit-confirmed flow leases
 
-English | [Русский](README.ru.md)
+English | [Р СѓСЃСЃРєРёР№](README.ru.md)
 
 This experiment gives an authenticated client's flow a short kernel bypass
 around the entry's shared unknown-traffic budget and NFQUEUE. Existing AWG
@@ -23,6 +23,12 @@ Earlier results are in the [300-ms follow-up](../validation-v21.md),
 and [v18 measurements](../validation-v18.md).
 
 ## How admission works
+
+The [v34 study](../validation-v34.md) adds an optional routed-bridge holding
+path for first packets whose conntrack entry is unconfirmed at prerouting.
+The bridge queue runs after L3 NAT and confirmation, then checks the original
+tuple and current generation. It requires a lab network change and an atomic
+lease mirror; ordinary installers remain unchanged.
 
 The [v33 follow-up](../validation-v33.md) also lets the existing maintenance
 loop consume an armed recovery after cooldown, without another client packet.
@@ -151,8 +157,8 @@ simultaneous client populations, set exhaustion and adaptive cookie/MAC2
 attacks have not been tested.
 The helper no longer dumps conntrack or clears leases when the global table
 exceeds 4096 entries. V30 tested 8192 noise sockets. The kernel's own
-conntrack capacity and memory remain finite, and unconfirmed first packets
-can still be lost while discovery credits are exhausted.
+conntrack capacity and memory remain finite, and the original prerouting path can still lose unconfirmed first packets
+while discovery credits are exhausted. The optional bridge path is described below.
 
 Unknown flows retain the strict filter's I1/Jc drops. An active lease
 bypasses that filter for its tuple, including camouflage packets. Client
@@ -206,7 +212,7 @@ generation first and skips the probe if that flow already has a live lease.
 The root-only `CWS1` request expires within one second and
 does not grant a lease. Its local `0x04000000` mark uses the separate 64/s
 kernel limit, then queue 100 still inspects it and B still authenticates it.
-This mark is cleared before classification. The probe can supply a new
+Prerouting probes clear this mark before classification. The probe can supply a new
 post-request event even if the client has already left that NAT mapping.
 Replayed or invalid ciphertext cannot supply that event. Holding expiry is
 unchanged, and a missing mapping or a full budget can still prevent recovery.
@@ -237,7 +243,10 @@ stop both queue processes. Restore the saved conntrack-accounting setting
 after the experiment. A missing queue listener drops matching traffic.
 
 The helper resends its current lease snapshot every 250 ms without extending
-any deadline. A structurally valid snapshot discards expired records and
+any deadline. C's encoded grant expires one polling interval (100 ms)
+before the agent's lease. Packets near expiry can wait for a fresh snapshot
+instead of being released against an already expired kernel set. This margin
+does not make kernel and process expiry atomic under long scheduling stalls. A structurally valid snapshot discards expired records and
 keeps its live records; invalid identities, duplicates, zero deadlines and
 excessive future deadlines still reject the snapshot. The holding process can replace an orphaned root-owned 0600
 socket after a crash; it refuses a live socket, regular file or symlink.
@@ -249,6 +258,37 @@ An `ENOENT` reply to this process's queue-101 verdict is counted rather than
 stopping all forwarding: the kernel has already removed that packet. Other
 netlink errors remain fatal. V30 exercises this with a real hook reload.
 Packets discarded by a hook change remain lost.
+
+### Optional holding after conntrack confirmation
+
+The [v34 bridge rules](escrow-bridge.nft.example) add a lab-only alternative
+for an overflow packet whose entry is still unconfirmed. Create the routed
+`cw34br` bridge with physical `enp0s3` as its port, move the lab address and
+matching L3 interface rules to that bridge, and preserve management access
+on the separate lab NIC. These names and addresses belong to the disposable
+lab. Do not copy the network changes onto a working VPS.
+
+Load the bridge table and its final `unconfirmed` chain replacement in one
+nft transaction. Then enable `"late_escrow": true` alongside the canonical
+`escrow_socket` in A's root-only config. Use the matching current C process,
+agent and both escrow rules files. The agent installs IPv4 and bridge leases
+in one transaction before notifying C. A failed install gives no C grant.
+
+Marked excess packets skip header classification while waiting. The bridge
+queue runs after L3 NAT/confirmation; C validates its family, hook, confirmed
+non-dying ID, original/reply tuples and actual SNAT addresses. A separate
+bridge chain checks the current lease again before release. Untrusted probes
+still pass queue 100's header filter. Bridge probes carrying control messages
+are dropped, so this path adds no handshake allowance. C shares one 64/s,
+burst-64 probe bucket across both holding paths. Other holding limits stay
+the same. This changes neither client profiles nor B's receiver.
+
+For rollback, stop A's helper while both tables exist, restore the original
+unconfirmed-chain rule and remove the bridge table, then restore the saved
+lab address/interface rules. Remove the admission tables before stopping
+queue listeners. Missing generations, exhausted conntrack capacity or the
+one-second holding deadline can still lose packets. The bridge path has
+only been tested on the Debian 13 lab kernel in v34.
 
 ## Optional return recovery
 
@@ -346,6 +386,9 @@ servers while evaluating these tradeoffs in the lab.
 | `conntrack.py` | Exact original/reply tuple GET with generation and kernel-origin checks |
 | `test_conntrack.py` | Netlink encoding, identity, malformed reply and error tests |
 | `lab-rules.nft.example` | Combined unknown-source/aggregate guard, lease lookup and queue hook |
+| `escrow.c` | Bounded held packet IDs, confirmed-generation metadata and shared probe budget |
+| `escrow-rules.nft.example` | Prerouting holding and the kernel lease gate |
+| `escrow-bridge.nft.example` | Optional holding after confirmation and bridge probe classification |
 | `coldwire_proof_linux.go` | B's authenticated notification and counter-ordered endpoint selection |
 | `coldwire_return_linux.go` | Optional bounded ciphertext cache and authenticated-move retransmission |
 | `patch_awg.py` | Inserts the hook into one exact, clean AWG source revision |

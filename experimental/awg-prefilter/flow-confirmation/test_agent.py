@@ -254,6 +254,23 @@ class ConfirmationTests(unittest.TestCase):
             with self.assertRaises(agent.subprocess.CalledProcessError):agent.install_leases(self.entry,{self.flow},10)
             self.assertEqual(notify.call_count,1)
 
+    def test_bridge_grants_share_one_atomic_transaction_and_notify_after_success(self):
+        state=agent.Entry(agent.ESCROW_SOCKET,late_escrow=True)
+        state.leases[self.flow]=('ab'*16,20)
+        with mock.patch.object(agent.subprocess,'run') as nft, mock.patch.object(agent,'notify_escrow',return_value=True) as notify:
+            agent.install_leases(state,{self.flow},10)
+            command=nft.call_args.kwargs['input']
+            self.assertEqual(nft.call_count,1)
+            self.assertIn(f'flush set ip {agent.TABLE} trusted',command)
+            self.assertIn(f'flush set bridge {agent.LATE_TABLE} trusted',command)
+            self.assertEqual(command.count('192.168.76.30 . 32497 . 123 timeout 10000ms'),2)
+            notify.assert_called_once()
+            nft.side_effect=agent.subprocess.CalledProcessError(1,'nft')
+            with self.assertRaises(agent.subprocess.CalledProcessError):agent.install_leases(state,{self.flow},10)
+            notify.assert_called_once()
+        for socket,enabled in ((None,True),(agent.ESCROW_SOCKET,1),(agent.ESCROW_SOCKET,'yes')):
+            with self.assertRaises(AssertionError):agent.Entry(socket,late_escrow=enabled)
+
     def test_escrow_encoding_revocation_and_unavailable_socket(self):
         self.entry.escrow_socket=agent.ESCROW_SOCKET
         self.entry.leases[self.flow]=('ab'*16,20)
@@ -264,7 +281,8 @@ class ConfirmationTests(unittest.TestCase):
         connection.sendto.side_effect=lambda data,path: sent.append(data) or len(data)
         with mock.patch.object(agent.Path,'lstat',side_effect=lambda path:directory if path==agent.Path(agent.ESCROW_SOCKET).parent else endpoint,autospec=True), mock.patch.object(agent.socket,'socket',return_value=connection),mock.patch.object(agent.socket,'AF_UNIX',1,create=True):
             self.assertTrue(agent.notify_escrow(self.entry))
-            self.assertEqual(sent[-1],struct.pack('!4sH',b'CWE1',1)+agent.ESCROW_RECORD.pack(bytes([192,168,76,30]),32497,123,20000000000))
+            self.assertEqual(sent[-1],struct.pack('!4sH',b'CWE1',1)+agent.ESCROW_RECORD.pack(bytes([192,168,76,30]),32497,123,19900000000))
+            self.assertEqual(self.entry.leases[self.flow][1],20)
             self.assertTrue(agent.probe_escrow(self.entry,self.flow,10))
             self.assertEqual(sent[-1],b'CWS1'+agent.ESCROW_RECORD.pack(bytes([192,168,76,30]),32497,123,11000000000))
             self.entry.leases.clear();self.assertTrue(agent.notify_escrow(self.entry));self.assertEqual(sent[-1],b'CWE1\0\0')

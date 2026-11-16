@@ -39,13 +39,21 @@ table ip awg_kernel_guard_lab {
         counter drop
     }
     chain aggregate {
-        limit rate over 4976/second burst 1024 packets counter queue num 101
+        limit rate over 4976/second burst 1024 packets counter goto hold
         counter return
+    }
+    chain unconfirmed {
+        # The optional bridge supplement replaces this chain atomically.
+        counter queue num 101
+    }
+    chain hold {
+        ct status confirmed counter queue num 101
+        goto unconfirmed
     }
     chain guard {
         update @unknown_sources { ip saddr limit rate 1500/second burst 4096 packets } counter goto aggregate
         # Excess remains untrusted while held; no listener means drop.
-        counter queue num 101
+        counter goto hold
     }
     chain trusted_flow {
         ip saddr 192.168.76.40 counter comment "trusted_noise"
@@ -54,7 +62,7 @@ table ip awg_kernel_guard_lab {
     chain early {
         type filter hook prerouting priority -150; policy accept;
         iifname "enp0s3" ip daddr 192.168.76.10 ip saddr 192.168.76.20 udp sport 32497 ct direction reply return
-        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark set meta mark & 0x83ffffff
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark set meta mark & 0x81ffffff
         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 ip saddr . udp sport . ct id @trusted meta mark set meta mark | 0x10000000 goto trusted_flow
         # Reused NAT tuples can retain conntrack; discovery must not require its first packet.
         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 update @discovery_sources { ip saddr limit rate 32/second burst 256 packets } limit rate 960/second burst 960 packets counter return comment "discovery_sample"
@@ -78,12 +86,14 @@ table ip awg_kernel_guard_lab {
     chain queued {
         type filter hook prerouting priority -140; policy accept;
         iifname "enp0s3" ip daddr 192.168.76.10 ip saddr 192.168.76.20 udp sport 32497 ct direction reply return
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark & 0x02000000 != 0 counter return comment "late_deferred"
         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark & 0x10000000 != 0 return
         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 queue num 100
     }
     chain classified_handshakes {
         type filter hook prerouting priority -138; policy accept;
         iifname "enp0s3" ip daddr 192.168.76.10 ip saddr 192.168.76.20 udp sport 32497 ct direction reply return
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark & 0x02000000 != 0 return
         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark & 0x10000000 != 0 return
         # An older filter without classification must fail closed.
         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark & 0x40000000 == 0 counter drop

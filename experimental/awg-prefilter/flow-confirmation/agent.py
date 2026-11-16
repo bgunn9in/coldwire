@@ -20,6 +20,7 @@ import time
 import conntrack
 
 TABLE='awg_kernel_guard_lab'
+LATE_TABLE='awg_escrow_bridge_lab'
 LEASE_SECONDS=10
 MAX_PENDING=128
 RECOVERY_SECONDS=1
@@ -45,8 +46,10 @@ def nonce(value):
     return isinstance(value,str) and len(value)==32 and all(c in '0123456789abcdef' for c in value)
 
 class Entry:
-    def __init__(self,escrow_socket=None):
+    def __init__(self,escrow_socket=None,late_escrow=False):
+        assert type(late_escrow) is bool and (not late_escrow or escrow_socket==ESCROW_SOCKET)
         self.escrow_socket=escrow_socket
+        self.late_escrow=late_escrow
         self.flows={};self.observed={};self.looked_up={};self.auth_hints={};self.last_escrow=0
         self.ready=set();self.probed=set()
         self.pending={};self.leases={};self.last_query={};self.peer_stamp={};self.history=[];self.stats={'queries':0,'grants':0,'rejected':0,'moves':0}
@@ -225,9 +228,11 @@ def context(config,role):
 
 def install_leases(state,flows,now):
     state.leases={f:v for f,v in state.leases.items() if f in flows and v[1]>now}
-    command=f'flush set ip {TABLE} trusted\n'
+    command=''
     elements=[f'{f.source} . {f.port} . {f.identity} timeout {max(1,int((v[1]-now)*1000))}ms' for f,v in state.leases.items()]
-    if elements:command+=f'add element ip {TABLE} trusted {{ '+', '.join(elements)+' }\n'
+    for family,table in [('ip',TABLE)]+([('bridge',LATE_TABLE)] if state.late_escrow else []):
+        command+=f'flush set {family} {table} trusted\n'
+        if elements:command+=f'add element {family} {table} trusted {{ '+', '.join(elements)+' }\n'
     subprocess.run(['nft','-f','-'],input=command,text=True,capture_output=True,timeout=2,check=True)
     if state.escrow_socket:sync_escrow(state,now)
 
@@ -253,7 +258,8 @@ def notify_escrow(state):
         assert stat.S_ISDIR(parent.st_mode) and parent.st_uid==0 and stat.S_IMODE(parent.st_mode)==0o700
         assert stat.S_ISSOCK(info.st_mode) and info.st_uid==0 and stat.S_IMODE(info.st_mode)==0o600
         data=struct.pack('!4sH',b'CWE1',len(state.leases))
-        data+=b''.join(ESCROW_RECORD.pack(ipaddress.IPv4Address(f.source).packed,f.port,f.identity,int(v[1]*1e9)) for f,v in state.leases.items())
+        # Stop cached C grants one poll early; the kernel gate remains authoritative.
+        data+=b''.join(ESCROW_RECORD.pack(ipaddress.IPv4Address(f.source).packed,f.port,f.identity,int((v[1]-POLL_SECONDS)*1e9)) for f,v in state.leases.items())
         with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as connection:
             connection.setblocking(False)
             return connection.sendto(data,str(path))==len(data)
@@ -281,7 +287,7 @@ def serve(config,role):
         if path.exists():assert stat.S_ISSOCK(path.lstat().st_mode) and path.lstat().st_uid==0;path.unlink()
         events=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM);events.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1);events.bind(str(path));path.chmod(0o600)
     else:
-        state=Entry(escrow_socket);flows=set();next_connect=0;last_lease_shape=None
+        state=Entry(escrow_socket,config.get('late_escrow',False));flows=set();next_connect=0;last_lease_shape=None
         if escrow_socket:
             candidate_path=Path(escrow_socket).with_name('candidates.sock')
             parent=candidate_path.parent.lstat();assert stat.S_ISDIR(parent.st_mode) and parent.st_uid==0 and stat.S_IMODE(parent.st_mode)==0o700

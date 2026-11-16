@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <linux/netfilter.h>
+#include <linux/netfilter_bridge.h>
 #include <linux/netfilter/nf_conntrack_common.h>
 #include <linux/netfilter/nfnetlink_conntrack.h>
 #include <linux/netfilter/nfnetlink_queue.h>
@@ -33,6 +34,7 @@
 #define TTL_NS UINT64_C(1000000000)
 #define RELEASE_MARK UINT32_C(0x08000000)
 #define PROBE_MARK UINT32_C(0x04000000)
+#define LATE_MARK UINT32_C(0x02000000)
 #define PROBE 2
 #define BATCH 16U
 #define QUEUE 101
@@ -55,6 +57,8 @@ static uint64_t ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow;
 static uint64_t verdict_missing;
 static uint64_t probed;
 static uint64_t control_expired;
+static uint64_t probe_limited,probe_credits=64*TTL_NS,probe_clock;
+static uint64_t late_packets;
 static volatile sig_atomic_t stopping, reporting;
 static int queue_fd, testing;
 static int candidate_fd=-1;
@@ -194,7 +198,15 @@ static int probe_control(const unsigned char *data, size_t size, int root, uint6
     if (f<FLOW_LIMIT && !authorized(key,now)) {
         for (uint64_t i=head;i<tail;i++) {
             struct packet *p=&packets[i%CAPACITY];
-            if (p->length && p->flow==f) { remove_packet(p,PROBE);break; }
+            if (p->length && p->flow==f) {
+                uint64_t elapsed=now>=probe_clock?now-probe_clock:0;
+                probe_credits=elapsed>=TTL_NS?64*TTL_NS:probe_credits+elapsed*64;
+                if (probe_credits>64*TTL_NS) probe_credits=64*TTL_NS;
+                if (now>probe_clock) probe_clock=now;
+                if (probe_credits<TTL_NS) { probe_limited++;break; }
+                probe_credits-=TTL_NS;
+                remove_packet(p,PROBE);break;
+            }
         }
         expire(now);
     }
@@ -230,8 +242,8 @@ static void report(void) {
            ",\"bounded\":%"PRIu64",\"invalid\":%"PRIu64",\"control_bad\":%"PRIu64
            ",\"control_ok\":%"PRIu64",\"held\":%u,\"held_bytes\":%u,\"high_packets\":%"PRIu64
            ",\"high_bytes\":%"PRIu64",\"netlink_enobufs\":%"PRIu64",\"send_calls\":%"PRIu64",\"candidate_sent\":%"PRIu64",\"candidate_failed\":%"PRIu64
-           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64",\"probed\":%"PRIu64",\"control_expired\":%"PRIu64"}\n",
-           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing,probed,control_expired);
+           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64",\"probed\":%"PRIu64",\"control_expired\":%"PRIu64",\"probe_limited\":%"PRIu64",\"late_packets\":%"PRIu64"}\n",
+           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing,probed,control_expired,probe_limited,late_packets);
     fflush(stdout);
 }
 static void signal_handler(int sig) { if (sig==SIGUSR1) reporting=1; else stopping=1; }
@@ -254,25 +266,59 @@ static int prepare_socket(const char *path) {
     return unlink(path);
 }
 
-static int conntrack(struct nlattr *attr, uint32_t *id) {
+static int attributes(const struct nlattr *attr, const struct nlattr **values, unsigned count) {
     if (!attr || attr->nla_len<NLA_HDRLEN) return 0;
     size_t left=attr->nla_len-NLA_HDRLEN;
-    const unsigned char *p=(unsigned char *)attr+NLA_HDRLEN;
-    uint32_t status=0; *id=0;
+    const unsigned char *p=(const unsigned char *)attr+NLA_HDRLEN;
     while (left>=NLA_HDRLEN) {
         const struct nlattr *a=(const struct nlattr *)p;
         if (a->nla_len<NLA_HDRLEN || a->nla_len>left) return 0;
         unsigned kind=a->nla_type & NLA_TYPE_MASK;
-        if (kind==CTA_ID || kind==CTA_STATUS) {
-            if (a->nla_len!=NLA_HDRLEN+4) return 0;
-            uint32_t v=read32(p+NLA_HDRLEN);
-            if (kind==CTA_ID) *id=v; else status=v;
+        if (kind<count) {
+            if (values[kind]) return 0;
+            values[kind]=a;
         }
         size_t step=NLA_ALIGN(a->nla_len);
         if (step>left) return 0;
         p+=step; left-=step;
     }
-    return !left && *id && (status & IPS_CONFIRMED);
+    return !left;
+}
+static const void *value(const struct nlattr *attr, unsigned length) {
+    return attr && attr->nla_len==NLA_HDRLEN+length ? (const char *)attr+NLA_HDRLEN : NULL;
+}
+static int conntrack(struct nlattr *attr, uint32_t *id) {
+    const struct nlattr *fields[CTA_MAX+1]={0};
+    *id=0;
+    if (!attributes(attr,fields,CTA_MAX+1)) return 0;
+    const void *identity=value(fields[CTA_ID],4),*state=value(fields[CTA_STATUS],4);
+    if (!identity || !state) return 0;
+    *id=read32(identity);
+    uint32_t status=read32(state);
+    return *id && (status & IPS_CONFIRMED) && !(status & IPS_DYING);
+}
+struct tuple { uint32_t source,destination;uint16_t sport,dport; };
+static int tuple(const struct nlattr *attr, struct tuple *out) {
+    const struct nlattr *fields[CTA_TUPLE_MAX+1]={0},*ip[CTA_IP_MAX+1]={0},*udp[CTA_PROTO_MAX+1]={0};
+    if (!attributes(attr,fields,CTA_TUPLE_MAX+1) ||
+        !attributes(fields[CTA_TUPLE_IP],ip,CTA_IP_MAX+1) ||
+        !attributes(fields[CTA_TUPLE_PROTO],udp,CTA_PROTO_MAX+1)) return 0;
+    const void *source=value(ip[CTA_IP_V4_SRC],4),*destination=value(ip[CTA_IP_V4_DST],4);
+    const unsigned char *protocol=value(udp[CTA_PROTO_NUM],1);
+    const void *sport=value(udp[CTA_PROTO_SRC_PORT],2),*dport=value(udp[CTA_PROTO_DST_PORT],2);
+    if (!source || !destination || !protocol || *protocol!=IPPROTO_UDP || !sport || !dport) return 0;
+    memcpy(&out->source,source,4);memcpy(&out->destination,destination,4);
+    out->sport=read16(sport);out->dport=read16(dport);
+    return out->sport && out->dport;
+}
+static int late_key(const struct nlattr *attr, struct key *key, const unsigned char *ip, unsigned ihl) {
+    const struct nlattr *fields[CTA_MAX+1]={0};struct tuple original,reply;
+    if (!attributes(attr,fields,CTA_MAX+1) || !tuple(fields[CTA_TUPLE_ORIG],&original) || !tuple(fields[CTA_TUPLE_REPLY],&reply)) return 0;
+    uint32_t entry=inet_addr("192.168.76.10"),exit=inet_addr("192.168.76.20");
+    if (original.destination!=entry || original.dport!=32497 || reply.source!=exit || reply.destination!=entry || reply.sport!=32497 ||
+        memcmp(ip+12,&entry,4) || memcmp(ip+16,&exit,4) || read16(ip+ihl)!=reply.dport) return 0;
+    key->ip=original.source;key->port=original.sport;
+    return 1;
 }
 static int parse_packet(struct nlmsghdr *h) {
     struct nlattr *a[NFQA_MAX+1]={0};
@@ -286,15 +332,26 @@ static int parse_packet(struct nlmsghdr *h) {
         mark=read32((char *)a[NFQA_MARK]+NLA_HDRLEN);
     }
     struct key key={0};
+    struct nfgenmsg family;
+    if (h->nlmsg_len<NLMSG_LENGTH(sizeof(family))) return -1;
+    memcpy(&family,NLMSG_DATA(h),sizeof(family));
+    int late=family.nfgen_family==AF_BRIDGE && ph.hook==NF_BR_POST_ROUTING;
     size_t size=a[NFQA_PAYLOAD]?a[NFQA_PAYLOAD]->nla_len-NLA_HDRLEN:0;
     const unsigned char *ip=a[NFQA_PAYLOAD]?(unsigned char *)a[NFQA_PAYLOAD]+NLA_HDRLEN:NULL;
     if (!conntrack(a[NFQA_CT],&key.ct)) { ct_rejected++;goto reject; }
-    if (ph.hook!=NF_INET_PRE_ROUTING || size<28 ||
+    if ((!late && (family.nfgen_family!=AF_INET || ph.hook!=NF_INET_PRE_ROUTING)) || size<28 ||
         (ip[0]>>4)!=4 || (ip[0]&15)<5 || ip[9]!=IPPROTO_UDP || (read16(ip+6)&0x3fff)) goto reject;
     unsigned ihl=(ip[0]&15)*4U, length=read16(ip+2);
     if (size<ihl+8 || length<ihl+8 || length>1536 || read16(ip+ihl+4)!=length-ihl || read16(ip+ihl+2)!=32497) goto reject;
     if (a[NFQA_CAP_LEN] && (a[NFQA_CAP_LEN]->nla_len!=NLA_HDRLEN+4 || read32((char *)a[NFQA_CAP_LEN]+NLA_HDRLEN)!=length)) goto reject;
-    memcpy(&key.ip,ip+12,4); key.port=read16(ip+ihl);
+    if (late) {
+        const void *info=value(a[NFQA_CT_INFO],4);
+        if (!(mark & LATE_MARK) || !info || read32(info)>=IP_CT_IS_REPLY || !late_key(a[NFQA_CT],&key,ip,ihl)) goto reject;
+        late_packets++;
+    } else {
+        if (mark & LATE_MARK) goto reject;
+        memcpy(&key.ip,ip+12,4);key.port=read16(ip+ihl);
+    }
     if (!key.port || (mark & (RELEASE_MARK|PROBE_MARK))) goto reject;
     hold(key,id,mark,length,clock_ns()); return 0;
 reject:
@@ -391,6 +448,68 @@ static void selftest(void) {
     assert(control(snapshot,sizeof(snapshot),1,12*TTL_NS) && control_expired==1);
     assert(!authorized(probe_key,12*TTL_NS) && authorized(newer,12*TTL_NS) && held==1);
     expire(13*TTL_NS);assert(!held && !held_bytes && free_count==FLOW_LIMIT);
+    // Independent Python netlink vector: confirmed, SNATed bridge packet with its original tuple.
+    static const unsigned char late_fixture[]={
+        0xcc,0x00,0x00,0x00,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+        0x07,0x00,0x00,0x65,0x0b,0x00,0x01,0x00,0x00,0x00,0x00,0x64,0x08,0x00,0x04,0x00,
+        0x08,0x00,0x03,0x00,0x42,0x00,0x00,0x00,0x7c,0x00,0x0b,0x00,0x34,0x00,0x01,0x80,
+        0x14,0x00,0x01,0x80,0x08,0x00,0x01,0x00,0xc0,0xa8,0x4c,0x1f,0x08,0x00,0x02,0x00,
+        0xc0,0xa8,0x4c,0x0a,0x1c,0x00,0x02,0x80,0x05,0x00,0x01,0x00,0x11,0x00,0x00,0x00,
+        0x06,0x00,0x02,0x00,0xa6,0x05,0x00,0x00,0x06,0x00,0x03,0x00,0x7e,0xf1,0x00,0x00,
+        0x34,0x00,0x02,0x80,0x14,0x00,0x01,0x80,0x08,0x00,0x01,0x00,0xc0,0xa8,0x4c,0x14,
+        0x08,0x00,0x02,0x00,0xc0,0xa8,0x4c,0x0a,0x1c,0x00,0x02,0x80,0x05,0x00,0x01,0x00,
+        0x11,0x00,0x00,0x00,0x06,0x00,0x02,0x00,0x7e,0xf1,0x00,0x00,0x06,0x00,0x03,0x00,
+        0xed,0x1c,0x00,0x00,0x08,0x00,0x0c,0x00,0x00,0x00,0x03,0x15,0x08,0x00,0x03,0x00,
+        0x00,0x00,0x00,0x08,0x08,0x00,0x0c,0x00,0x00,0x00,0x00,0x02,0x20,0x00,0x0a,0x00,
+        0x45,0x00,0x00,0x1c,0x00,0x00,0x00,0x00,0x00,0x11,0x00,0x00,0xc0,0xa8,0x4c,0x0a,
+        0xc0,0xa8,0x4c,0x14,0xed,0x1c,0x7e,0xf1,0x00,0x08,0x00,0x00,
+    };
+    unsigned char late_message[sizeof(late_fixture)] __attribute__((aligned));
+    memcpy(late_message,late_fixture,sizeof(late_fixture));
+    assert(!parse_packet((struct nlmsghdr *)late_message) && held==1);
+    struct key late_identity={.ip=inet_addr("192.168.76.31"),.port=42501,.ct=789};
+    assert(find_flow(late_identity)<FLOW_LIMIT && late_packets==1);
+    expire(UINT64_MAX);assert(!held);
+    // Unconfirmed overflow reaches the bridge before header inspection.
+    memcpy(late_message,late_fixture,sizeof(late_fixture));
+    uint32_t unclassified=htonl(LATE_MARK);memcpy(late_message+36,&unclassified,4);
+    assert(!parse_packet((struct nlmsghdr *)late_message) && held==1);
+    expire(UINT64_MAX);assert(!held);
+    static const struct {unsigned offset,length;unsigned char data[4];} bad_late[]={
+        {152,4,{0x00,0x00,0x00,0x00}}, // zero-ID
+        {160,4,{0x00,0x00,0x00,0x00}}, // unconfirmed
+        {160,4,{0x00,0x00,0x02,0x08}}, // dying
+        {168,4,{0x00,0x00,0x00,0x03}}, // reply-direction
+        {36,4,{0x40,0x00,0x00,0x00}}, // missing-late-mark
+        {196,2,{0xed,0x1d}}, // wrong-SNAT-port
+        {44,2,{0x00,0x00}}, // bad-original-tuple
+        {16,1,{0x02}}, // wrong-family
+    };
+    for (unsigned i=0;i<sizeof(bad_late)/sizeof(*bad_late);i++) {
+        memcpy(late_message,late_fixture,sizeof(late_fixture));
+        memcpy(late_message+bad_late[i].offset,bad_late[i].data,bad_late[i].length);
+        (void)parse_packet((struct nlmsghdr *)late_message);
+        assert(!held);
+    }
+    unsigned char duplicate[28] __attribute__((aligned));memcpy(duplicate,attrs,20);
+    ((struct nlattr *)duplicate)->nla_len=28;
+    value=htonl(789);memcpy(duplicate+8,&value,4);
+    value=htonl(IPS_CONFIRMED);memcpy(duplicate+16,&value,4);
+    memcpy(duplicate+20,duplicate+4,8);
+    assert(!conntrack((struct nlattr *)duplicate,&parsed));
+    // One shared bucket bounds actual probes on both hooks, including burst and refill.
+    probe_credits=64*TTL_NS;probe_clock=20*TTL_NS;
+    until=20*TTL_NS+TTL_NS/2;hi=htonl((uint32_t)(until>>32));lo=htonl((uint32_t)until);
+    memcpy(request+14,&hi,4);memcpy(request+18,&lo,4);
+    uint64_t old_probed=probed;
+    for (unsigned i=0;i<65;i++) {
+        hold(probe_key,i,0,128,20*TTL_NS);
+        assert(control(request,sizeof(request),1,20*TTL_NS));
+    }
+    assert(probed-old_probed==64 && probe_limited==1 && held==1);
+    assert(control(request,sizeof(request),1,20*TTL_NS+TTL_NS/64));
+    assert(probed-old_probed==65 && !held);
+    expire(UINT64_MAX);assert(!held && !held_bytes && free_count==FLOW_LIMIT);
     puts("PASS escrow identity, revocation, expiry, packet/flow/byte bounds and root-only snapshots");
 }
 int main(int argc, char **argv) {

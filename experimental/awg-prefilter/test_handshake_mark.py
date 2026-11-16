@@ -11,15 +11,17 @@ DRIVER=Path(os.environ.get('PREFILTER_BATCH_DRIVER',str(f.HERE/'test-batch-hands
 class HandshakeMarks(unittest.TestCase):
     setUp=f.PrefilterTests.setUp
     tearDown=f.PrefilterTests.tearDown
-    def run_frames(self,types,mode='',expected=0):
+    def run_frames(self,types,mode='',expected=0,mark=0xa0000002,nat=False):
         records=[]
         for i,kind in enumerate(types):
             packet=f.packet(bytes.fromhex(f.VECTORS[str(abs(kind))]))
+            if nat:
+                packet=bytearray(packet);packet[12:20]=bytes([192,168,76,10,192,168,76,20]);packet[20:22]=struct.pack('!H',60700);packet=bytes(packet)
             if kind<0:
                 packet=bytearray(packet);packet[58]^=1;packet=bytes(packet)
             records.append(((0xfffffffd+i)&0xffffffff,kind,packet))
         data=b''.join(struct.pack('!III',n,len(p),min(212,len(p)))+p[:212] for n,_,p in records)
-        out=subprocess.run([str(DRIVER),str(self.key)],input=data,capture_output=True,env=dict(os.environ,BATCH_TEST_MARK='0xa0000002',BATCH_TEST_SEND=mode))
+        out=subprocess.run([str(DRIVER),str(self.key)],input=data,capture_output=True,env=dict(os.environ,BATCH_TEST_MARK=str(mark),BATCH_TEST_SEND=mode))
         self.assertEqual(out.returncode,expected,out.stderr.decode(errors='replace'))
         decoded=[]
         for line in out.stdout.splitlines():
@@ -40,6 +42,9 @@ class HandshakeMarks(unittest.TestCase):
     def test_interrupted_send_retains_same_marks(self):
         records,decoded=self.run_frames([4,1,2,-1],mode='eintr')
         self.assertEqual(decoded,[(n,int(k>0),0xe0000002 if k in (1,2,3) else 0xc0000002) for n,k,_ in records])
+    def test_SNATed_probe_retains_probe_bit_and_classifies_control(self):
+        records,decoded=self.run_frames([4,1],mark=0x04000000,nat=True)
+        self.assertEqual(decoded,[(n,1,0x44000000 if k==4 else 0x64000000) for n,k,_ in records])
     def test_failed_send_never_releases_packets(self):
         _,decoded=self.run_frames([1,4],mode='failure',expected=1);self.assertEqual(decoded,[])
 
