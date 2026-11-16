@@ -1,6 +1,6 @@
 # Exit-confirmed flow leases
 
-English | [Р СѓСЃСЃРєРёР№](README.ru.md)
+English | [Русский](README.ru.md)
 
 This experiment gives an authenticated client's flow a short kernel bypass
 around the entry's shared unknown-traffic budget and NFQUEUE. Existing AWG
