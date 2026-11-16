@@ -18,7 +18,7 @@ var coldwireProofPath = os.Getenv("COLDWIRE_LAB_PROOF_SOCKET")
 var coldwireProofOnce sync.Once
 var coldwireProofFD = -1
 
-const coldwireProofIntervalNS int64 = 50000000
+const coldwireProofIntervalNS int64 = 10000000
 
 func (peer *Peer) coldwireProofDue(address string, now int64) bool {
 	if address == peer.coldwireProofEndpoint && now-peer.coldwireProofLast < coldwireProofIntervalNS {
@@ -34,7 +34,8 @@ func (peer *Peer) coldwireProof(endpoint conn.Endpoint, keypair *Keypair, counte
 		return
 	}
 	peer.keypairs.RLock()
-	current := keypair != nil && keypair == peer.keypairs.current && peer.coldwireEndpointBirth == keypair.created && peer.coldwireEndpointIndex == keypair.localIndex && counter == peer.coldwireEndpointCounter
+	current := keypair != nil && keypair == peer.keypairs.current && peer.coldwireEndpointBirth == keypair.created && peer.coldwireEndpointIndex == keypair.localIndex
+	latest := counter == peer.coldwireEndpointCounter
 	peer.keypairs.RUnlock()
 	if !current {
 		return
@@ -45,8 +46,20 @@ func (peer *Peer) coldwireProof(endpoint conn.Endpoint, keypair *Keypair, counte
 	}
 	now := clock.Nano()
 	address := endpoint.DstToString()
-	moved := peer.coldwireProofEndpoint != "" && peer.coldwireProofEndpoint != address
-	notificationDue := peer.coldwireProofDue(address, now)
+	moved := latest && peer.coldwireProofEndpoint != "" && peer.coldwireProofEndpoint != address
+	magic := "CWP1"
+	notificationDue := false
+	if latest {
+		notificationDue = peer.coldwireProofDue(address, now)
+	} else {
+		// A valid reordered packet may prove admission without selecting an old endpoint.
+		magic = "CWA1"
+		if address == peer.coldwireAdmissionEndpoint && now-peer.coldwireAdmissionLast < coldwireProofIntervalNS {
+			return
+		}
+		peer.coldwireAdmissionEndpoint, peer.coldwireAdmissionLast = address, now
+		notificationDue = true
+	}
 	if !notificationDue && !coldwireReturnEnabled {
 		return
 	}
@@ -72,7 +85,7 @@ func (peer *Peer) coldwireProof(endpoint conn.Endpoint, keypair *Keypair, counte
 		peer.device.log.Verbosef("%v - Lab return endpoint target=%s", peer, address)
 		peer.coldwireCommitEndpoint(endpoint, keypair, counter)
 		peer.coldwireReplayReplies(identity, keypair, endpoint)
-	} else if coldwireReturnEnabled {
+	} else if latest && coldwireReturnEnabled {
 		peer.coldwireRetryReplies(identity, keypair, endpoint)
 	}
 	// Recovery eligibility is independent of the rate-limited local notification.
@@ -85,7 +98,7 @@ func (peer *Peer) coldwireProof(endpoint conn.Endpoint, keypair *Keypair, counte
 		return
 	}
 	var event [42]byte
-	copy(event[:4], "CWP1")
+	copy(event[:4], magic)
 	binary.BigEndian.PutUint64(event[4:12], uint64(now))
 	copy(event[12:16], ip)
 	binary.BigEndian.PutUint16(event[16:18], uint16(port))

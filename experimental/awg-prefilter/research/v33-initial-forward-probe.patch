@@ -1,0 +1,438 @@
+diff --git a/experimental/awg-prefilter/flow-confirmation/agent.py b/experimental/awg-prefilter/flow-confirmation/agent.py
+--- a/experimental/awg-prefilter/flow-confirmation/agent.py
++++ b/experimental/awg-prefilter/flow-confirmation/agent.py
+@@ -22,6 +22,8 @@
+ TABLE='awg_kernel_guard_lab'
+ LEASE_SECONDS=10
+ MAX_PENDING=128
++RECOVERY_SECONDS=1
++PEER_FLOWS=3
+ POLL_SECONDS=.1
+ EVENT=struct.Struct('!4sQ4sH16sQ')
+ ESCROW_RECORD=struct.Struct('!4sHIQ')
+@@ -46,6 +48,7 @@
+     def __init__(self,escrow_socket=None):
+         self.escrow_socket=escrow_socket
+         self.flows={};self.observed={};self.looked_up={};self.auth_hints={};self.last_escrow=0
++        self.ready=set();self.probed=set()
+         self.pending={};self.leases={};self.last_query={};self.peer_stamp={};self.history=[];self.stats={'queries':0,'grants':0,'rejected':0,'moves':0}
+     def _observe(self,port,now):
+         if port not in self.observed and len(self.observed)>=MAX_PENDING:
+@@ -99,6 +102,7 @@
+         return True
+     def queries(self,flows,now):
+         self.pending={n:v for n,v in self.pending.items() if v[0] in flows and v[1]>now}
++        self.ready.intersection_update(self.pending);self.probed.intersection_update(self.pending)
+         self.leases={f:v for f,v in self.leases.items() if f in flows and v[1]>now}
+         self.last_query={f:t for f,t in self.last_query.items() if f in flows}
+         self.auth_hints={f:t for f,t in self.auth_hints.items() if f in flows and t>now}
+@@ -119,8 +123,15 @@
+             if flow not in priority:unknown.append(flow);source_pending[flow.source]=source_pending.get(flow.source,0)+1
+             if len(result)==16:break
+         return result
++    def acknowledged(self,message,now):
++        if set(message)!={'ready'} or not nonce(message['ready']):return False
++        pending=self.pending.get(message['ready'])
++        if not pending or pending[1]<=now:return False
++        self.ready.add(message['ready']);return True
++    def probes(self,flows,now):
++        return [(n,f) for n,(f,deadline) in self.pending.items() if self.escrow_socket and n in self.ready and n not in self.probed and deadline>now and f in flows and self.auth_hints.get(f,0)>now]
+     def confirm(self,message,flows,now):
+-        if set(message)!={'nonce','peer','stamp'} or not nonce(message['nonce']) or not nonce(message['peer']) or type(message['stamp']) is not int or message['stamp']<=0:
++        if set(message) not in ({'nonce','peer','stamp'},{'nonce','peer','stamp','recovery'}) or type(message.get('recovery',False)) is not bool or not nonce(message['nonce']) or not nonce(message['peer']) or type(message['stamp']) is not int or message['stamp']<=0:
+             self.stats['rejected']+=1;return False
+         pending=self.pending.pop(message['nonce'],None)
+         if not pending or pending[0] not in flows or pending[1]<=now or message['stamp']<=self.peer_stamp.get(message['peer'],0):
+@@ -129,10 +140,15 @@
+         if peer not in self.peer_stamp and len(self.peer_stamp)>=4096:
+             self.stats['rejected']+=1;return False
+         moved=[f for f,v in self.leases.items() if v[0]==peer and f!=flow]
+-        for old in moved:del self.leases[old]
+-        self.stats['moves']+=len(moved)
+-        self.peer_stamp[peer]=message['stamp'];self.leases[flow]=(peer,now+LEASE_SECONDS)
+-        self.history.append({'time_ns':int(now*1e9),'wall_ns':time.time_ns(),'flow':dataclasses.asdict(flow),'peer':peer,'replaced':[dataclasses.asdict(f) for f in moved]})
++        for old in moved:
++            if not message.get('recovery'):self.leases[old]=(peer,min(self.leases[old][1],now+RECOVERY_SECONDS))
++        if not message.get('recovery') and flow not in self.leases:self.stats['moves']+=bool(moved)
++        until=now+(RECOVERY_SECONDS if message.get('recovery') else LEASE_SECONDS)
++        if flow in self.leases and self.leases[flow][0]==peer:until=max(until,self.leases[flow][1])
++        self.peer_stamp[peer]=message['stamp'];self.leases[flow]=(peer,until)
++        evicted=sorted(moved,key=lambda f:self.leases[f][1])[:max(0,len(moved)+1-PEER_FLOWS)]
++        for old in evicted:del self.leases[old]
++        self.history.append({'time_ns':int(now*1e9),'wall_ns':time.time_ns(),'flow':dataclasses.asdict(flow),'peer':peer,'recovery':message.get('recovery',False),'replaced':[dataclasses.asdict(f) for f in evicted]})
+         self.history=self.history[-256:]
+         self.stats['grants']+=1;return True
+ 
+@@ -144,11 +160,12 @@
+         if set(message)!={'nonce','port'} or not nonce(message['nonce']) or type(message['port']) is not int or not 1<=message['port']<=65535 or message['nonce'] in self.pending or len(self.pending)>=MAX_PENDING:
+             self.stats['rejected']+=1;return
+         self.pending[message['nonce']]=(message['port'],int(now*1e9) if cutoff_ns is None else cutoff_ns,now+3);self.stats['queries']+=1
++        return True
+     def event(self,data,now):
+         self.stats['events']+=1
+         if len(data)!=EVENT.size:self.stats['rejected']+=1;return []
+         magic,stamp,address,port,peer,counter=EVENT.unpack(data)
+-        if magic!=b'CWP1' or address!=self.entry or not port or stamp>int(now*1e9) or int(now*1e9)-stamp>10**9:
++        if magic not in (b'CWP1',b'CWA1') or address!=self.entry or not port or stamp>int(now*1e9) or int(now*1e9)-stamp>10**9:
+             self.stats['rejected']+=1;return []
+         messages=[]
+         self.hint_tokens=min(16,self.hint_tokens+max(0,now-self.hint_time)*64);self.hint_time=now
+@@ -158,7 +175,9 @@
+         for request,(expected,cutoff,deadline) in list(self.pending.items()):
+             if deadline<=now:del self.pending[request]
+             elif expected==port and stamp>cutoff:
+-                messages.append({'nonce':request,'peer':peer.hex(),'stamp':stamp});del self.pending[request];self.stats['proofs']+=1
++                proof={'nonce':request,'peer':peer.hex(),'stamp':stamp}
++                if magic==b'CWA1':proof['recovery']=True
++                messages.append(proof);del self.pending[request];self.stats['proofs']+=1
+         return messages
+ 
+ class Stream:
+@@ -212,6 +231,16 @@
+ def sync_escrow(state,now):
+     state.last_escrow=now
+     if not notify_escrow(state):state.stats['escrow_notify_failed']=state.stats.get('escrow_notify_failed',0)+1
++
++def probe_escrow(state,flow,now):
++    try:
++        if state.escrow_socket!=ESCROW_SOCKET:return False
++        parent=Path(ESCROW_SOCKET).parent.lstat();info=Path(ESCROW_SOCKET).lstat()
++        if not stat.S_ISDIR(parent.st_mode) or parent.st_uid or stat.S_IMODE(parent.st_mode)!=0o700 or not stat.S_ISSOCK(info.st_mode) or info.st_uid or stat.S_IMODE(info.st_mode)!=0o600:return False
++        data=b'CWS1'+ESCROW_RECORD.pack(ipaddress.IPv4Address(flow.source).packed,flow.port,flow.identity,int((now+RECOVERY_SECONDS)*1e9))
++        with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as connection:
++            connection.setblocking(False);return connection.sendto(data,ESCROW_SOCKET)==len(data)
++    except (OSError,ValueError,struct.error):return False
+ 
+ def notify_escrow(state):
+     """A notification cannot grant more than the kernel set just installed."""
+@@ -290,10 +319,13 @@
+                         except (OSError,ssl.SSLError):connection.close()
+                 if stream and stream.socket in ready:
+                     for message in stream.read():
+-                        if role=='exit':state.query(message,time.monotonic(),time.monotonic_ns())
++                        if role=='exit':
++                            if state.query(message,time.monotonic(),time.monotonic_ns()):stream.queue({'ready':message['nonce']})
+                         else:
+                             if 'hint' in message:
+                                 if state.hint(message,config,time.monotonic()):next_tick=0
++                            elif 'ready' in message:
++                                if state.acknowledged(message,time.monotonic()):next_tick=0
+                             else:
+                                 request=message.get('nonce');pending=state.pending.get(request) if nonce(request) else None
+                                 fresh=set()
+@@ -314,7 +346,7 @@
+             except (OSError,ssl.SSLError,EOFError,AssertionError,ValueError):
+                 if stream:stream.socket.close();stream=None
+                 if role=='entry':
+-                    state.pending.clear();next_connect=time.monotonic()+.2
++                    state.pending.clear();state.ready.clear();state.probed.clear();next_connect=time.monotonic()+.2
+             now=time.monotonic()
+             if role=='entry' and (now>=next_tick or lease_changed):
+                 if now>=next_tick:
+@@ -322,6 +354,10 @@
+                     if not stream:state.leases={f:v for f,v in state.leases.items() if f in flows and v[1]>now}
+                     requests=state.queries(flows,now) if stream else []
+                     for message in requests:stream.queue(message)
++                    for request,flow in state.probes(flows,now):
++                        try:current=read_flow(config,flow.translated_port)
++                        except (OSError,ValueError):current=None
++                        if current==flow and probe_escrow(state,flow,now):state.probed.add(request)
+                     next_tick=now+POLL_SECONDS
+                 shape=tuple(sorted((f.source,f.port,f.identity,v[0],v[1]) for f,v in state.leases.items()))
+                 if shape!=last_lease_shape:
+diff --git a/experimental/awg-prefilter/flow-confirmation/coldwire_proof_linux.go b/experimental/awg-prefilter/flow-confirmation/coldwire_proof_linux.go
+--- a/experimental/awg-prefilter/flow-confirmation/coldwire_proof_linux.go
++++ b/experimental/awg-prefilter/flow-confirmation/coldwire_proof_linux.go
+@@ -34,7 +34,8 @@
+ 		return
+ 	}
+ 	peer.keypairs.RLock()
+-	current := keypair != nil && keypair == peer.keypairs.current && peer.coldwireEndpointBirth == keypair.created && peer.coldwireEndpointIndex == keypair.localIndex && counter == peer.coldwireEndpointCounter
++	current := keypair != nil && keypair == peer.keypairs.current && peer.coldwireEndpointBirth == keypair.created && peer.coldwireEndpointIndex == keypair.localIndex
++	latest := counter == peer.coldwireEndpointCounter
+ 	peer.keypairs.RUnlock()
+ 	if !current {
+ 		return
+@@ -45,8 +46,20 @@
+ 	}
+ 	now := clock.Nano()
+ 	address := endpoint.DstToString()
+-	moved := peer.coldwireProofEndpoint != "" && peer.coldwireProofEndpoint != address
+-	notificationDue := peer.coldwireProofDue(address, now)
++	moved := latest && peer.coldwireProofEndpoint != "" && peer.coldwireProofEndpoint != address
++	magic := "CWP1"
++	notificationDue := false
++	if latest {
++		notificationDue = peer.coldwireProofDue(address, now)
++	} else {
++		// A valid reordered packet may prove admission without selecting an old endpoint.
++		magic = "CWA1"
++		if address == peer.coldwireAdmissionEndpoint && now-peer.coldwireAdmissionLast < coldwireProofIntervalNS {
++			return
++		}
++		peer.coldwireAdmissionEndpoint, peer.coldwireAdmissionLast = address, now
++		notificationDue = true
++	}
+ 	if !notificationDue && !coldwireReturnEnabled {
+ 		return
+ 	}
+@@ -72,7 +85,7 @@
+ 		peer.device.log.Verbosef("%v - Lab return endpoint target=%s", peer, address)
+ 		peer.coldwireCommitEndpoint(endpoint, keypair, counter)
+ 		peer.coldwireReplayReplies(identity, keypair, endpoint)
+-	} else if coldwireReturnEnabled {
++	} else if latest && coldwireReturnEnabled {
+ 		peer.coldwireRetryReplies(identity, keypair, endpoint)
+ 	}
+ 	// Recovery eligibility is independent of the rate-limited local notification.
+@@ -85,7 +98,7 @@
+ 		return
+ 	}
+ 	var event [42]byte
+-	copy(event[:4], "CWP1")
++	copy(event[:4], magic)
+ 	binary.BigEndian.PutUint64(event[4:12], uint64(now))
+ 	copy(event[12:16], ip)
+ 	binary.BigEndian.PutUint16(event[16:18], uint16(port))
+diff --git a/experimental/awg-prefilter/flow-confirmation/coldwire_proof_linux_test.go b/experimental/awg-prefilter/flow-confirmation/coldwire_proof_linux_test.go
+--- a/experimental/awg-prefilter/flow-confirmation/coldwire_proof_linux_test.go
++++ b/experimental/awg-prefilter/flow-confirmation/coldwire_proof_linux_test.go
+@@ -111,9 +111,18 @@
+ 	if n, _, err = unix.Recvfrom(fd, buffer, 0); err != nil || n != 42 || binary.BigEndian.Uint16(buffer[16:18]) != 42501 {
+ 		t.Fatal("source-port move not reported", n, err)
+ 	}
++	lastProof, lastReturn, sent := peer.coldwireProofEndpoint, peer.coldwireReturnLast, peer.txBytes.Load()
+ 	peer.coldwireProof(endpoint, keypair, 43)
++	if n, _, err = unix.Recvfrom(fd, buffer, 0); err != nil || n != 42 || string(buffer[:4]) != "CWA1" || binary.BigEndian.Uint64(buffer[34:42]) != 43 {
++		t.Fatal("valid reordered data did not produce an admission-only event", n, err)
++	}
++	if peer.coldwireProofEndpoint != lastProof || peer.endpoint.val.DstToString() != changed.DstToString() || peer.coldwireReturnLast != lastReturn || peer.txBytes.Load() != sent {
++		t.Fatal("admission-only data rewound the endpoint or triggered recovery")
++	}
++	peer.coldwireAdmissionLast = clock.Nano() + int64(time.Second)
++	peer.coldwireProof(endpoint, keypair, 42)
+ 	if _, _, err = unix.Recvfrom(fd, buffer, 0); err != unix.EAGAIN {
+-		t.Fatal("late old endpoint generated a fresh proof", err)
++		t.Fatal("admission-only notifications not bounded", err)
+ 	}
+ 	t.Run("retry-before-notification", func(t *testing.T) {
+ 		coldwireReturns = new(coldwireReturnCache)
+diff --git a/experimental/awg-prefilter/flow-confirmation/escrow-rules.nft.example b/experimental/awg-prefilter/flow-confirmation/escrow-rules.nft.example
+--- a/experimental/awg-prefilter/flow-confirmation/escrow-rules.nft.example
++++ b/experimental/awg-prefilter/flow-confirmation/escrow-rules.nft.example
+@@ -1,6 +1,6 @@
+ # SPDX-License-Identifier: MIT
+ # Disposable IPv4 lab only: queue 101 must be alive; nf_conntrack_acct=1 required.
+-# Split 6000/s + 2048 burst across bulk (4976/1024) and discovery (1024/1024).
++# Split 6000/s + 2048 burst across bulk (4976/1024), discovery (960/960), probes (64/64).
+ table ip awg_kernel_guard_lab {
+     set unknown_sources {
+         type ipv4_addr
+@@ -54,10 +54,10 @@
+     chain early {
+         type filter hook prerouting priority -150; policy accept;
+         iifname "enp0s3" ip daddr 192.168.76.10 ip saddr 192.168.76.20 udp sport 32497 ct direction reply return
+-        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark set meta mark & 0x87ffffff
++        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark set meta mark & 0x83ffffff
+         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 ip saddr . udp sport . ct id @trusted meta mark set meta mark | 0x10000000 goto trusted_flow
+         # Reused NAT tuples can retain conntrack; discovery must not require its first packet.
+-        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 update @discovery_sources { ip saddr limit rate 32/second burst 256 packets } limit rate 1024/second burst 1024 packets counter return comment "discovery_sample"
++        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 update @discovery_sources { ip saddr limit rate 32/second burst 256 packets } limit rate 960/second burst 960 packets counter return comment "discovery_sample"
+         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 jump guard
+     }
+     chain escrow_recheck {
+@@ -68,6 +68,12 @@
+     chain escrow_validate {
+         type filter hook prerouting priority -146; policy accept;
+         meta mark & 0x08000000 != 0 jump escrow_recheck
++        meta mark & 0x04000000 != 0 jump probe_recheck
++    }
++    chain probe_recheck {
++        meta mark set meta mark & 0xfbffffff
++        limit rate over 64/second burst 64 packets counter drop
++        counter return comment "escrow_probe"
+     }
+     chain queued {
+         type filter hook prerouting priority -140; policy accept;
+diff --git a/experimental/awg-prefilter/flow-confirmation/escrow.c b/experimental/awg-prefilter/flow-confirmation/escrow.c
+--- a/experimental/awg-prefilter/flow-confirmation/escrow.c
++++ b/experimental/awg-prefilter/flow-confirmation/escrow.c
+@@ -32,6 +32,8 @@
+ #define BYTE_LIMIT (16U * 1024U * 1024U)
+ #define TTL_NS UINT64_C(1000000000)
+ #define RELEASE_MARK UINT32_C(0x08000000)
++#define PROBE_MARK UINT32_C(0x04000000)
++#define PROBE 2
+ #define BATCH 16U
+ #define QUEUE 101
+ 
+@@ -51,6 +53,7 @@
+ static uint64_t high_packets, high_bytes, netlink_enobufs, send_calls;
+ static uint64_t ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow;
+ static uint64_t verdict_missing;
++static uint64_t probed;
+ static volatile sig_atomic_t stopping, reporting;
+ static int queue_fd, testing;
+ static int candidate_fd=-1;
+@@ -121,17 +124,17 @@
+     struct nlmsghdr *h=nfq_nlmsg_put(verdict_buffers[verdict_count],NFQNL_MSG_VERDICT,QUEUE);
+     h->nlmsg_flags=NLM_F_REQUEST;
+     nfq_nlmsg_verdict_put(h,(int)id,accept?NF_ACCEPT:NF_DROP);
+-    nfq_nlmsg_verdict_put_mark(h,mark | (accept?RELEASE_MARK:0));
++    nfq_nlmsg_verdict_put_mark(h,mark | (accept && !(mark & PROBE_MARK)?RELEASE_MARK:0));
+     verdict_iov[verdict_count++]=(struct iovec){.iov_base=h,.iov_len=h->nlmsg_len};
+     if (verdict_count==BATCH && flush()) fatal("send verdicts");
+ }
+ static void remove_packet(struct packet *p, int accept) {
+     assert(p->length && flows[p->flow].count);
+-    verdict(p->id,p->mark,accept);
++    verdict(p->id,p->mark | (accept==PROBE?PROBE_MARK:0),accept!=0);
+     flows[p->flow].count--;
+     if (!flows[p->flow].count) free_flow(p->flow);
+     held--; held_bytes-=p->length; p->length=0;
+-    if (accept) released++; else expired++;
++    if (accept==PROBE) probed++; else if (accept) released++; else expired++;
+ }
+ static void expire(uint64_t now) {
+     while (head<tail) {
+@@ -180,7 +183,24 @@
+     if (held>high_packets) high_packets=held;
+     if (held_bytes>high_bytes) high_bytes=held_bytes;
+ }
++static int probe_control(const unsigned char *data, size_t size, int root, uint64_t now) {
++    if (!root || size!=22) return 0;
++    struct key key;memcpy(&key.ip,data+4,4);key.port=read16(data+8);key.ct=read32(data+10);
++    uint64_t until=read64(data+14);
++    if (!key.port || !key.ct || until<=now || until-now>TTL_NS) return 0;
++    expire(now);
++    unsigned f=find_flow(key);
++    if (f<FLOW_LIMIT && !authorized(key,now)) {
++        for (uint64_t i=head;i<tail;i++) {
++            struct packet *p=&packets[i%CAPACITY];
++            if (p->length && p->flow==f) { remove_packet(p,PROBE);break; }
++        }
++        expire(now);
++    }
++    return 1;
++}
+ static int control(const unsigned char *data, size_t size, int root, uint64_t now) {
++    if (size>=4 && !memcmp(data,"CWS1",4)) return probe_control(data,size,root,now);
+     if (!root || size<6 || memcmp(data,"CWE1",4)) return 0;
+     unsigned count=read16(data+4);
+     if (count>GRANT_LIMIT || size!=6+18*count) return 0;
+@@ -205,8 +225,8 @@
+            ",\"bounded\":%"PRIu64",\"invalid\":%"PRIu64",\"control_bad\":%"PRIu64
+            ",\"control_ok\":%"PRIu64",\"held\":%u,\"held_bytes\":%u,\"high_packets\":%"PRIu64
+            ",\"high_bytes\":%"PRIu64",\"netlink_enobufs\":%"PRIu64",\"send_calls\":%"PRIu64",\"candidate_sent\":%"PRIu64",\"candidate_failed\":%"PRIu64
+-           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64"}\n",
+-           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing);
++           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64",\"probed\":%"PRIu64"}\n",
++           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing,probed);
+     fflush(stdout);
+ }
+ static void signal_handler(int sig) { if (sig==SIGUSR1) reporting=1; else stopping=1; }
+@@ -270,7 +290,7 @@
+     if (size<ihl+8 || length<ihl+8 || length>1536 || read16(ip+ihl+4)!=length-ihl || read16(ip+ihl+2)!=32497) goto reject;
+     if (a[NFQA_CAP_LEN] && (a[NFQA_CAP_LEN]->nla_len!=NLA_HDRLEN+4 || read32((char *)a[NFQA_CAP_LEN]+NLA_HDRLEN)!=length)) goto reject;
+     memcpy(&key.ip,ip+12,4); key.port=read16(ip+ihl);
+-    if (!key.port || (mark & RELEASE_MARK)) goto reject;
++    if (!key.port || (mark & (RELEASE_MARK|PROBE_MARK))) goto reject;
+     hold(key,id,mark,length,clock_ns()); return 0;
+ reject:
+     invalid++; verdict(id,mark,0); return 0;
+@@ -339,6 +359,20 @@
+     expire(9*TTL_NS); assert(!held && !held_bytes && free_count==FLOW_LIMIT);
+     for (unsigned i=0;i<BUCKETS;i++) assert(!buckets[i]);
+     message[4]=0; message[5]=129; assert(!control(message,sizeof(message),1,2));
++    struct key probe_key={.ip=123,.port=456,.ct=99999};
++    unsigned char request[22]={ 'C','W','S','1' };
++    memcpy(request+4,&probe_key.ip,4);p=htons(probe_key.port);c=htonl(probe_key.ct);
++    memcpy(request+8,&p,2);memcpy(request+10,&c,4);
++    uint64_t until=10*TTL_NS+TTL_NS/2;uint32_t hi=htonl((uint32_t)(until>>32)),lo=htonl((uint32_t)until);
++    memcpy(request+14,&hi,4);memcpy(request+18,&lo,4);
++    hold(probe_key,1,0,128,10*TTL_NS);
++    assert(!control(request,sizeof(request),0,10*TTL_NS));
++    assert(!control(request,sizeof(request)-1,1,10*TTL_NS));
++    assert(control(request,sizeof(request),1,10*TTL_NS) && probed==1 && !held && !grant_count);
++    hold(probe_key,2,0,128,10*TTL_NS);
++    assert(held==1 && !authorized(probe_key,10*TTL_NS));
++    assert(!control(request,sizeof(request),1,until));
++    expire(11*TTL_NS);assert(!held && !held_bytes);
+     puts("PASS escrow identity, revocation, expiry, packet/flow/byte bounds and root-only snapshots");
+ }
+ int main(int argc, char **argv) {
+diff --git a/experimental/awg-prefilter/flow-confirmation/patch_awg.py b/experimental/awg-prefilter/flow-confirmation/patch_awg.py
+--- a/experimental/awg-prefilter/flow-confirmation/patch_awg.py
++++ b/experimental/awg-prefilter/flow-confirmation/patch_awg.py
+@@ -25,7 +25,7 @@
+     peer=source/'device/peer.go';old=peer.read_text();marker='type Peer struct {\n'
+     assert old.count(marker)==1
+     receive.write_text(text,encoding='utf-8',newline='\n')
+-    peer.write_text(old.replace(marker,marker+'\tcoldwireProofLast int64\n\tcoldwireProofEndpoint string\n\tcoldwireEndpointBirth time.Time\n\tcoldwireEndpointIndex uint32\n\tcoldwireEndpointCounter uint64\n\tcoldwireReturnMu sync.Mutex\n\tcoldwireReturnLast time.Time\n'),encoding='utf-8',newline='\n')
++    peer.write_text(old.replace(marker,marker+'\tcoldwireProofLast int64\n\tcoldwireProofEndpoint string\n\tcoldwireAdmissionLast int64\n\tcoldwireAdmissionEndpoint string\n\tcoldwireEndpointBirth time.Time\n\tcoldwireEndpointIndex uint32\n\tcoldwireEndpointCounter uint64\n\tcoldwireReturnMu sync.Mutex\n\tcoldwireReturnLast time.Time\n'),encoding='utf-8',newline='\n')
+     send=source/'device/send.go';outbound=send.read_text();marker_send='\t\t\t\tdataSent = true'
+     assert outbound.count(marker_send)==1
+     send.write_text(outbound.replace(marker_send,marker_send+'\n\t\t\t\tpeer.coldwireRememberReply(elem.packet, elem.keypair)'),encoding='utf-8',newline='\n')
+diff --git a/experimental/awg-prefilter/flow-confirmation/test_agent.py b/experimental/awg-prefilter/flow-confirmation/test_agent.py
+--- a/experimental/awg-prefilter/flow-confirmation/test_agent.py
++++ b/experimental/awg-prefilter/flow-confirmation/test_agent.py
+@@ -40,7 +40,8 @@
+         query2=self.entry.queries({self.flow,moved},2)[0]
+         self.assertEqual(self.entry.pending[query2['nonce']][0],moved)
+         self.assertTrue(self.entry.confirm({'nonce':query2['nonce'],'peer':'ab'*16,'stamp':200},{self.flow,moved},2.1))
+-        self.assertEqual(set(self.entry.leases),{moved})
++        self.assertEqual(set(self.entry.leases),{self.flow,moved})
++        self.assertEqual(self.entry.leases[self.flow][1],3.1)
+         query3=self.entry.queries({self.flow,moved},4)[0]
+         self.assertFalse(self.entry.confirm({'nonce':query3['nonce'],'peer':'ab'*16,'stamp':150},{self.flow,moved},4.1))
+     def test_expiry_limits_and_unrelated_events(self):
+@@ -56,6 +57,49 @@
+         self.entry.queries({self.flow},12);self.assertFalse(self.entry.leases)
+         large={agent.Flow('192.168.76.40',40000+i,i+1,40000+i) for i in range(256)}
+         self.assertEqual(len(self.entry.queries(large,20)),4)
++
++    def test_probe_needs_ready_authenticated_hint_and_live_pending_request(self):
++        self.entry.escrow_socket=agent.ESCROW_SOCKET
++        request=self.entry.queries({self.flow},10)[0];name=request['nonce']
++        self.assertFalse(self.entry.acknowledged({'ready':'bad'},10))
++        self.assertFalse(self.entry.acknowledged({'ready':'ff'*16},10))
++        self.assertTrue(self.entry.acknowledged({'ready':name},10.1))
++        self.assertEqual(self.entry.probes({self.flow},10.2),[])
++        self.entry.auth_hints[self.flow]=12
++        self.assertEqual(self.entry.probes(set(),10.2),[])
++        self.assertEqual(self.entry.probes({self.flow},10.2),[(name,self.flow)])
++        self.assertFalse(self.entry.leases)
++        self.entry.probed.add(name);self.assertEqual(self.entry.probes({self.flow},10.3),[])
++        self.entry.queries(set(),14)
++        self.assertFalse(self.entry.ready);self.assertFalse(self.entry.probed)
++        self.assertFalse(self.entry.acknowledged({'ready':name},14))
++
++    def test_reordered_admission_proof_still_needs_post_query_authentication(self):
++        request=self.entry.queries({self.flow},10)[0]
++        self.assertTrue(self.exit.query(request,10.1))
++        before=self.event(10000000000).replace(b'CWP1',b'CWA1')
++        self.assertEqual(self.proofs(self.exit.event(before,10.2)),[])
++        event=self.event(10200000000).replace(b'CWP1',b'CWA1')
++        proof=self.proofs(self.exit.event(event,10.3))[0]
++        self.assertIs(proof['recovery'],True)
++        self.assertFalse(self.entry.confirm(proof|{'recovery':'yes'},{self.flow},10.4))
++        self.assertTrue(self.entry.confirm(proof,{self.flow},10.4))
++        self.assertEqual(self.entry.leases[self.flow][1],11.4)
++
++    def test_short_recovery_overlap_preserves_current_lease_and_bounds_peer_flows(self):
++        flows={self.flow};peer='ab'*16
++        first='00'*16;self.entry.pending[first]=(self.flow,3)
++        self.assertTrue(self.entry.confirm({'nonce':first,'peer':peer,'stamp':1},flows,1))
++        current_until=self.entry.leases[self.flow][1]
++        for i in range(1,5):
++            flow=agent.Flow('192.168.76.31',42500+i,123+i,42500+i);flows.add(flow)
++            name=f'{i:032x}';self.entry.pending[name]=(flow,3)
++            now=1+i*.1
++            self.assertTrue(self.entry.confirm({'nonce':name,'peer':peer,'stamp':i+1,'recovery':True},flows,now))
++            self.assertEqual(self.entry.leases[flow][1],now+1)
++            self.assertLessEqual(len(self.entry.leases),agent.PEER_FLOWS)
++            self.assertEqual(self.entry.leases[self.flow][1],current_until)
++        self.entry.queries(flows,3);self.assertEqual(set(self.entry.leases),{self.flow})
+ 
+     def test_unknown_query_pressure_reserves_slots_for_authenticated_hints(self):
+         flows={agent.Flow(f'192.168.77.{i//4+1}',40000+i,i+1,40000+i) for i in range(256)}

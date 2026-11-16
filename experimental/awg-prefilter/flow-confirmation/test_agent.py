@@ -40,7 +40,8 @@ class ConfirmationTests(unittest.TestCase):
         query2=self.entry.queries({self.flow,moved},2)[0]
         self.assertEqual(self.entry.pending[query2['nonce']][0],moved)
         self.assertTrue(self.entry.confirm({'nonce':query2['nonce'],'peer':'ab'*16,'stamp':200},{self.flow,moved},2.1))
-        self.assertEqual(set(self.entry.leases),{moved})
+        self.assertEqual(set(self.entry.leases),{self.flow,moved})
+        self.assertEqual(self.entry.leases[self.flow][1],3.1)
         query3=self.entry.queries({self.flow,moved},4)[0]
         self.assertFalse(self.entry.confirm({'nonce':query3['nonce'],'peer':'ab'*16,'stamp':150},{self.flow,moved},4.1))
     def test_expiry_limits_and_unrelated_events(self):
@@ -56,6 +57,54 @@ class ConfirmationTests(unittest.TestCase):
         self.entry.queries({self.flow},12);self.assertFalse(self.entry.leases)
         large={agent.Flow('192.168.76.40',40000+i,i+1,40000+i) for i in range(256)}
         self.assertEqual(len(self.entry.queries(large,20)),4)
+
+    def test_probe_needs_ready_authenticated_hint_and_live_pending_request(self):
+        self.entry.escrow_socket=agent.ESCROW_SOCKET
+        request=self.entry.queries({self.flow},10)[0];name=request['nonce']
+        self.assertFalse(self.entry.acknowledged({'ready':'bad'},10))
+        self.assertFalse(self.entry.acknowledged({'ready':'ff'*16},10))
+        self.assertTrue(self.entry.acknowledged({'ready':name},10.1))
+        self.assertEqual(self.entry.probes({self.flow},10.2),[])
+        self.entry.auth_hints[self.flow]=12
+        self.assertEqual(self.entry.probes(set(),10.2),[])
+        self.assertEqual(self.entry.probes({self.flow},10.2),[(name,self.flow)])
+        self.assertFalse(self.entry.leases)
+        self.entry.leases[self.flow]=('ab'*16,12)
+        self.assertEqual(self.entry.probes({self.flow},10.2),[])
+        self.entry.leases[self.flow]=('ab'*16,10.1)
+        self.assertEqual(self.entry.probes({self.flow},10.2),[(name,self.flow)])
+        self.entry.leases.clear()
+        self.entry.probed.add(name);self.assertEqual(self.entry.probes({self.flow},10.3),[])
+        self.entry.queries(set(),14)
+        self.assertFalse(self.entry.ready);self.assertFalse(self.entry.probed)
+        self.assertFalse(self.entry.acknowledged({'ready':name},14))
+
+    def test_reordered_admission_proof_still_needs_post_query_authentication(self):
+        request=self.entry.queries({self.flow},10)[0]
+        self.assertTrue(self.exit.query(request,10.1))
+        before=self.event(10000000000).replace(b'CWP1',b'CWA1')
+        self.assertEqual(self.proofs(self.exit.event(before,10.2)),[])
+        event=self.event(10200000000).replace(b'CWP1',b'CWA1')
+        proof=self.proofs(self.exit.event(event,10.3))[0]
+        self.assertIs(proof['recovery'],True)
+        self.assertFalse(self.entry.confirm(proof|{'recovery':'yes'},{self.flow},10.4))
+        self.assertTrue(self.entry.confirm(proof,{self.flow},10.4))
+        self.assertEqual(self.entry.leases[self.flow][1],11.4)
+
+    def test_short_recovery_overlap_preserves_current_lease_and_bounds_peer_flows(self):
+        flows={self.flow};peer='ab'*16
+        first='00'*16;self.entry.pending[first]=(self.flow,3)
+        self.assertTrue(self.entry.confirm({'nonce':first,'peer':peer,'stamp':1},flows,1))
+        current_until=self.entry.leases[self.flow][1]
+        for i in range(1,5):
+            flow=agent.Flow('192.168.76.31',42500+i,123+i,42500+i);flows.add(flow)
+            name=f'{i:032x}';self.entry.pending[name]=(flow,3)
+            now=1+i*.1
+            self.assertTrue(self.entry.confirm({'nonce':name,'peer':peer,'stamp':i+1,'recovery':True},flows,now))
+            self.assertEqual(self.entry.leases[flow][1],now+1)
+            self.assertLessEqual(len(self.entry.leases),agent.PEER_FLOWS)
+            self.assertEqual(self.entry.leases[self.flow][1],current_until)
+        self.entry.queries(flows,3);self.assertEqual(set(self.entry.leases),{self.flow})
 
     def test_unknown_query_pressure_reserves_slots_for_authenticated_hints(self):
         flows={agent.Flow(f'192.168.77.{i//4+1}',40000+i,i+1,40000+i) for i in range(256)}
@@ -90,6 +139,32 @@ class ConfirmationTests(unittest.TestCase):
             self.assertFalse(self.entry.candidate(event,config,11))
         for bad in (b'bad',event.replace(b'CWC1',b'CWC0'),agent.CANDIDATE.pack(b'CWC1',bytes([192,168,76,30]),0,123)):
             self.assertFalse(self.entry.candidate(bad,config,12))
+
+    def test_local_candidate_uses_its_checked_generation_without_a_second_get(self):
+        config={'entry':'192.168.76.10','exit':'192.168.76.20','vpn_port':32497}
+        flow=agent.Flow('192.168.76.30',42502,123,61000)
+        replacement=agent.Flow('192.168.76.40',40000,456,61000)
+        event=agent.CANDIDATE.pack(b'CWC1',bytes([192,168,76,30]),flow.port,flow.identity)
+        value=(flow.source,flow.port,flow.identity,flow.translated_port)
+        with mock.patch.object(agent.conntrack,'lookup',return_value=value) as lookup,mock.patch.object(agent,'read_flow',return_value=replacement) as second:
+            self.assertTrue(self.entry.candidate(event,config,10))
+            self.assertEqual(self.entry.current_flows(10),{flow})
+            self.assertFalse(self.entry.auth_hints)
+            second.assert_not_called();lookup.assert_called_once()
+        query=self.entry.queries({flow},10)[0]
+        self.assertFalse(self.entry.confirm({'nonce':query['nonce'],'peer':'ab'*16,'stamp':100},{replacement},10.1))
+        self.assertFalse(self.entry.leases)
+
+    def test_authenticated_hint_wakes_cached_local_candidate_only_on_priority_change(self):
+        config={'entry':'192.168.76.10','exit':'192.168.76.20','vpn_port':32497}
+        with mock.patch.object(agent,'read_flow',return_value=self.flow) as lookup:
+            self.assertTrue(self.entry.hint({'hint':32497},config,10,authenticated=False))
+            self.assertNotIn(self.flow,self.entry.auth_hints)
+            self.assertTrue(self.entry.hint({'hint':32497},config,10.1))
+            self.assertIn(self.flow,self.entry.auth_hints)
+            self.assertFalse(self.entry.hint({'hint':32497},config,10.2))
+            lookup.assert_called_once()
+        self.assertFalse(self.entry.leases)
 
     def test_hint_pressure_never_evicts_protected_flows_and_caches_stay_bounded(self):
         self.entry.flows[32497]=self.flow;self.entry.observed[32497]=1;self.entry.leases[self.flow]=('ab'*16,100)
@@ -190,9 +265,12 @@ class ConfirmationTests(unittest.TestCase):
         with mock.patch.object(agent.Path,'lstat',side_effect=lambda path:directory if path==agent.Path(agent.ESCROW_SOCKET).parent else endpoint,autospec=True), mock.patch.object(agent.socket,'socket',return_value=connection),mock.patch.object(agent.socket,'AF_UNIX',1,create=True):
             self.assertTrue(agent.notify_escrow(self.entry))
             self.assertEqual(sent[-1],struct.pack('!4sH',b'CWE1',1)+agent.ESCROW_RECORD.pack(bytes([192,168,76,30]),32497,123,20000000000))
+            self.assertTrue(agent.probe_escrow(self.entry,self.flow,10))
+            self.assertEqual(sent[-1],b'CWS1'+agent.ESCROW_RECORD.pack(bytes([192,168,76,30]),32497,123,11000000000))
             self.entry.leases.clear();self.assertTrue(agent.notify_escrow(self.entry));self.assertEqual(sent[-1],b'CWE1\0\0')
             endpoint.st_mode=stat.S_IFSOCK|0o666
             self.assertFalse(agent.notify_escrow(self.entry))
+            self.assertFalse(agent.probe_escrow(self.entry,self.flow,10))
             endpoint.st_mode=stat.S_IFLNK|0o600
             self.assertFalse(agent.notify_escrow(self.entry))
             self.entry.escrow_socket='/tmp/other.sock';self.assertFalse(agent.notify_escrow(self.entry))

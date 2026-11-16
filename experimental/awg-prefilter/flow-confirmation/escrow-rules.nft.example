@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Disposable IPv4 lab only: queue 101 must be alive; nf_conntrack_acct=1 required.
-# Split 6000/s + 2048 burst across bulk (4976/1024) and discovery (1024/1024).
+# Split 6000/s + 2048 burst across bulk (4976/1024), discovery (960/960), probes (64/64).
 table ip awg_kernel_guard_lab {
     set unknown_sources {
         type ipv4_addr
@@ -54,10 +54,10 @@ table ip awg_kernel_guard_lab {
     chain early {
         type filter hook prerouting priority -150; policy accept;
         iifname "enp0s3" ip daddr 192.168.76.10 ip saddr 192.168.76.20 udp sport 32497 ct direction reply return
-        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark set meta mark & 0x87ffffff
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark set meta mark & 0x83ffffff
         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 ip saddr . udp sport . ct id @trusted meta mark set meta mark | 0x10000000 goto trusted_flow
         # Reused NAT tuples can retain conntrack; discovery must not require its first packet.
-        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 update @discovery_sources { ip saddr limit rate 32/second burst 256 packets } limit rate 1024/second burst 1024 packets counter return comment "discovery_sample"
+        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 update @discovery_sources { ip saddr limit rate 32/second burst 256 packets } limit rate 960/second burst 960 packets counter return comment "discovery_sample"
         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 jump guard
     }
     chain escrow_recheck {
@@ -68,6 +68,12 @@ table ip awg_kernel_guard_lab {
     chain escrow_validate {
         type filter hook prerouting priority -146; policy accept;
         meta mark & 0x08000000 != 0 jump escrow_recheck
+        meta mark & 0x04000000 != 0 jump probe_recheck
+    }
+    chain probe_recheck {
+        meta mark set meta mark & 0xfbffffff
+        limit rate over 64/second burst 64 packets counter drop
+        counter return comment "escrow_probe"
     }
     chain queued {
         type filter hook prerouting priority -140; policy accept;

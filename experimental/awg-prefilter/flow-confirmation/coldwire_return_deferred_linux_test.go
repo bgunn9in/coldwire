@@ -422,8 +422,8 @@ func TestColdwireDeferredEncryptedLossAndNoDuplicate(t *testing.T) {
 	coldwireReturns.Lock()
 	coldwireReturns.prune(time.Now())
 	coldwireReturns.Unlock()
-	// Simulate the next authenticated callback after cooldown and ordinary ring expiry.
-	peer.coldwireRetryReplies(id, key, endpoint)
+	// The expiry loop must recover real ciphertext even if the client sends nothing else.
+	coldwireReturns.maintain(time.Now())
 	select {
 	case got := <-pair[0].tun.Inbound:
 		if !bytes.Equal(got, message) {
@@ -485,5 +485,163 @@ func TestColdwireDeferredCoalescesRapidMoves(t *testing.T) {
 	}
 	if len(cache.takePending(id, now, 1, "latest", now.Add(500*time.Millisecond))) != 0 {
 		t.Fatal("coalescing armed a stationary retry")
+	}
+}
+
+func TestColdwireDeferredMaintenanceWithoutAnotherClientPacket(t *testing.T) {
+	oldEnabled, oldCache := coldwireReturnEnabled, coldwireReturns
+	coldwireReturnEnabled, coldwireReturns = true, new(coldwireReturnCache)
+	coldwireReturnOnce = sync.Once{}
+	coldwireReturnOnce.Do(func() {})
+	t.Cleanup(func() {
+		coldwireReturnEnabled, coldwireReturns = oldEnabled, oldCache
+		coldwireReturnOnce = sync.Once{}
+	})
+	listener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	bind := conn.NewDefaultBind()
+	if _, _, err = bind.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer bind.Close()
+	endpoint, err := bind.ParseEndpoint(listener.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := new(Peer)
+	peer.device = new(Device)
+	peer.device.net.bind, peer.device.log = bind, NewLogger(LogLevelSilent, "")
+	peer.isRunning.Store(true)
+	peer.endpoint.val = endpoint
+	now := time.Now()
+	key := &Keypair{created: now, localIndex: 1}
+	peer.keypairs.current = key
+	id := [32]byte{1}
+	cache := coldwireReturns
+	cache.remember(coldwireReturnPacket{peer: id, birth: now, index: 1, sent: now, payload: []byte("ciphertext")})
+	cache.deferReplies(id, now, 1, endpoint.DstToString(), now, now.Add(-time.Second))
+	cache.watchPending(id, peer)
+	cache.maintain(time.Now())
+	buffer := make([]byte, 64)
+	listener.SetReadDeadline(time.Now().Add(time.Second))
+	if n, _, err := listener.ReadFromUDP(buffer); err != nil || string(buffer[:n]) != "ciphertext" {
+		t.Fatal("a quiet client's eligible recovery was not sent", err)
+	}
+	cache.maintain(time.Now().Add(coldwirePeerReplayInterval))
+	listener.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+	if _, _, err := listener.ReadFromUDP(buffer); err == nil {
+		t.Fatal("maintenance rearmed a stationary retry")
+	}
+	cache.maintain(now.Add(coldwirePendingAge))
+	if len(cache.pending) != 0 || cache.pendingBytes != 0 || cache.pendingPackets != 0 {
+		t.Fatal("maintenance retained expired peer or ciphertext")
+	}
+	other, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	latest, err := bind.ParseEndpoint(other.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache.remember(coldwireReturnPacket{peer: id, birth: now, index: 1, sent: time.Now(), payload: []byte("ciphertext")})
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		for i := 0; i < 160; i++ {
+			target := endpoint
+			if i%2 == 0 {
+				target = latest
+			}
+			peer.endpoint.Lock()
+			peer.endpoint.val = target
+			peer.endpoint.Unlock()
+			peer.coldwireReplayReplies(id, key, target)
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		for i := 0; i < 160; i++ {
+			cache.maintain(time.Now())
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+	workers.Wait()
+	cache.maintain(time.Now().Add(coldwirePendingAge))
+	if len(cache.pending) != 0 || cache.pendingBytes != 0 || cache.pendingPackets != 0 {
+		t.Fatal("concurrent scheduling retained a peer or ciphertext")
+	}
+}
+
+func TestColdwireDeferredMaintenanceGuards(t *testing.T) {
+	oldEnabled, oldCache := coldwireReturnEnabled, coldwireReturns
+	coldwireReturnEnabled, coldwireReturns = true, new(coldwireReturnCache)
+	coldwireReturnOnce = sync.Once{}
+	coldwireReturnOnce.Do(func() {})
+	t.Cleanup(func() {
+		coldwireReturnEnabled, coldwireReturns = oldEnabled, oldCache
+		coldwireReturnOnce = sync.Once{}
+	})
+	bind := conn.NewDefaultBind()
+	a, _ := bind.ParseEndpoint("127.0.0.1:1")
+	b, _ := bind.ParseEndpoint("127.0.0.1:2")
+	peer := new(Peer)
+	peer.device = new(Device)
+	peer.device.net.bind, peer.device.log = bind, NewLogger(LogLevelSilent, "")
+	now := time.Now()
+	key := &Keypair{created: now, localIndex: 1}
+	id := [32]byte{1}
+	for _, guard := range []string{"unarmed", "future", "expired", "endpoint", "key", "stop", "roaming", "device", "busy"} {
+		cache := new(coldwireReturnCache)
+		coldwireReturns = cache
+		peer.isRunning.Store(true)
+		peer.endpoint.val = a
+		peer.endpoint.disableRoaming = false
+		peer.keypairs.current = key
+		peer.device.state.state.Store(uint32(deviceStateDown))
+		cache.remember(coldwireReturnPacket{peer: id, birth: now, index: 1, sent: now, payload: []byte("ciphertext")})
+		cache.deferReplies(id, now, 1, a.DstToString(), now, now.Add(-time.Second))
+		cache.watchPending(id, peer)
+		stamp := now
+		switch guard {
+		case "unarmed":
+			value := cache.pending[id]
+			value.armed = false
+			cache.pending[id] = value
+		case "future":
+			value := cache.pending[id]
+			value.due = now.Add(time.Second)
+			cache.pending[id] = value
+		case "expired":
+			stamp = now.Add(coldwirePendingAge)
+		case "endpoint":
+			peer.endpoint.val = b
+		case "key":
+			peer.keypairs.current = &Keypair{created: now.Add(time.Second), localIndex: 2}
+		case "stop":
+			peer.isRunning.Store(false)
+		case "roaming":
+			peer.endpoint.disableRoaming = true
+		case "device":
+			peer.device.state.state.Store(uint32(deviceStateClosed))
+		case "busy":
+			coldwireReplaySending.Lock()
+		}
+		cache.maintain(stamp)
+		if guard == "busy" {
+			coldwireReplaySending.Unlock()
+		}
+		if peer.txBytes.Load() != 0 || !peer.coldwireReturnLast.IsZero() {
+			t.Fatalf("%s permitted a scheduled send", guard)
+		}
+		if guard == "endpoint" && len(cache.pending) != 1 {
+			t.Fatal("a concurrent endpoint update erased the pending snapshot")
+		}
 	}
 }

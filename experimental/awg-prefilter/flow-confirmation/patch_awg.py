@@ -25,7 +25,7 @@ def patch(source):
     peer=source/'device/peer.go';old=peer.read_text();marker='type Peer struct {\n'
     assert old.count(marker)==1
     receive.write_text(text,encoding='utf-8',newline='\n')
-    peer.write_text(old.replace(marker,marker+'\tcoldwireProofLast int64\n\tcoldwireProofEndpoint string\n\tcoldwireEndpointBirth time.Time\n\tcoldwireEndpointIndex uint32\n\tcoldwireEndpointCounter uint64\n\tcoldwireReturnLast time.Time\n'),encoding='utf-8',newline='\n')
+    peer.write_text(old.replace(marker,marker+'\tcoldwireProofLast int64\n\tcoldwireProofEndpoint string\n\tcoldwireAdmissionLast int64\n\tcoldwireAdmissionEndpoint string\n\tcoldwireEndpointBirth time.Time\n\tcoldwireEndpointIndex uint32\n\tcoldwireEndpointCounter uint64\n\tcoldwireReturnMu sync.Mutex\n\tcoldwireReturnLast time.Time\n'),encoding='utf-8',newline='\n')
     send=source/'device/send.go';outbound=send.read_text();marker_send='\t\t\t\tdataSent = true'
     assert outbound.count(marker_send)==1
     send.write_text(outbound.replace(marker_send,marker_send+'\n\t\t\t\tpeer.coldwireRememberReply(elem.packet, elem.keypair)'),encoding='utf-8',newline='\n')

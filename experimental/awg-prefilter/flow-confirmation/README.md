@@ -24,6 +24,26 @@ and [v18 measurements](../validation-v18.md).
 
 ## How admission works
 
+The [v33 follow-up](../validation-v33.md) also lets the existing maintenance
+loop consume an armed recovery after cooldown, without another client packet.
+It adds a bounded probe from the holding queue after B acknowledges a nonce,
+and short admission leases for valid reordered data. The current return
+endpoint still follows the highest accepted counter. The study tests
+conntrack headroom and rejects temporary `ASSURED` pinning through the
+tuple-based kernel update API.
+
+Upgrade the patched receiver, both agents, `escrow.c` and the escrow nftables
+rules together in a disposable lab. The nonce acknowledgement, admission-only
+event and probe mark depend on those components agreeing. Mixing revisions
+can prevent confirmation or omit the probe's kernel limit. Normal installers
+still leave this experiment disabled.
+
+The [v32 admission study](../validation-v32.md) fixes a second-lookup race
+and a missed scheduler wakeup, and changes local proof-event eligibility
+from 50 to 10 ms. Ordinary trials delivered all unique useful UDP packets.
+A deliberately deleted pending generation still loses its held packets;
+the exact cause of v31's 659-packet loss remains unproved.
+
 The [v31 latency study](../validation-v31.md) rejects shorter work-based
 replay pacing. It increased intermediate replay work in the fast-move test;
 tails around 1.6 seconds remain. The runtime keeps its 250-ms interval, with
@@ -44,14 +64,18 @@ This remains a lab option, disabled in the normal installers.
    traffic and conntrack state cannot produce this confirmation.
 3. A reads the original tuple, conntrack ID and translated source port with
    an exact conntrack GET. It asks B to confirm that port using a fresh
-   random 128-bit nonce. B must observe another authenticated transport
+   random 128-bit nonce. B acknowledges receipt. B must observe another authenticated transport
    event after receiving the request. Both timestamps are compared on B's
    monotonic clock; this check does not need synchronized server clocks.
 4. B replies over mutual TLS 1.3. A checks the nonce, deadline, event order
    and current conntrack mapping again. It installs a ten-second nftables
    lease for `original source IPv4 . UDP source port . conntrack ID`.
-5. Active traffic can refresh the lease. A new confirmed flow for the same
-   peer replaces its old flow. Idle leases expire. Losing the control
+   Reordered data from an older endpoint can instead obtain a one-second
+   recovery lease. It does not change B's return destination.
+5. Active traffic can refresh the lease. A new ordinary lease shortens old
+   leases for that peer to at most one more second. At most four flows per
+   peer can overlap; the earliest expiry is evicted beyond that bound.
+   Idle leases expire. Losing the control
    connection leaves existing leases valid only until their original expiry.
    It cannot refresh them. A stopped helper cannot prevent kernel expiry.
 
@@ -65,11 +89,13 @@ nftables immediately. It discovers flows from B's authenticated port hints
 and, with forward escrow, early root-only candidate notices from the holding
 process. Candidates and hints start a challenge; neither grants a lease.
 The exact mapping and generation are checked again when the proof arrives.
-B can emit a fresh same-endpoint event every 50 ms;
-the TLS stream uses `TCP_NODELAY`. B selects endpoints and proof events
+B can emit a fresh same-endpoint event every 10 ms;
+the TLS stream uses `TCP_NODELAY`. B selects endpoints and ordinary proof events
 by the greatest accepted transport counter in its current keypair, with
 a fresh counter epoch on key rotation. Late valid data can still be
-delivered, but cannot select an older endpoint. With return recovery
+delivered, but cannot select an older endpoint. A separate `CWA1` local event
+can prove first-time acceptance of reordered current-key data for a short
+admission lease. Its event must still follow the nonce request. With return recovery
 disabled, replies already sent to a vanished NAT mapping remain lost.
 
 A receives a hash of B's authenticated peer public key, not VPN session
@@ -159,8 +185,8 @@ sudo ./flow-confirmation/escrow --vm-test
 ```
 
 The example splits the existing 6000/s, burst-2048 aggregate allowance into
-4976/s with burst 1024 for bulk traffic and 1024/s with burst 1024 for discovery
-samples from unleased traffic. Samples still go through header inspection;
+4976/s with burst 1024 for bulk traffic, 960/s with burst 960 for discovery,
+and 64/s with burst 64 for forward probes. Samples still go through header inspection;
 it cannot authenticate a client. Excess traffic enters queue 101, with no
 queue bypass or fail-open option. Only confirmed IPv4/UDP conntrack entries
 and individual IP packets up to 1536 bytes are eligible for holding.
@@ -173,6 +199,17 @@ Exhausted discovery credits fall back to the ordinary bounded guard. Many
 sources can still exhaust the shared budget; this is not source authentication.
 Discovery also covers reused NAT tuples whose conntrack entry is still alive;
 requiring `ct original packets 1` would miss them.
+
+Once B acknowledges a pending nonce and A has an authenticated hint for that
+exact flow, A can request one held packet as a forward probe. A rechecks the
+generation first and skips the probe if that flow already has a live lease.
+The root-only `CWS1` request expires within one second and
+does not grant a lease. Its local `0x04000000` mark uses the separate 64/s
+kernel limit, then queue 100 still inspects it and B still authenticates it.
+This mark is cleared before classification. The probe can supply a new
+post-request event even if the client has already left that NAT mapping.
+Replayed or invalid ciphertext cannot supply that event. Holding expiry is
+unchanged, and a missing mapping or a full budget can still prevent recovery.
 
 The process keeps kernel packet IDs and metadata, with a 128-byte netlink
 copy. Linux retains the original encrypted skb and its conntrack reference.
@@ -200,7 +237,9 @@ stop both queue processes. Restore the saved conntrack-accounting setting
 after the experiment. A missing queue listener drops matching traffic.
 
 The helper resends its current lease snapshot every 250 ms without extending
-any deadline. The holding process can replace an orphaned root-owned 0600
+any deadline. A structurally valid snapshot discards expired records and
+keeps its live records; invalid identities, duplicates, zero deadlines and
+excessive future deadlines still reject the snapshot. The holding process can replace an orphaned root-owned 0600
 socket after a crash; it refuses a live socket, regular file or symlink.
 The three `coldwire-*.service.example` files provide restart settings for
 the disposable `kit-entry` and `kit-exit` hosts only. They are not VPS units
@@ -237,9 +276,10 @@ in progress. Ordinary endpoint updates continue while recovery waits.
 Clients use their existing replay filter to discard copies already seen.
 
 Each fresh, source-checked current-key packet can check a pending recovery,
-including packets between the 50-ms local notifications. Recovery keeps its
-own 250-ms per-peer and global spacing. The notification rate and wire format
-are unchanged; no timer or worker was added.
+including packets between the 10-ms local notifications. Recovery keeps its
+own 250-ms per-peer and global spacing. The client wire format is unchanged;
+no timer or worker was added. Sparse traffic can delay a proof beyond the
+notification interval, since it requires a fresh authenticated packet.
 
 Recovery copies one current batch into a reusable contiguous workspace.
 This gives the standard bind room for UDP GSO coalescing while keeping the
@@ -253,20 +293,25 @@ payload copy. Stationary traffic cannot rearm it. A move blocked by cooldown
 or a busy sender can also create a pending snapshot from the ordinary ring.
 All retained snapshots together hold at most 16 peers, 8192 packets and 16 MiB.
 They contain ciphertext, the peer-key hash, scalar key epoch/order fields
-and an address string. A fresh authenticated move retargets the snapshot
+and an address string. A bounded reference to the owning peer lets the
+maintenance loop read its current key and endpoint; the snapshot stores no
+keypair pointer. The reference expires with the snapshot. A fresh
+authenticated move retargets the snapshot
 and appends newer eligible replies from the ring within those same budgets.
 A local insertion sequence prevents overlap from being copied twice.
 
-After cooldown, a fresh transport notification can make one deferred attempt
-for that move. Its current key, source policy and endpoint must still
-match. A stopped peer, closed device or disabled roaming prevents the retry;
+After cooldown, a fresh transport notification or the existing 100-ms
+maintenance loop can make one deferred attempt for an armed move. Its
+source-policy check must already have passed; the current key and endpoint
+must still match. A stopped peer, closed device or disabled roaming prevents the retry;
 each send batch checks the current key and endpoint again. Already submitted
 network packets cannot be recalled. After an attempt, the snapshot becomes
 unarmed and remains available for another fresh move until its original
 1100-ms deadline. Retargeting and sending never extend that deadline.
-The existing 100-ms cleanup tick also releases idle snapshots. There are no
-new per-peer timers or workers. Without another qualifying client packet
-before expiry, no deferred attempt occurs.
+The same tick releases idle snapshots. Receiver and maintenance attempts
+share a per-peer mutex and the existing global sender lock. No new timer or
+worker was added. The loop cannot arm a stationary snapshot or invent a new
+destination. A busy sender or the original expiry can still prevent recovery.
 
 The ordinary ring still selects only packets younger than 500 ms. A retained
 snapshot can outlive that ring; newer replies are added only on another

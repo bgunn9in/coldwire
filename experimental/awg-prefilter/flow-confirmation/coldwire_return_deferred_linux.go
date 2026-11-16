@@ -14,8 +14,9 @@ const (
 	coldwirePendingPackets = coldwireReplaySlots
 )
 
-// Only ciphertext and scalar ownership are retained; the next fresh packet supplies the endpoint.
+// The bounded peer reference supplies the current key/endpoint without retaining a keypair.
 type coldwireReturnPending struct {
+	peer    *Peer
 	birth   time.Time
 	index   uint32
 	address string
@@ -177,10 +178,17 @@ func (peer *Peer) coldwireDeferReplies(identity [32]byte, keypair *Keypair, endp
 		due = now
 	}
 	coldwireReturnStorage().deferReplies(identity, keypair.created, keypair.localIndex, endpoint.DstToString(), now, due)
+	coldwireReturnStorage().watchPending(identity, peer)
 }
 
 // Called only by the sequential receiver with fresh, source-checked current-key transport.
 func (peer *Peer) coldwireRetryReplies(identity [32]byte, keypair *Keypair, endpoint conn.Endpoint) {
+	peer.coldwireReturnMu.Lock()
+	defer peer.coldwireReturnMu.Unlock()
+	peer.coldwireRetryRepliesLocked(identity, keypair, endpoint)
+}
+
+func (peer *Peer) coldwireRetryRepliesLocked(identity [32]byte, keypair *Keypair, endpoint conn.Endpoint) {
 	if !coldwireReturnEnabled || peer.device == nil || keypair == nil {
 		return
 	}
@@ -208,4 +216,52 @@ func (peer *Peer) coldwireRetryReplies(identity [32]byte, keypair *Keypair, endp
 	peer.coldwireReturnLast = now
 	peer.device.log.Verbosef("%v - Lab return attempt kind=deferred packets=%d target=%s", peer, len(buffers), endpoint.DstToString())
 	peer.coldwireSendReplies(keypair, endpoint, buffers)
+}
+
+func (cache *coldwireReturnCache) watchPending(identity [32]byte, peer *Peer) {
+	cache.Lock()
+	defer cache.Unlock()
+	if value, ok := cache.pending[identity]; ok {
+		value.peer = peer
+		cache.pending[identity] = value
+	}
+}
+
+// Reuse the existing expiry loop so a quiet client cannot strand an armed retry.
+func (cache *coldwireReturnCache) maintain(now time.Time) {
+	var ready [coldwirePendingPeers]struct {
+		identity [32]byte
+		peer     *Peer
+	}
+	n := 0
+	cache.Lock()
+	cache.prune(now)
+	cache.prunePending(now)
+	for identity, value := range cache.pending {
+		if value.peer != nil && value.armed && !now.Before(value.due) {
+			ready[n].identity, ready[n].peer = identity, value.peer
+			n++
+		}
+	}
+	cache.Unlock()
+	for _, item := range ready[:n] {
+		peer := item.peer
+		if !peer.coldwireReturnMu.TryLock() {
+			continue
+		}
+		keypair := peer.keypairs.Current()
+		peer.endpoint.Lock()
+		endpoint := peer.endpoint.val
+		peer.endpoint.Unlock()
+		if keypair != nil && endpoint != nil {
+			cache.Lock()
+			value, ok := cache.pending[item.identity]
+			current := ok && value.peer == peer && value.birth == keypair.created && value.index == keypair.localIndex && value.address == endpoint.DstToString()
+			cache.Unlock()
+			if current {
+				peer.coldwireRetryRepliesLocked(item.identity, keypair, endpoint)
+			}
+		}
+		peer.coldwireReturnMu.Unlock()
+	}
 }

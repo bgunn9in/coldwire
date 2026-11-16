@@ -116,10 +116,7 @@ func coldwireReturnStorage() *coldwireReturnCache {
 		coldwireReturns = new(coldwireReturnCache)
 		go func() {
 			for now := range time.Tick(100 * time.Millisecond) {
-				coldwireReturns.Lock()
-				coldwireReturns.prune(now)
-				coldwireReturns.prunePending(now)
-				coldwireReturns.Unlock()
+				coldwireReturns.maintain(now)
 			}
 		}()
 	})
@@ -142,6 +139,8 @@ func (peer *Peer) coldwireReplayReplies(identity [32]byte, keypair *Keypair, end
 		return
 	}
 	cache := coldwireReturnStorage()
+	peer.coldwireReturnMu.Lock()
+	defer peer.coldwireReturnMu.Unlock()
 	peer.endpoint.Lock()
 	disabled := peer.endpoint.disableRoaming
 	peer.endpoint.Unlock()
@@ -151,7 +150,7 @@ func (peer *Peer) coldwireReplayReplies(identity [32]byte, keypair *Keypair, end
 		return
 	}
 	if cache.retargetPending(identity, keypair.created, keypair.localIndex, endpoint.DstToString(), now) {
-		peer.coldwireRetryReplies(identity, keypair, endpoint)
+		peer.coldwireRetryRepliesLocked(identity, keypair, endpoint)
 		return
 	}
 	if !peer.coldwireReturnLast.IsZero() && now.Sub(peer.coldwireReturnLast) < coldwirePeerReplayInterval {
@@ -174,6 +173,7 @@ func (peer *Peer) coldwireReplayReplies(identity [32]byte, keypair *Keypair, end
 	buffers, through := cache.selectReplies(identity, keypair.created, keypair.localIndex, now)
 	if len(buffers) > 0 {
 		cache.holdReplies(identity, keypair.created, keypair.localIndex, endpoint.DstToString(), now, through, buffers)
+		cache.watchPending(identity, peer)
 		peer.device.log.Verbosef("%v - Lab return attempt kind=immediate packets=%d target=%s", peer, len(buffers), endpoint.DstToString())
 	}
 	peer.coldwireSendReplies(keypair, endpoint, buffers)

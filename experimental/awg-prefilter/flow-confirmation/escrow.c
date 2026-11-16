@@ -32,6 +32,8 @@
 #define BYTE_LIMIT (16U * 1024U * 1024U)
 #define TTL_NS UINT64_C(1000000000)
 #define RELEASE_MARK UINT32_C(0x08000000)
+#define PROBE_MARK UINT32_C(0x04000000)
+#define PROBE 2
 #define BATCH 16U
 #define QUEUE 101
 
@@ -51,6 +53,8 @@ static uint64_t received, released, expired, bounded, invalid, control_bad, cont
 static uint64_t high_packets, high_bytes, netlink_enobufs, send_calls;
 static uint64_t ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow;
 static uint64_t verdict_missing;
+static uint64_t probed;
+static uint64_t control_expired;
 static volatile sig_atomic_t stopping, reporting;
 static int queue_fd, testing;
 static int candidate_fd=-1;
@@ -121,17 +125,17 @@ static void verdict(uint32_t id, uint32_t mark, int accept) {
     struct nlmsghdr *h=nfq_nlmsg_put(verdict_buffers[verdict_count],NFQNL_MSG_VERDICT,QUEUE);
     h->nlmsg_flags=NLM_F_REQUEST;
     nfq_nlmsg_verdict_put(h,(int)id,accept?NF_ACCEPT:NF_DROP);
-    nfq_nlmsg_verdict_put_mark(h,mark | (accept?RELEASE_MARK:0));
+    nfq_nlmsg_verdict_put_mark(h,mark | (accept && !(mark & PROBE_MARK)?RELEASE_MARK:0));
     verdict_iov[verdict_count++]=(struct iovec){.iov_base=h,.iov_len=h->nlmsg_len};
     if (verdict_count==BATCH && flush()) fatal("send verdicts");
 }
 static void remove_packet(struct packet *p, int accept) {
     assert(p->length && flows[p->flow].count);
-    verdict(p->id,p->mark,accept);
+    verdict(p->id,p->mark | (accept==PROBE?PROBE_MARK:0),accept!=0);
     flows[p->flow].count--;
     if (!flows[p->flow].count) free_flow(p->flow);
     held--; held_bytes-=p->length; p->length=0;
-    if (accept) released++; else expired++;
+    if (accept==PROBE) probed++; else if (accept) released++; else expired++;
 }
 static void expire(uint64_t now) {
     while (head<tail) {
@@ -180,7 +184,24 @@ static void hold(struct key key, uint32_t id, uint32_t mark, unsigned length, ui
     if (held>high_packets) high_packets=held;
     if (held_bytes>high_bytes) high_bytes=held_bytes;
 }
+static int probe_control(const unsigned char *data, size_t size, int root, uint64_t now) {
+    if (!root || size!=22) return 0;
+    struct key key;memcpy(&key.ip,data+4,4);key.port=read16(data+8);key.ct=read32(data+10);
+    uint64_t until=read64(data+14);
+    if (!key.port || !key.ct || until<=now || until-now>TTL_NS) return 0;
+    expire(now);
+    unsigned f=find_flow(key);
+    if (f<FLOW_LIMIT && !authorized(key,now)) {
+        for (uint64_t i=head;i<tail;i++) {
+            struct packet *p=&packets[i%CAPACITY];
+            if (p->length && p->flow==f) { remove_packet(p,PROBE);break; }
+        }
+        expire(now);
+    }
+    return 1;
+}
 static int control(const unsigned char *data, size_t size, int root, uint64_t now) {
+    if (size>=4 && !memcmp(data,"CWS1",4)) return probe_control(data,size,root,now);
     if (!root || size<6 || memcmp(data,"CWE1",4)) return 0;
     unsigned count=read16(data+4);
     if (count>GRANT_LIMIT || size!=6+18*count) return 0;
@@ -189,10 +210,14 @@ static int control(const unsigned char *data, size_t size, int root, uint64_t no
         const unsigned char *r=data+6+18*i;
         memcpy(&next[i].key.ip,r,4);
         next[i].key.port=read16(r+4); next[i].key.ct=read32(r+6); next[i].until=read64(r+10);
-        if (!next[i].key.port || !next[i].key.ct || next[i].until<=now || next[i].until-now>11*TTL_NS) return 0;
+        if (!next[i].key.port || !next[i].key.ct || !next[i].until || (next[i].until>now && next[i].until-now>11*TTL_NS)) return 0;
         for (unsigned j=0;j<i;j++) if (equal(next[i].key,next[j].key)) return 0;
     }
-    memcpy(grants,next,count*sizeof(*next)); grant_count=count;
+    grant_count=0;
+    for (unsigned i=0;i<count;i++) {
+        if (next[i].until>now) grants[grant_count++]=next[i];
+        else control_expired++;
+    }
     expire(now);
     for (uint64_t i=head;i<tail;i++) {
         struct packet *p=&packets[i%CAPACITY];
@@ -205,8 +230,8 @@ static void report(void) {
            ",\"bounded\":%"PRIu64",\"invalid\":%"PRIu64",\"control_bad\":%"PRIu64
            ",\"control_ok\":%"PRIu64",\"held\":%u,\"held_bytes\":%u,\"high_packets\":%"PRIu64
            ",\"high_bytes\":%"PRIu64",\"netlink_enobufs\":%"PRIu64",\"send_calls\":%"PRIu64",\"candidate_sent\":%"PRIu64",\"candidate_failed\":%"PRIu64
-           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64"}\n",
-           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing);
+           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64",\"probed\":%"PRIu64",\"control_expired\":%"PRIu64"}\n",
+           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing,probed,control_expired);
     fflush(stdout);
 }
 static void signal_handler(int sig) { if (sig==SIGUSR1) reporting=1; else stopping=1; }
@@ -270,7 +295,7 @@ static int parse_packet(struct nlmsghdr *h) {
     if (size<ihl+8 || length<ihl+8 || length>1536 || read16(ip+ihl+4)!=length-ihl || read16(ip+ihl+2)!=32497) goto reject;
     if (a[NFQA_CAP_LEN] && (a[NFQA_CAP_LEN]->nla_len!=NLA_HDRLEN+4 || read32((char *)a[NFQA_CAP_LEN]+NLA_HDRLEN)!=length)) goto reject;
     memcpy(&key.ip,ip+12,4); key.port=read16(ip+ihl);
-    if (!key.port || (mark & RELEASE_MARK)) goto reject;
+    if (!key.port || (mark & (RELEASE_MARK|PROBE_MARK))) goto reject;
     hold(key,id,mark,length,clock_ns()); return 0;
 reject:
     invalid++; verdict(id,mark,0); return 0;
@@ -339,6 +364,33 @@ static void selftest(void) {
     expire(9*TTL_NS); assert(!held && !held_bytes && free_count==FLOW_LIMIT);
     for (unsigned i=0;i<BUCKETS;i++) assert(!buckets[i]);
     message[4]=0; message[5]=129; assert(!control(message,sizeof(message),1,2));
+    struct key probe_key={.ip=123,.port=456,.ct=99999};
+    unsigned char request[22]={ 'C','W','S','1' };
+    memcpy(request+4,&probe_key.ip,4);p=htons(probe_key.port);c=htonl(probe_key.ct);
+    memcpy(request+8,&p,2);memcpy(request+10,&c,4);
+    uint64_t until=10*TTL_NS+TTL_NS/2;uint32_t hi=htonl((uint32_t)(until>>32)),lo=htonl((uint32_t)until);
+    memcpy(request+14,&hi,4);memcpy(request+18,&lo,4);
+    hold(probe_key,1,0,128,10*TTL_NS);
+    assert(!control(request,sizeof(request),0,10*TTL_NS));
+    assert(!control(request,sizeof(request)-1,1,10*TTL_NS));
+    assert(control(request,sizeof(request),1,10*TTL_NS) && probed==1 && !held && !grant_count);
+    hold(probe_key,2,0,128,10*TTL_NS);
+    assert(held==1 && !authorized(probe_key,10*TTL_NS));
+    assert(!control(request,sizeof(request),1,until));
+    expire(11*TTL_NS);assert(!held && !held_bytes);
+    struct key newer=probe_key;newer.ct++;
+    hold(probe_key,3,0,128,12*TTL_NS);hold(newer,4,0,128,12*TTL_NS);
+    unsigned char snapshot[42]={ 'C','W','E','1',0,2 };
+    for (unsigned i=0;i<2;i++) {
+        unsigned char *record=snapshot+6+18*i;
+        memcpy(record,&probe_key.ip,4);memcpy(record+4,&p,2);
+        c=htonl(probe_key.ct+i);memcpy(record+6,&c,4);
+        until=12*TTL_NS+(i?TTL_NS/2:0);hi=htonl((uint32_t)(until>>32));lo=htonl((uint32_t)until);
+        memcpy(record+10,&hi,4);memcpy(record+14,&lo,4);
+    }
+    assert(control(snapshot,sizeof(snapshot),1,12*TTL_NS) && control_expired==1);
+    assert(!authorized(probe_key,12*TTL_NS) && authorized(newer,12*TTL_NS) && held==1);
+    expire(13*TTL_NS);assert(!held && !held_bytes && free_count==FLOW_LIMIT);
     puts("PASS escrow identity, revocation, expiry, packet/flow/byte bounds and root-only snapshots");
 }
 int main(int argc, char **argv) {

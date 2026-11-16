@@ -83,6 +83,11 @@ func TestColdwireProofLocalEvents(t *testing.T) {
 	if err != nil || n != 42 || !bytes.Equal(buffer[:4], []byte("CWP1")) || binary.BigEndian.Uint64(buffer[34:42]) != 42 {
 		t.Fatalf("invalid event n=%d err=%v", n, err)
 	}
+	var clock unix.Timespec
+	if err = unix.ClockGettime(unix.CLOCK_MONOTONIC, &clock); err != nil {
+		t.Fatal(err)
+	}
+	peer.coldwireProofLast = clock.Nano() + coldwireProofIntervalNS
 	peer.coldwireEndpointCandidate(keypair, 43)
 	peer.coldwireProof(endpoint, keypair, 43)
 	if _, _, err = unix.Recvfrom(fd, buffer, 0); err != unix.EAGAIN {
@@ -106,10 +111,25 @@ func TestColdwireProofLocalEvents(t *testing.T) {
 	if n, _, err = unix.Recvfrom(fd, buffer, 0); err != nil || n != 42 || binary.BigEndian.Uint16(buffer[16:18]) != 42501 {
 		t.Fatal("source-port move not reported", n, err)
 	}
+	lastProof, lastReturn, sent := peer.coldwireProofEndpoint, peer.coldwireReturnLast, peer.txBytes.Load()
 	peer.coldwireProof(endpoint, keypair, 43)
-	if _, _, err = unix.Recvfrom(fd, buffer, 0); err != unix.EAGAIN {
-		t.Fatal("late old endpoint generated a fresh proof", err)
+	if n, _, err = unix.Recvfrom(fd, buffer, 0); err != nil || n != 42 || string(buffer[:4]) != "CWA1" || binary.BigEndian.Uint64(buffer[34:42]) != 43 {
+		t.Fatal("valid reordered data did not produce an admission-only event", n, err)
 	}
+	if peer.coldwireProofEndpoint != lastProof || peer.endpoint.val.DstToString() != changed.DstToString() || peer.coldwireReturnLast != lastReturn || peer.txBytes.Load() != sent {
+		t.Fatal("admission-only data rewound the endpoint or triggered recovery")
+	}
+	peer.coldwireAdmissionLast = clock.Nano() + int64(time.Second)
+	peer.coldwireProof(endpoint, keypair, 42)
+	if _, _, err = unix.Recvfrom(fd, buffer, 0); err != unix.EAGAIN {
+		t.Fatal("admission-only notifications not bounded", err)
+	}
+	peer.keypairs.current = &Keypair{created: keypair.created.Add(time.Second), localIndex: 2}
+	peer.coldwireProof(changed, keypair, 43)
+	if _, _, err = unix.Recvfrom(fd, buffer, 0); err != unix.EAGAIN {
+		t.Fatal("a non-current keypair produced an admission event", err)
+	}
+	peer.keypairs.current = keypair
 	t.Run("retry-before-notification", func(t *testing.T) {
 		coldwireReturns = new(coldwireReturnCache)
 		now := time.Now()
@@ -149,13 +169,13 @@ func TestColdwireProofIntervalBoundary(t *testing.T) {
 	if !peer.coldwireProofDue("old", 1000000000) {
 		t.Fatal("first event omitted")
 	}
-	if peer.coldwireProofDue("old", 1049999999) {
+	if peer.coldwireProofDue("old", 1009999999) {
 		t.Fatal("interval not bounded")
 	}
-	if !peer.coldwireProofDue("old", 1050000000) {
-		t.Fatal("fresh event delayed past 50ms")
+	if !peer.coldwireProofDue("old", 1010000000) {
+		t.Fatal("fresh event delayed past 10ms")
 	}
-	if !peer.coldwireProofDue("new", 1050000001) {
+	if !peer.coldwireProofDue("new", 1010000001) {
 		t.Fatal("movement event delayed")
 	}
 }

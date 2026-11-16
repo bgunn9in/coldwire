@@ -22,6 +22,8 @@ import conntrack
 TABLE='awg_kernel_guard_lab'
 LEASE_SECONDS=10
 MAX_PENDING=128
+RECOVERY_SECONDS=1
+PEER_FLOWS=4
 POLL_SECONDS=.1
 EVENT=struct.Struct('!4sQ4sH16sQ')
 ESCROW_RECORD=struct.Struct('!4sHIQ')
@@ -46,29 +48,37 @@ class Entry:
     def __init__(self,escrow_socket=None):
         self.escrow_socket=escrow_socket
         self.flows={};self.observed={};self.looked_up={};self.auth_hints={};self.last_escrow=0
+        self.ready=set();self.probed=set()
         self.pending={};self.leases={};self.last_query={};self.peer_stamp={};self.history=[];self.stats={'queries':0,'grants':0,'rejected':0,'moves':0}
-    def hint(self,message,config,now,authenticated=True):
-        if set(message)!={'hint'} or type(message['hint']) is not int or not 1<=message['hint']<=65535:
-            self.stats['rejected']+=1;return False
-        port=message['hint']
+    def _observe(self,port,now):
         if port not in self.observed and len(self.observed)>=MAX_PENDING:
             protected=set(self.leases)|{v[0] for v in self.pending.values()}|{f for f,t in self.auth_hints.items() if t>now}
             available=[p for p in self.observed if self.flows.get(p) not in protected]
             if not available:self.stats['rejected']+=1;return False
             old=min(available,key=lambda p:self.observed[p]);stale=self.flows.pop(old,None);self.auth_hints.pop(stale,None);self.observed.pop(old);self.looked_up.pop(old,None)
         self.observed[port]=now
+        return True
+    def _remember(self,flow,now,authenticated):
+        port=flow.translated_port;previous=self.flows.get(port)
+        if previous!=flow:self.auth_hints.pop(previous,None)
+        self.flows[port]=flow;self.looked_up[port]=now
+        if authenticated:self.auth_hints[flow]=now+3
+    def hint(self,message,config,now,authenticated=True):
+        if set(message)!={'hint'} or type(message['hint']) is not int or not 1<=message['hint']<=65535:
+            self.stats['rejected']+=1;return False
+        port=message['hint']
+        if not self._observe(port,now):return False
         if now-self.looked_up.get(port,-10)<.5:
-            if authenticated and port in self.flows:self.auth_hints[self.flows[port]]=now+3
+            if authenticated and port in self.flows:
+                flow=self.flows[port];changed=self.auth_hints.get(flow,0)<=now
+                self.auth_hints[flow]=now+3
+                return changed
             return False
         self.looked_up[port]=now
         try:flow=read_flow(config,port)
         except (OSError,ValueError):
             self.stats['lookup_failed']=self.stats.get('lookup_failed',0)+1;return False
-        if flow:
-            previous=self.flows.get(port)
-            if previous!=flow:self.auth_hints.pop(previous,None)
-            self.flows[port]=flow
-            if authenticated:self.auth_hints[flow]=now+3
+        if flow:self._remember(flow,now,authenticated)
         else:self.auth_hints.pop(self.flows.pop(port,None),None)
         if not flow:self.observed.pop(port,None);self.looked_up.pop(port,None)
         return flow is not None
@@ -85,11 +95,14 @@ class Entry:
             value=conntrack.lookup(config['entry'],config['exit'],config['vpn_port'],None,original=(str(ipaddress.IPv4Address(address)),port),identity=identity)
         except (OSError,ValueError):return False
         if not value:return False
-        previous=self.flows.get(value[3])
-        if previous and previous.identity!=identity:self.looked_up.pop(value[3],None)
-        return self.hint({'hint':value[3]},config,now,authenticated=False)
+        flow=Flow(*value)
+        if not self._observe(flow.translated_port,now):return False
+        # Preserve the original-tuple/generation check instead of resolving the reply port again.
+        self._remember(flow,now,authenticated=False)
+        return True
     def queries(self,flows,now):
         self.pending={n:v for n,v in self.pending.items() if v[0] in flows and v[1]>now}
+        self.ready.intersection_update(self.pending);self.probed.intersection_update(self.pending)
         self.leases={f:v for f,v in self.leases.items() if f in flows and v[1]>now}
         self.last_query={f:t for f,t in self.last_query.items() if f in flows}
         self.auth_hints={f:t for f,t in self.auth_hints.items() if f in flows and t>now}
@@ -110,8 +123,18 @@ class Entry:
             if flow not in priority:unknown.append(flow);source_pending[flow.source]=source_pending.get(flow.source,0)+1
             if len(result)==16:break
         return result
+    def acknowledged(self,message,now):
+        if set(message)!={'ready'} or not nonce(message['ready']):return False
+        pending=self.pending.get(message['ready'])
+        if not pending or pending[1]<=now:return False
+        self.ready.add(message['ready']);return True
+    def probes(self,flows,now):
+        return [(n,f) for n,(f,deadline) in self.pending.items()
+                if self.escrow_socket and n in self.ready and n not in self.probed
+                and deadline>now and f in flows and self.auth_hints.get(f,0)>now
+                and (f not in self.leases or self.leases[f][1]<=now)]
     def confirm(self,message,flows,now):
-        if set(message)!={'nonce','peer','stamp'} or not nonce(message['nonce']) or not nonce(message['peer']) or type(message['stamp']) is not int or message['stamp']<=0:
+        if set(message) not in ({'nonce','peer','stamp'},{'nonce','peer','stamp','recovery'}) or type(message.get('recovery',False)) is not bool or not nonce(message['nonce']) or not nonce(message['peer']) or type(message['stamp']) is not int or message['stamp']<=0:
             self.stats['rejected']+=1;return False
         pending=self.pending.pop(message['nonce'],None)
         if not pending or pending[0] not in flows or pending[1]<=now or message['stamp']<=self.peer_stamp.get(message['peer'],0):
@@ -120,10 +143,15 @@ class Entry:
         if peer not in self.peer_stamp and len(self.peer_stamp)>=4096:
             self.stats['rejected']+=1;return False
         moved=[f for f,v in self.leases.items() if v[0]==peer and f!=flow]
-        for old in moved:del self.leases[old]
-        self.stats['moves']+=len(moved)
-        self.peer_stamp[peer]=message['stamp'];self.leases[flow]=(peer,now+LEASE_SECONDS)
-        self.history.append({'time_ns':int(now*1e9),'wall_ns':time.time_ns(),'flow':dataclasses.asdict(flow),'peer':peer,'replaced':[dataclasses.asdict(f) for f in moved]})
+        for old in moved:
+            if not message.get('recovery'):self.leases[old]=(peer,min(self.leases[old][1],now+RECOVERY_SECONDS))
+        if not message.get('recovery') and flow not in self.leases:self.stats['moves']+=bool(moved)
+        until=now+(RECOVERY_SECONDS if message.get('recovery') else LEASE_SECONDS)
+        if flow in self.leases and self.leases[flow][0]==peer:until=max(until,self.leases[flow][1])
+        self.peer_stamp[peer]=message['stamp'];self.leases[flow]=(peer,until)
+        evicted=sorted(moved,key=lambda f:self.leases[f][1])[:max(0,len(moved)+1-PEER_FLOWS)]
+        for old in evicted:del self.leases[old]
+        self.history.append({'time_ns':int(now*1e9),'wall_ns':time.time_ns(),'flow':dataclasses.asdict(flow),'peer':peer,'recovery':message.get('recovery',False),'replaced':[dataclasses.asdict(f) for f in evicted]})
         self.history=self.history[-256:]
         self.stats['grants']+=1;return True
 
@@ -135,11 +163,12 @@ class Exit:
         if set(message)!={'nonce','port'} or not nonce(message['nonce']) or type(message['port']) is not int or not 1<=message['port']<=65535 or message['nonce'] in self.pending or len(self.pending)>=MAX_PENDING:
             self.stats['rejected']+=1;return
         self.pending[message['nonce']]=(message['port'],int(now*1e9) if cutoff_ns is None else cutoff_ns,now+3);self.stats['queries']+=1
+        return True
     def event(self,data,now):
         self.stats['events']+=1
         if len(data)!=EVENT.size:self.stats['rejected']+=1;return []
         magic,stamp,address,port,peer,counter=EVENT.unpack(data)
-        if magic!=b'CWP1' or address!=self.entry or not port or stamp>int(now*1e9) or int(now*1e9)-stamp>10**9:
+        if magic not in (b'CWP1',b'CWA1') or address!=self.entry or not port or stamp>int(now*1e9) or int(now*1e9)-stamp>10**9:
             self.stats['rejected']+=1;return []
         messages=[]
         self.hint_tokens=min(16,self.hint_tokens+max(0,now-self.hint_time)*64);self.hint_time=now
@@ -149,7 +178,9 @@ class Exit:
         for request,(expected,cutoff,deadline) in list(self.pending.items()):
             if deadline<=now:del self.pending[request]
             elif expected==port and stamp>cutoff:
-                messages.append({'nonce':request,'peer':peer.hex(),'stamp':stamp});del self.pending[request];self.stats['proofs']+=1
+                proof={'nonce':request,'peer':peer.hex(),'stamp':stamp}
+                if magic==b'CWA1':proof['recovery']=True
+                messages.append(proof);del self.pending[request];self.stats['proofs']+=1
         return messages
 
 class Stream:
@@ -203,6 +234,16 @@ def install_leases(state,flows,now):
 def sync_escrow(state,now):
     state.last_escrow=now
     if not notify_escrow(state):state.stats['escrow_notify_failed']=state.stats.get('escrow_notify_failed',0)+1
+
+def probe_escrow(state,flow,now):
+    try:
+        if state.escrow_socket!=ESCROW_SOCKET:return False
+        parent=Path(ESCROW_SOCKET).parent.lstat();info=Path(ESCROW_SOCKET).lstat()
+        if not stat.S_ISDIR(parent.st_mode) or parent.st_uid or stat.S_IMODE(parent.st_mode)!=0o700 or not stat.S_ISSOCK(info.st_mode) or info.st_uid or stat.S_IMODE(info.st_mode)!=0o600:return False
+        data=b'CWS1'+ESCROW_RECORD.pack(ipaddress.IPv4Address(flow.source).packed,flow.port,flow.identity,int((now+RECOVERY_SECONDS)*1e9))
+        with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as connection:
+            connection.setblocking(False);return connection.sendto(data,ESCROW_SOCKET)==len(data)
+    except (OSError,ValueError,struct.error):return False
 
 def notify_escrow(state):
     """A notification cannot grant more than the kernel set just installed."""
@@ -281,10 +322,13 @@ def serve(config,role):
                         except (OSError,ssl.SSLError):connection.close()
                 if stream and stream.socket in ready:
                     for message in stream.read():
-                        if role=='exit':state.query(message,time.monotonic(),time.monotonic_ns())
+                        if role=='exit':
+                            if state.query(message,time.monotonic(),time.monotonic_ns()):stream.queue({'ready':message['nonce']})
                         else:
                             if 'hint' in message:
                                 if state.hint(message,config,time.monotonic()):next_tick=0
+                            elif 'ready' in message:
+                                if state.acknowledged(message,time.monotonic()):next_tick=0
                             else:
                                 request=message.get('nonce');pending=state.pending.get(request) if nonce(request) else None
                                 fresh=set()
@@ -305,7 +349,7 @@ def serve(config,role):
             except (OSError,ssl.SSLError,EOFError,AssertionError,ValueError):
                 if stream:stream.socket.close();stream=None
                 if role=='entry':
-                    state.pending.clear();next_connect=time.monotonic()+.2
+                    state.pending.clear();state.ready.clear();state.probed.clear();next_connect=time.monotonic()+.2
             now=time.monotonic()
             if role=='entry' and (now>=next_tick or lease_changed):
                 if now>=next_tick:
@@ -313,6 +357,10 @@ def serve(config,role):
                     if not stream:state.leases={f:v for f,v in state.leases.items() if f in flows and v[1]>now}
                     requests=state.queries(flows,now) if stream else []
                     for message in requests:stream.queue(message)
+                    for request,flow in state.probes(flows,now):
+                        try:current=read_flow(config,flow.translated_port)
+                        except (OSError,ValueError):current=None
+                        if current==flow and probe_escrow(state,flow,now):state.probed.add(request)
                     next_tick=now+POLL_SECONDS
                 shape=tuple(sorted((f.source,f.port,f.identity,v[0],v[1]) for f,v in state.leases.items()))
                 if shape!=last_lease_shape:

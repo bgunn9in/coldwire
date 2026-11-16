@@ -258,10 +258,28 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [v33 follow-up](validation-v33.md) and [data](results-v33.json)
+add a bounded forward probe after B acknowledges the nonce request. Fresh
+authentication of reordered data can release an old queue without selecting
+an old return endpoint. Short leases overlap for at most four flows per peer.
+The existing maintenance loop also handles an armed return retry when the
+client is quiet. Expired snapshot records no longer invalidate live records.
+Generation checks, buffer limits and 250-ms replay spacing remain. These
+changes do not establish a one-second bound or eliminate every admission loss.
+The patched receiver, both agents, holding process and escrow nftables rules
+must be upgraded together in the lab; normal installers do not enable them.
+
+The [v32 admission study](validation-v32.md) and [data](results-v32.json)
+fix candidate-generation handling and scheduler wakeup, and shorten local
+proof-event eligibility to 10 ms. Ordinary trials delivered all unique useful
+UDP packets. Deleting a pending conntrack generation reproduced admission
+loss; the exact cause of v31's 659 missing packets remains unproved.
+Replay spacing stays 250 ms. Late download replies remain.
+
 The [v31 latency study](validation-v31.md) and [data](results-v31.json)
 reject shorter work-proportional replay pacing. It did not reliably reduce
 the long tail and selected more packets for intermediate NAT mappings.
-The runtime remains v30, with a new coalescing regression. A churn trial
+Recovery keeps v30's pacing, with a coalescing regression. A churn trial
 also exposed true admission losses. There is still no one-second guarantee.
 
 The [v30 follow-up](validation-v30.md) and [data](results-v30.json) address
