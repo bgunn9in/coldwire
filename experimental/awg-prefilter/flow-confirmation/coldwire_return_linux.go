@@ -115,7 +115,7 @@ func coldwireReturnStorage() *coldwireReturnCache {
 	coldwireReturnOnce.Do(func() {
 		coldwireReturns = new(coldwireReturnCache)
 		go func() {
-			for now := range time.Tick(100 * time.Millisecond) {
+			for now := range time.Tick(10 * time.Millisecond) {
 				coldwireReturns.maintain(now)
 			}
 		}()

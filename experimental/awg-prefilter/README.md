@@ -258,6 +258,13 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [v35 latency study](validation-v35.md) ran 12 qualified trials: all
+4,340,141 useful UDP packets and all 1200 ping replies arrived. B's recovery
+maintenance period is now 10 ms instead of 100 ms; replay spacing remains
+250 ms. Three consecutive IP/NAT changes still produced a candidate maximum
+of 1383.822 ms; the single-change maximum was 687.638 ms. Total RTT did not
+improve in every pair, and a one-second response remains unguaranteed.
+
 The [v34 follow-up](validation-v34.md) adds an optional routed-bridge path
 that holds first packets after conntrack confirmation. A forced native-client
 test under multi-source noise preserved all three first packets that v33

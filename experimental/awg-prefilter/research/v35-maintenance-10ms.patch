@@ -1,0 +1,11 @@
+--- a/experimental/awg-prefilter/flow-confirmation/coldwire_return_linux.go
++++ b/experimental/awg-prefilter/flow-confirmation/coldwire_return_linux.go
+@@ -115,7 +115,7 @@
+ 	coldwireReturnOnce.Do(func() {
+ 		coldwireReturns = new(coldwireReturnCache)
+ 		go func() {
+-			for now := range time.Tick(100 * time.Millisecond) {
++			for now := range time.Tick(10 * time.Millisecond) {
+ 				coldwireReturns.maintain(now)
+ 			}
+ 		}()

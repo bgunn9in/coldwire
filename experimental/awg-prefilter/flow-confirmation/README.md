@@ -24,6 +24,13 @@ and [v18 measurements](../validation-v18.md).
 
 ## How admission works
 
+The [v35 latency study](../validation-v35.md) changes B's existing maintenance
+period from 100 to 10 ms, preserving the 250-ms replay spacing. All 4,340,141
+useful UDP packets and 1200 ping replies in 12 qualified trials arrived.
+Three consecutive moves still produced RTT up to 1383.822 ms; the candidate's
+single-move maximum was 687.638 ms. A's poll and C's expiry margin remain
+100 ms. Ordinary installers do not enable this prototype.
+
 The [v34 study](../validation-v34.md) adds an optional routed-bridge holding
 path for first packets whose conntrack entry is unconfirmed at prerouting.
 The bridge queue runs after L3 NAT and confirmation, then checks the original
@@ -299,7 +306,7 @@ The patched binary includes a separate lab option, disabled by default:
 B copies outbound encrypted transport packets into a shared ring. The ring
 holds at most 8192 packets and 8 MiB of ciphertext, plus fixed metadata.
 Only packets younger than 500 ms are eligible; an idle cleanup runs every
-100 ms. It stores a hash of the peer's public key and scalar keypair epoch
+10 ms. It stores a hash of the peer's public key and scalar keypair epoch
 fields, without retaining plaintext, session keys or keypair pointers.
 
 After a fresh, source-policy-valid transport packet selects a changed
@@ -340,7 +347,7 @@ authenticated move retargets the snapshot
 and appends newer eligible replies from the ring within those same budgets.
 A local insertion sequence prevents overlap from being copied twice.
 
-After cooldown, a fresh transport notification or the existing 100-ms
+After cooldown, a fresh transport notification or the existing 10-ms
 maintenance loop can make one deferred attempt for an armed move. Its
 source-policy check must already have passed; the current key and endpoint
 must still match. A stopped peer, closed device or disabled roaming prevents the retry;
