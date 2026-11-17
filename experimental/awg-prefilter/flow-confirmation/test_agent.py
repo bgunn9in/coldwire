@@ -1,4 +1,6 @@
 import importlib.util
+import copy
+import json
 from pathlib import Path
 import struct
 import stat
@@ -376,8 +378,105 @@ class ConfirmationTests(unittest.TestCase):
             agent.serve(config,'entry')
         self.assertEqual(installs[0],(10.0,set()))
         self.assertEqual(installs[1],(10.02,{self.flow}))
-        self.assertEqual(installs[2],(10.06,set()))
-        self.assertLess(installs[2][0],10+agent.POLL_SECONDS)
+        self.assertEqual(len(installs),2)
+        self.assertEqual(self.entry.leases[self.flow],('ab'*16,20.02))
+
+    def restoration(self,saved=None,kernel=None,current=None,late=False):
+        config=self.config|{'status':'unused'};state=agent.Entry(agent.ESCROW_SOCKET if late else None,late)
+        original=agent.Entry(state.escrow_socket,late);original.leases[self.flow]=('ab'*16,19.5)
+        value={'time_ns':10_000_000_000,**agent.entry_values(original,config,'boot',10)}
+        if saved:saved(value)
+        def nft(args,**kwargs):
+            table=args[5];family=args[4]
+            elements=[{'elem':{'val':{'concat':[self.flow.source,self.flow.port,self.flow.identity]},'expires':7}}]
+            if kernel:elements=kernel(family,elements)
+            return mock.Mock(stdout=json.dumps({'nftables':[{'set':{'family':family,'table':table,'name':'trusted','elem':elements}}]}))
+        path=mock.Mock();path.stat.return_value.st_size=1000;path.read_text.return_value=json.dumps(value)
+        with mock.patch.object(agent,'private_file',return_value=path), \
+             mock.patch.object(agent.time,'monotonic_ns',return_value=11_000_000_000), \
+             mock.patch.object(agent.time,'monotonic',return_value=11), \
+             mock.patch.object(agent.subprocess,'run',side_effect=nft), \
+             mock.patch.object(agent,'read_flow',return_value=self.flow if current is None else current):
+            count=agent.restore_leases(state,config,'boot')
+        return count,state
+
+    def test_restart_restores_only_intersection_without_challenges_or_extension(self):
+        count,state=self.restoration(late=True)
+        self.assertEqual(count,1);self.assertEqual(state.leases[self.flow],('ab'*16,18))
+        self.assertEqual(state.flows[self.flow.translated_port],self.flow)
+        self.assertFalse(state.pending or state.peer_stamp or state.auth_hints or state.history)
+        self.assertEqual(state.stats['grants'],0)
+        count,state=self.restoration(saved=lambda s:s['leases'][0].update(deadline_ns=12_000_000_000))
+        self.assertEqual(state.leases[self.flow][1],12)
+
+    def test_restart_rejects_expired_missing_or_changed_generation(self):
+        for mutate in (lambda s:s['leases'][0].update(deadline_ns=11_000_000_000),):
+            self.assertEqual(self.restoration(saved=mutate)[0],0)
+        self.assertEqual(self.restoration(kernel=lambda f,e:[])[0],0)
+        self.assertEqual(self.restoration(kernel=lambda f,e:e if f=='ip' else [],late=True)[0],0)
+        self.assertEqual(self.restoration(current=agent.dataclasses.replace(self.flow,identity=124))[0],0)
+        self.assertEqual(self.restoration(kernel=lambda f,e:[{'elem':e[0]['elem']|{'expires':0}}])[0],0)
+
+    def test_restart_cache_context_bounds_and_malformed_records_fail_closed(self):
+        for mutate in (lambda s:s.update(lease_boot='old'),lambda s:s.update(time_ns=0),
+                       lambda s:s.update(time_ns=12_000_000_000),lambda s:s['lease_context'].__setitem__(2,443),
+                       lambda s:s['leases'][0].update(identity=True),lambda s:s['leases'][0].update(peer='bad'),
+                       lambda s:s['leases'][0].update(deadline_ns=21_000_000_000),
+                       lambda s:s['leases'].append(copy.deepcopy(s['leases'][0])),
+                       lambda s:s.update(leases=[{}])):
+            count,state=self.restoration(saved=mutate)
+            self.assertEqual(count,0);self.assertFalse(state.leases or state.flows)
+            self.assertEqual(state.stats['restore_rejected'],1)
+        for mutate in (lambda f,e:[{'elem':e[0]['elem']|{'expires':True}}],lambda f,e:e*2):
+            self.assertEqual(self.restoration(kernel=mutate)[0],0)
+
+    def test_restart_requires_private_cache_and_live_kernel_query(self):
+        config=self.config|{'status':'unused'}
+        with mock.patch.object(agent,'private_file',side_effect=AssertionError):
+            self.assertEqual(agent.restore_leases(self.entry,config,'boot'),0)
+        self.assertFalse(self.entry.leases)
+        path=mock.Mock();path.stat.return_value.st_size=262145
+        with mock.patch.object(agent,'private_file',return_value=path):
+            self.assertEqual(agent.restore_leases(self.entry,config,'boot'),0)
+        path.read_text.assert_not_called()
+
+    def test_restart_candidates_need_new_proof_and_keep_original_observation_age(self):
+        def candidates(saved):
+            saved['leases']=[]
+            saved['candidates']=[agent.dataclasses.asdict(self.flow)|{'observed_ns':9_000_000_000}]
+        count,state=self.restoration(saved=candidates,kernel=lambda f,e:[])
+        self.assertEqual(count,0);self.assertFalse(state.leases or state.pending or state.auth_hints)
+        self.assertEqual(state.stats['restored_candidates'],1)
+        self.assertEqual(state.observed[self.flow.translated_port],9)
+        request=state.queries({self.flow},11)[0]
+        self.assertTrue(agent.nonce(request['nonce']))
+        self.assertFalse(state.confirm({'nonce':'00'*16,'peer':'ab'*16,'stamp':1},{self.flow},11))
+        self.assertFalse(state.leases)
+
+    def test_restart_candidates_reject_changed_expired_and_future_records(self):
+        def candidates(saved):
+            saved['leases']=[]
+            saved['candidates']=[agent.dataclasses.asdict(self.flow)|{'observed_ns':9_000_000_000}]
+        count,state=self.restoration(saved=candidates,current=agent.dataclasses.replace(self.flow,identity=124))
+        self.assertFalse(state.flows)
+        for seen in (0,12_000_000_000):
+            def mutate(saved):
+                candidates(saved);saved['candidates'][0]['observed_ns']=seen
+            count,state=self.restoration(saved=mutate)
+            self.assertFalse(state.flows or state.leases)
+
+    def test_fatal_running_loop_revokes_existing_leases(self):
+        config=self.config|{'status':'unused'};self.entry.leases[self.flow]=('ab'*16,20)
+        with mock.patch.object(agent.os,'geteuid',return_value=0,create=True), \
+             mock.patch.object(agent.Path,'read_text',return_value='kit-entry'), \
+             mock.patch.object(agent,'context'),mock.patch.object(agent,'restore_leases'), \
+             mock.patch.object(agent,'Entry',return_value=self.entry), \
+             mock.patch.object(agent.signal,'signal'), \
+             mock.patch.object(agent.socket,'create_connection',side_effect=OSError), \
+             mock.patch.object(agent.select,'select',side_effect=RuntimeError('fatal')), \
+             mock.patch.object(agent,'install_leases') as install,mock.patch.object(agent,'snapshot'):
+            with self.assertRaisesRegex(RuntimeError,'fatal'):agent.serve(config,'entry')
+        self.assertFalse(self.entry.leases);self.assertEqual(install.call_args.args[1],set())
 
     def test_escrow_is_optional_and_follows_successful_kernel_install(self):
         self.entry.leases[self.flow]=('ab'*16,20)

@@ -283,6 +283,74 @@ def snapshot(path,state,**values):
     value={'time_ns':time.monotonic_ns(),'stats':state.stats,**values}
     target=Path(path);temporary=target.with_suffix('.tmp');temporary.write_text(json.dumps(value)+'\n');temporary.replace(target)
 
+def entry_values(state,config,boot,now):
+    return {'lease_boot':boot,'lease_context':[config['entry'],config['exit'],config['vpn_port'],state.late_escrow],
+            'leases':[dataclasses.asdict(f)|{'peer':v[0],'expires_in':max(0,v[1]-now),'deadline_ns':int(v[1]*1e9)} for f,v in state.leases.items()],
+            'candidates':[dataclasses.asdict(f)|{'observed_ns':int(state.observed[p]*1e9)} for p,f in state.flows.items() if p in state.observed and now-state.observed[p]<LEASE_SECONDS],
+            'history':state.history}
+
+def cached_flow(record):
+    flow=Flow(*(record[k] for k in ('source','port','identity','translated_port')))
+    assert str(ipaddress.IPv4Address(flow.source))==flow.source
+    assert type(flow.port) is int and 1<=flow.port<=65535 and type(flow.translated_port) is int and 1<=flow.translated_port<=65535
+    assert type(flow.identity) is int and 1<=flow.identity<=0xffffffff
+    return flow
+
+def restore_leases(state,config,boot):
+    """A cache can only shorten a live kernel lease of the same conntrack generation."""
+    try:
+        path=private_file(config['status']);assert path.stat().st_size<=262144
+        saved=json.loads(path.read_text());now_ns=time.monotonic_ns()
+        assert saved['lease_boot']==boot and saved['lease_context']==[config['entry'],config['exit'],config['vpn_port'],state.late_escrow]
+        stamp=saved['time_ns'];assert type(stamp) is int and 0<=now_ns-stamp<=LEASE_SECONDS*10**9
+        records=saved['leases'];assert isinstance(records,list) and len(records)<=MAX_PENDING
+        live=[]
+        for family,table in [('ip',TABLE)]+([('bridge',LATE_TABLE)] if state.late_escrow else []):
+            before=time.monotonic_ns()
+            result=subprocess.run(['nft','-j','list','set',family,table,'trusted'],text=True,capture_output=True,timeout=2,check=True)
+            sets=[x['set'] for x in json.loads(result.stdout)['nftables'] if 'set' in x]
+            assert len(sets)==1 and sets[0]['family']==family and sets[0]['table']==table and sets[0]['name']=='trusted'
+            elements=sets[0].get('elem',[]);assert isinstance(elements,list) and len(elements)<=4096
+            deadlines={}
+            for item in elements:
+                element=item['elem'];source,port,identity=element['val']['concat'];remaining=element['expires']
+                assert str(ipaddress.IPv4Address(source))==source and type(port) is int and 1<=port<=65535
+                assert type(identity) is int and 1<=identity<=0xffffffff and type(remaining) is int and 0<=remaining<=LEASE_SECONDS
+                key=(source,port,identity);assert key not in deadlines
+                # nft JSON reports whole seconds, rounded down; time before GET is conservative.
+                deadlines[key]=before+remaining*10**9
+            live.append(deadlines)
+        restored={};peers={}
+        for record in records:
+            flow=cached_flow(record)
+            assert nonce(record['peer']) and flow not in restored
+            deadline=record['deadline_ns'];assert type(deadline) is int and deadline<=stamp+LEASE_SECONDS*10**9
+            key=(flow.source,flow.port,flow.identity)
+            deadline=min([deadline]+[values.get(key,0) for values in live])
+            if deadline<=time.monotonic_ns() or read_flow(config,flow.translated_port)!=flow:continue
+            peer=record['peer'];peers[peer]=peers.get(peer,0)+1;assert peers[peer]<=PEER_FLOWS
+            restored[flow]=(peer,deadline/1e9)
+        records=saved.get('candidates',[]);assert isinstance(records,list) and len(records)<=MAX_PENDING
+        observed={};ports=set()
+        for record in records:
+            flow=cached_flow(record);seen=record['observed_ns']
+            assert type(seen) is int and seen<=stamp and flow.translated_port not in ports
+            ports.add(flow.translated_port)
+            if now_ns-seen>=LEASE_SECONDS*10**9 or flow in restored:continue
+            if read_flow(config,flow.translated_port)==flow:observed[flow]=seen/1e9
+        assert len(restored)+len(observed)<=MAX_PENDING
+    except FileNotFoundError:return 0
+    except (OSError,ValueError,AssertionError,KeyError,TypeError,OverflowError,subprocess.SubprocessError):
+        state.stats['restore_rejected']=state.stats.get('restore_rejected',0)+1;return 0
+    now=time.monotonic()
+    for flow in restored:
+        state._observe(flow.translated_port,now);state._remember(flow,now,False)
+    state.leases.update(restored);state.stats['restored_leases']=len(restored)
+    for flow,seen in observed.items():
+        state._observe(flow.translated_port,seen);state._remember(flow,now,False)
+    state.stats['restored_candidates']=len(observed)
+    return len(restored)
+
 def serve(config,role):
     assert os.geteuid()==0 and Path('/etc/hostname').read_text().strip()=='kit-'+role
     for name in ('entry','exit'):assert ipaddress.IPv4Address(config[name]).is_private
@@ -290,6 +358,7 @@ def serve(config,role):
     escrow_socket=config.get('escrow_socket') if role=='entry' else None
     assert escrow_socket in (None,ESCROW_SOCKET)
     ctx=context(config,role);alive=True
+    boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip() if role=='entry' else None
     def stop(*_):
         nonlocal alive
         alive=False
@@ -313,6 +382,7 @@ def serve(config,role):
                     except ConnectionRefusedError:candidate_path.unlink()
                     else:raise OSError('Candidate helper is already running')
             candidates.bind(str(candidate_path));candidate_path.chmod(0o600)
+        restore_leases(state,config,boot)
     try:
         while alive:
             now=time.monotonic()
@@ -396,13 +466,14 @@ def serve(config,role):
             if now-last_status>=.5:
                 values={'connected':stream is not None,'pending':len(state.pending)}
                 if role=='entry':
-                    values['leases']=[dataclasses.asdict(f)|{'peer':v[0],'expires_in':max(0,v[1]-now)} for f,v in state.leases.items()]
-                    values['history']=state.history
+                    values.update(entry_values(state,config,boot,now))
                 snapshot(config['status'],state,**values);last_status=now
     finally:
         if stream:stream.socket.close()
         if candidates:candidates.close();candidate_path.unlink(missing_ok=True)
-        if role=='entry':state.leases.clear();install_leases(state,set(),time.monotonic())
+        if role=='entry':
+            if alive:state.leases.clear();install_leases(state,set(),time.monotonic())
+            snapshot(config['status'],state,connected=False,pending=0,**entry_values(state,config,boot,time.monotonic()))
         else:listener.close();events.close();path.unlink(missing_ok=True)
 
 if __name__=='__main__':

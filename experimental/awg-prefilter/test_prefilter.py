@@ -9,11 +9,12 @@ import subprocess
 import tempfile
 import unittest
 
-from export_keys import export
+from export_keys import export, wire_parameters
 
 HERE = Path(__file__).resolve().parent
 BINARY = Path(os.environ.get('PREFILTER_BINARY', str(HERE / 'prefilter'))).resolve()
 VECTORS = json.loads((HERE / 'test-vectors.json').read_text())
+WIRE_VECTORS = json.loads((HERE / 'test-wire-vectors.json').read_text())
 
 
 def packet(payload):
@@ -150,7 +151,8 @@ class PrefilterTests(unittest.TestCase):
         state['parameters'].update({'H' + str(i): str(i) for i in range(1, 5)})
         output = self.key.with_name('exported')
         export(state, output)
-        self.assertEqual(output.read_text(), self.key.read_text())
+        self.assertEqual(output.read_text(), self.key.read_text()+''.join(f'{k}={v}\n' for k,v in wire_parameters(state['parameters']).items()))
+        self.assertNotIn('DO-NOT-EXPORT', output.read_text())
         self.assertEqual(output.stat().st_mode & 0o777, 0o600)
         with self.assertRaises(FileExistsError):
             export(state, output)
@@ -158,8 +160,46 @@ class PrefilterTests(unittest.TestCase):
             with self.subTest(address=address), self.assertRaises(ValueError):
                 export(dict(state, endpoint=address), self.key.with_name('refused'))
         state['parameters']['S4'] = '16'
-        with self.assertRaises(ValueError):
-            export(state, self.key.with_name('refused'))
+        export(state, self.key.with_name('changed-padding'))
+
+    def test_wire_validation_rejects_ambiguous_or_unusable_parameters(self):
+        parameters={**{f'S{i}':'12' for i in range(1,5)},**{f'H{i}':str(i) for i in range(1,5)}}
+        for key,value in [('S1','11'),('S2','65507'),('S3',True),('S4','-1'),
+                          ('H1','2-10'),('H1','10-9'),('H4','4294967296'),('H2','-1'),
+                          ('H3','1-2-3'),('RandomTrailers','maybe')]:
+            with self.subTest(key=key,value=value),self.assertRaises(ValueError):
+                wire_parameters(parameters|{key:value})
+        self.assertEqual(wire_parameters(parameters|{'H1':'0','H4':'4294967294-4294967295'})['H4'],'4294967294-4294967295')
+
+    def test_upstream_go_vectors_for_padding_header_ranges_and_trailers(self):
+        for case in WIRE_VECTORS['cases']:
+            parameters=wire_parameters(case['parameters'])
+            self.key.write_text('HeaderProtectionKey='+WIRE_VECTORS['header_key']+'\nServerPublicKey='+WIRE_VECTORS['server_public_key']+'\n'+''.join(f'{k}={v}\n' for k,v in parameters.items()))
+            copied=max(68+int(parameters[f'S{i}'])+n for i,n in enumerate((132,76,4,4),1))
+            for vector in case['packets']:
+                number=vector['type'];payload=bytes.fromhex(vector['payload'])
+                reason=('init','response','cookie','transport')[number-1]
+                with self.subTest(case=case['name'],number=number,header=vector['header']):
+                    raw=packet(payload)
+                    self.check(raw,True,reason)
+                    raw=packet(payload+bytes(2048))
+                    allowed=parameters['RandomTrailers']=='1' or number==4
+                    self.check(raw,allowed,reason if allowed else 'header')
+                    self.check(raw[:copied],allowed,reason if allowed else 'header',original_length=len(raw))
+                    if number<3:
+                        damaged=bytearray(payload);damaged[int(parameters[f'S{number}'])+30]^=1
+                        self.check(packet(damaged),False,'mac1')
+
+    def test_c_wire_parser_rejects_partial_duplicate_and_invalid_settings(self):
+        original=self.key.read_text()
+        full=''.join(f'{k}={v}\n' for k,v in wire_parameters({**{f'S{i}':'12' for i in range(1,5)},**{f'H{i}':str(i) for i in range(1,5)}}).items())
+        for value in ('S1=12\n',full+'S1=12\n',full+'Unknown=1\n',full.replace('S1=12','S1=11'),
+                      full.replace('H1=1','H1=2-10'),full.replace('H1=1','H1=4294967296'),
+                      full.replace('H1=1','H1=4-3'),full.replace('RandomTrailers=0','RandomTrailers=true')):
+            self.key.write_text(original+value)
+            result=subprocess.run([str(BINARY),'--check',str(self.key)],input=b'',capture_output=True)
+            self.assertEqual(result.returncode,1)
+            self.assertNotIn(VECTORS['header_key'].encode(),result.stdout+result.stderr)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,892 @@
+--- a/experimental/awg-prefilter/export_keys.py
++++ b/experimental/awg-prefilter/export_keys.py
+@@ -1,10 +1,38 @@
+-"""Export only the two prefilter inputs from a disposable native AWG lab exit."""
++"""Export header keys and wire parameters from a disposable native AWG exit."""
+ import argparse
+ import base64
+ import ipaddress
+ import json
+ import os
+ from pathlib import Path
++import re
++
++
++def wire_parameters(parameters):
++    values = {}
++    ranges = []
++    for i, size in enumerate((148, 92, 64, 32), 1):
++        padding = parameters['S' + str(i)]
++        if isinstance(padding, bool) or not re.fullmatch(r'[0-9]+', str(padding)):
++            raise ValueError('Invalid AWG padding')
++        padding = int(padding)
++        if not 12 <= padding <= 65507 - size:
++            raise ValueError('Header protection requires a usable IPv4 padding of at least 12')
++        values['S' + str(i)] = str(padding)
++        header = str(parameters['H' + str(i)])
++        if not re.fullmatch(r'[0-9]+(?:-[0-9]+)?', header):
++            raise ValueError('Invalid AWG header range')
++        bounds = [int(n) for n in header.split('-')]
++        low, high = bounds[0], bounds[-1]
++        if not 0 <= low <= high <= 0xffffffff or any(low <= b and a <= high for a, b in ranges):
++            raise ValueError('AWG header ranges must be valid and disjoint')
++        ranges.append((low, high))
++        values['H' + str(i)] = str(low) if low == high else f'{low}-{high}'
++    trailers = str(parameters.get('RandomTrailers', 'off')).lower()
++    if trailers not in ('true', 'false', 'on', 'off', '1', '0'):
++        raise ValueError('Invalid RandomTrailers value')
++    values['RandomTrailers'] = '1' if trailers in ('true', 'on', '1') else '0'
++    return values
+ 
+ 
+ def export(state, output):
+@@ -14,14 +42,14 @@
+     if state.get('installer') != 'awg-relay-kit-native-v1':
+         raise ValueError('Native kit-managed lab exit required')
+     parameters = state['parameters']
+-    if any(str(parameters['S' + str(i)]) != '12' or str(parameters['H' + str(i)]) != str(i) for i in range(1, 5)):
+-        raise ValueError('Prototype requires S1-S4=12 and H1-H4=1,2,3,4')
++    wire = wire_parameters(parameters)
+     values = [parameters['HeaderProtectionKey'], state['public_key']]
+     for value in values:
+         decoded = base64.b64decode(value, validate=True)
+         if len(decoded) != 32 or decoded == bytes(32) or base64.b64encode(decoded).decode() != value:
+             raise ValueError('Invalid or disabled lab key')
+     contents = 'HeaderProtectionKey=' + values[0] + '\nServerPublicKey=' + values[1] + '\n'
++    contents += ''.join(f'{key}={value}\n' for key, value in wire.items())
+     fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+     with os.fdopen(fd, 'w') as stream:
+         stream.write(contents)
+--- a/experimental/awg-prefilter/flow-confirmation/agent.py
++++ b/experimental/awg-prefilter/flow-confirmation/agent.py
+@@ -283,6 +283,74 @@
+     value={'time_ns':time.monotonic_ns(),'stats':state.stats,**values}
+     target=Path(path);temporary=target.with_suffix('.tmp');temporary.write_text(json.dumps(value)+'\n');temporary.replace(target)
+ 
++def entry_values(state,config,boot,now):
++    return {'lease_boot':boot,'lease_context':[config['entry'],config['exit'],config['vpn_port'],state.late_escrow],
++            'leases':[dataclasses.asdict(f)|{'peer':v[0],'expires_in':max(0,v[1]-now),'deadline_ns':int(v[1]*1e9)} for f,v in state.leases.items()],
++            'candidates':[dataclasses.asdict(f)|{'observed_ns':int(state.observed[p]*1e9)} for p,f in state.flows.items() if p in state.observed and now-state.observed[p]<LEASE_SECONDS],
++            'history':state.history}
++
++def cached_flow(record):
++    flow=Flow(*(record[k] for k in ('source','port','identity','translated_port')))
++    assert str(ipaddress.IPv4Address(flow.source))==flow.source
++    assert type(flow.port) is int and 1<=flow.port<=65535 and type(flow.translated_port) is int and 1<=flow.translated_port<=65535
++    assert type(flow.identity) is int and 1<=flow.identity<=0xffffffff
++    return flow
++
++def restore_leases(state,config,boot):
++    """A cache can only shorten a live kernel lease of the same conntrack generation."""
++    try:
++        path=private_file(config['status']);assert path.stat().st_size<=262144
++        saved=json.loads(path.read_text());now_ns=time.monotonic_ns()
++        assert saved['lease_boot']==boot and saved['lease_context']==[config['entry'],config['exit'],config['vpn_port'],state.late_escrow]
++        stamp=saved['time_ns'];assert type(stamp) is int and 0<=now_ns-stamp<=LEASE_SECONDS*10**9
++        records=saved['leases'];assert isinstance(records,list) and len(records)<=MAX_PENDING
++        live=[]
++        for family,table in [('ip',TABLE)]+([('bridge',LATE_TABLE)] if state.late_escrow else []):
++            before=time.monotonic_ns()
++            result=subprocess.run(['nft','-j','list','set',family,table,'trusted'],text=True,capture_output=True,timeout=2,check=True)
++            sets=[x['set'] for x in json.loads(result.stdout)['nftables'] if 'set' in x]
++            assert len(sets)==1 and sets[0]['family']==family and sets[0]['table']==table and sets[0]['name']=='trusted'
++            elements=sets[0].get('elem',[]);assert isinstance(elements,list) and len(elements)<=4096
++            deadlines={}
++            for item in elements:
++                element=item['elem'];source,port,identity=element['val']['concat'];remaining=element['expires']
++                assert str(ipaddress.IPv4Address(source))==source and type(port) is int and 1<=port<=65535
++                assert type(identity) is int and 1<=identity<=0xffffffff and type(remaining) is int and 0<=remaining<=LEASE_SECONDS
++                key=(source,port,identity);assert key not in deadlines
++                # nft JSON reports whole seconds, rounded down; time before GET is conservative.
++                deadlines[key]=before+remaining*10**9
++            live.append(deadlines)
++        restored={};peers={}
++        for record in records:
++            flow=cached_flow(record)
++            assert nonce(record['peer']) and flow not in restored
++            deadline=record['deadline_ns'];assert type(deadline) is int and deadline<=stamp+LEASE_SECONDS*10**9
++            key=(flow.source,flow.port,flow.identity)
++            deadline=min([deadline]+[values.get(key,0) for values in live])
++            if deadline<=time.monotonic_ns() or read_flow(config,flow.translated_port)!=flow:continue
++            peer=record['peer'];peers[peer]=peers.get(peer,0)+1;assert peers[peer]<=PEER_FLOWS
++            restored[flow]=(peer,deadline/1e9)
++        records=saved.get('candidates',[]);assert isinstance(records,list) and len(records)<=MAX_PENDING
++        observed={};ports=set()
++        for record in records:
++            flow=cached_flow(record);seen=record['observed_ns']
++            assert type(seen) is int and seen<=stamp and flow.translated_port not in ports
++            ports.add(flow.translated_port)
++            if now_ns-seen>=LEASE_SECONDS*10**9 or flow in restored:continue
++            if read_flow(config,flow.translated_port)==flow:observed[flow]=seen/1e9
++        assert len(restored)+len(observed)<=MAX_PENDING
++    except FileNotFoundError:return 0
++    except (OSError,ValueError,AssertionError,KeyError,TypeError,OverflowError,subprocess.SubprocessError):
++        state.stats['restore_rejected']=state.stats.get('restore_rejected',0)+1;return 0
++    now=time.monotonic()
++    for flow in restored:
++        state._observe(flow.translated_port,now);state._remember(flow,now,False)
++    state.leases.update(restored);state.stats['restored_leases']=len(restored)
++    for flow,seen in observed.items():
++        state._observe(flow.translated_port,seen);state._remember(flow,now,False)
++    state.stats['restored_candidates']=len(observed)
++    return len(restored)
++
+ def serve(config,role):
+     assert os.geteuid()==0 and Path('/etc/hostname').read_text().strip()=='kit-'+role
+     for name in ('entry','exit'):assert ipaddress.IPv4Address(config[name]).is_private
+@@ -290,6 +358,7 @@
+     escrow_socket=config.get('escrow_socket') if role=='entry' else None
+     assert escrow_socket in (None,ESCROW_SOCKET)
+     ctx=context(config,role);alive=True
++    boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip() if role=='entry' else None
+     def stop(*_):
+         nonlocal alive
+         alive=False
+@@ -313,6 +382,7 @@
+                     except ConnectionRefusedError:candidate_path.unlink()
+                     else:raise OSError('Candidate helper is already running')
+             candidates.bind(str(candidate_path));candidate_path.chmod(0o600)
++        restore_leases(state,config,boot)
+     try:
+         while alive:
+             now=time.monotonic()
+@@ -396,13 +466,14 @@
+             if now-last_status>=.5:
+                 values={'connected':stream is not None,'pending':len(state.pending)}
+                 if role=='entry':
+-                    values['leases']=[dataclasses.asdict(f)|{'peer':v[0],'expires_in':max(0,v[1]-now)} for f,v in state.leases.items()]
+-                    values['history']=state.history
++                    values.update(entry_values(state,config,boot,now))
+                 snapshot(config['status'],state,**values);last_status=now
+     finally:
+         if stream:stream.socket.close()
+         if candidates:candidates.close();candidate_path.unlink(missing_ok=True)
+-        if role=='entry':state.leases.clear();install_leases(state,set(),time.monotonic())
++        if role=='entry':
++            if alive:state.leases.clear();install_leases(state,set(),time.monotonic())
++            snapshot(config['status'],state,connected=False,pending=0,**entry_values(state,config,boot,time.monotonic()))
+         else:listener.close();events.close();path.unlink(missing_ok=True)
+ 
+ if __name__=='__main__':
+--- a/experimental/awg-prefilter/flow-confirmation/test_agent.py
++++ b/experimental/awg-prefilter/flow-confirmation/test_agent.py
+@@ -1,4 +1,6 @@
+ import importlib.util
++import copy
++import json
+ from pathlib import Path
+ import struct
+ import stat
+@@ -376,8 +378,105 @@
+             agent.serve(config,'entry')
+         self.assertEqual(installs[0],(10.0,set()))
+         self.assertEqual(installs[1],(10.02,{self.flow}))
+-        self.assertEqual(installs[2],(10.06,set()))
+-        self.assertLess(installs[2][0],10+agent.POLL_SECONDS)
++        self.assertEqual(len(installs),2)
++        self.assertEqual(self.entry.leases[self.flow],('ab'*16,20.02))
++
++    def restoration(self,saved=None,kernel=None,current=None,late=False):
++        config=self.config|{'status':'unused'};state=agent.Entry(agent.ESCROW_SOCKET if late else None,late)
++        original=agent.Entry(state.escrow_socket,late);original.leases[self.flow]=('ab'*16,19.5)
++        value={'time_ns':10_000_000_000,**agent.entry_values(original,config,'boot',10)}
++        if saved:saved(value)
++        def nft(args,**kwargs):
++            table=args[5];family=args[4]
++            elements=[{'elem':{'val':{'concat':[self.flow.source,self.flow.port,self.flow.identity]},'expires':7}}]
++            if kernel:elements=kernel(family,elements)
++            return mock.Mock(stdout=json.dumps({'nftables':[{'set':{'family':family,'table':table,'name':'trusted','elem':elements}}]}))
++        path=mock.Mock();path.stat.return_value.st_size=1000;path.read_text.return_value=json.dumps(value)
++        with mock.patch.object(agent,'private_file',return_value=path), \
++             mock.patch.object(agent.time,'monotonic_ns',return_value=11_000_000_000), \
++             mock.patch.object(agent.time,'monotonic',return_value=11), \
++             mock.patch.object(agent.subprocess,'run',side_effect=nft), \
++             mock.patch.object(agent,'read_flow',return_value=self.flow if current is None else current):
++            count=agent.restore_leases(state,config,'boot')
++        return count,state
++
++    def test_restart_restores_only_intersection_without_challenges_or_extension(self):
++        count,state=self.restoration(late=True)
++        self.assertEqual(count,1);self.assertEqual(state.leases[self.flow],('ab'*16,18))
++        self.assertEqual(state.flows[self.flow.translated_port],self.flow)
++        self.assertFalse(state.pending or state.peer_stamp or state.auth_hints or state.history)
++        self.assertEqual(state.stats['grants'],0)
++        count,state=self.restoration(saved=lambda s:s['leases'][0].update(deadline_ns=12_000_000_000))
++        self.assertEqual(state.leases[self.flow][1],12)
++
++    def test_restart_rejects_expired_missing_or_changed_generation(self):
++        for mutate in (lambda s:s['leases'][0].update(deadline_ns=11_000_000_000),):
++            self.assertEqual(self.restoration(saved=mutate)[0],0)
++        self.assertEqual(self.restoration(kernel=lambda f,e:[])[0],0)
++        self.assertEqual(self.restoration(kernel=lambda f,e:e if f=='ip' else [],late=True)[0],0)
++        self.assertEqual(self.restoration(current=agent.dataclasses.replace(self.flow,identity=124))[0],0)
++        self.assertEqual(self.restoration(kernel=lambda f,e:[{'elem':e[0]['elem']|{'expires':0}}])[0],0)
++
++    def test_restart_cache_context_bounds_and_malformed_records_fail_closed(self):
++        for mutate in (lambda s:s.update(lease_boot='old'),lambda s:s.update(time_ns=0),
++                       lambda s:s.update(time_ns=12_000_000_000),lambda s:s['lease_context'].__setitem__(2,443),
++                       lambda s:s['leases'][0].update(identity=True),lambda s:s['leases'][0].update(peer='bad'),
++                       lambda s:s['leases'][0].update(deadline_ns=21_000_000_000),
++                       lambda s:s['leases'].append(copy.deepcopy(s['leases'][0])),
++                       lambda s:s.update(leases=[{}])):
++            count,state=self.restoration(saved=mutate)
++            self.assertEqual(count,0);self.assertFalse(state.leases or state.flows)
++            self.assertEqual(state.stats['restore_rejected'],1)
++        for mutate in (lambda f,e:[{'elem':e[0]['elem']|{'expires':True}}],lambda f,e:e*2):
++            self.assertEqual(self.restoration(kernel=mutate)[0],0)
++
++    def test_restart_requires_private_cache_and_live_kernel_query(self):
++        config=self.config|{'status':'unused'}
++        with mock.patch.object(agent,'private_file',side_effect=AssertionError):
++            self.assertEqual(agent.restore_leases(self.entry,config,'boot'),0)
++        self.assertFalse(self.entry.leases)
++        path=mock.Mock();path.stat.return_value.st_size=262145
++        with mock.patch.object(agent,'private_file',return_value=path):
++            self.assertEqual(agent.restore_leases(self.entry,config,'boot'),0)
++        path.read_text.assert_not_called()
++
++    def test_restart_candidates_need_new_proof_and_keep_original_observation_age(self):
++        def candidates(saved):
++            saved['leases']=[]
++            saved['candidates']=[agent.dataclasses.asdict(self.flow)|{'observed_ns':9_000_000_000}]
++        count,state=self.restoration(saved=candidates,kernel=lambda f,e:[])
++        self.assertEqual(count,0);self.assertFalse(state.leases or state.pending or state.auth_hints)
++        self.assertEqual(state.stats['restored_candidates'],1)
++        self.assertEqual(state.observed[self.flow.translated_port],9)
++        request=state.queries({self.flow},11)[0]
++        self.assertTrue(agent.nonce(request['nonce']))
++        self.assertFalse(state.confirm({'nonce':'00'*16,'peer':'ab'*16,'stamp':1},{self.flow},11))
++        self.assertFalse(state.leases)
++
++    def test_restart_candidates_reject_changed_expired_and_future_records(self):
++        def candidates(saved):
++            saved['leases']=[]
++            saved['candidates']=[agent.dataclasses.asdict(self.flow)|{'observed_ns':9_000_000_000}]
++        count,state=self.restoration(saved=candidates,current=agent.dataclasses.replace(self.flow,identity=124))
++        self.assertFalse(state.flows)
++        for seen in (0,12_000_000_000):
++            def mutate(saved):
++                candidates(saved);saved['candidates'][0]['observed_ns']=seen
++            count,state=self.restoration(saved=mutate)
++            self.assertFalse(state.flows or state.leases)
++
++    def test_fatal_running_loop_revokes_existing_leases(self):
++        config=self.config|{'status':'unused'};self.entry.leases[self.flow]=('ab'*16,20)
++        with mock.patch.object(agent.os,'geteuid',return_value=0,create=True), \
++             mock.patch.object(agent.Path,'read_text',return_value='kit-entry'), \
++             mock.patch.object(agent,'context'),mock.patch.object(agent,'restore_leases'), \
++             mock.patch.object(agent,'Entry',return_value=self.entry), \
++             mock.patch.object(agent.signal,'signal'), \
++             mock.patch.object(agent.socket,'create_connection',side_effect=OSError), \
++             mock.patch.object(agent.select,'select',side_effect=RuntimeError('fatal')), \
++             mock.patch.object(agent,'install_leases') as install,mock.patch.object(agent,'snapshot'):
++            with self.assertRaisesRegex(RuntimeError,'fatal'):agent.serve(config,'entry')
++        self.assertFalse(self.entry.leases);self.assertEqual(install.call_args.args[1],set())
+ 
+     def test_escrow_is_optional_and_follows_successful_kernel_install(self):
+         self.entry.leases[self.flow]=('ab'*16,20)
+--- /dev/null
++++ b/experimental/awg-prefilter/generate_wire_vectors.go
+@@ -0,0 +1,82 @@
++// SPDX-License-Identifier: MIT
++// Run inside the pinned amneziawg-go module; output contains only public test keys.
++package main
++
++import (
++	"encoding/base64"
++	"encoding/binary"
++	"encoding/hex"
++	"encoding/json"
++	"fmt"
++	"golang.org/x/crypto/blake2s"
++	"golang.org/x/crypto/chacha20"
++)
++
++type Config struct {
++	Name     string      `json:"name"`
++	S        []int       `json:"padding"`
++	H        [][2]uint32 `json:"headers"`
++	Trailers bool        `json:"trailers"`
++}
++
++func main() {
++	configs := []Config{
++		{"mixed", []int{32, 48, 64, 80}, [][2]uint32{{100100, 100199}, {200100, 200199}, {300100, 300199}, {400100, 400199}}, true},
++		{"equal", []int{96, 96, 96, 96}, [][2]uint32{{0, 0}, {0x80000000, 0x8000000f}, {123456, 123499}, {0xfffffff0, 0xffffffff}}, false},
++		{"large", []int{1024, 512, 256, 128}, [][2]uint32{{70000, 70009}, {80000, 80009}, {90000, 90009}, {100000, 100009}}, true},
++	}
++	key := make([]byte, 32)
++	pub := make([]byte, 32)
++	for i := range key {
++		key[i] = byte(i)
++		pub[i] = byte(63 - i)
++	}
++	material := append([]byte("mac1----"), pub...)
++	mk := blake2s.Sum256(material)
++	cases := []map[string]any{}
++	for _, c := range configs {
++		params := map[string]string{}
++		for i := 0; i < 4; i++ {
++			params[fmt.Sprintf("S%d", i+1)] = fmt.Sprint(c.S[i])
++			params[fmt.Sprintf("H%d", i+1)] = fmt.Sprint(c.H[i][0])
++			if c.H[i][0] != c.H[i][1] {
++				params[fmt.Sprintf("H%d", i+1)] = fmt.Sprintf("%d-%d", c.H[i][0], c.H[i][1])
++			}
++		}
++		params["RandomTrailers"] = "0"
++		if c.Trailers {
++			params["RandomTrailers"] = "1"
++		}
++		packets := []map[string]any{}
++		for i, size := range []int{148, 92, 64, 32} {
++			for _, h := range []uint32{c.H[i][0], c.H[i][1]} {
++				msg := make([]byte, size)
++				binary.LittleEndian.PutUint32(msg, h)
++				for n := 4; n < size-32; n++ {
++					msg[n] = byte(n * 17)
++				}
++				if i < 2 {
++					m, _ := blake2s.New128(mk[:])
++					m.Write(msg[:size-32])
++					copy(msg[size-32:], m.Sum(nil))
++				}
++				padding := make([]byte, c.S[i])
++				for n := range padding {
++					padding[n] = byte(n*13 + i)
++				}
++				cipher, _ := chacha20.NewUnauthenticatedCipher(key, padding[:12])
++				length := size
++				if i == 3 {
++					length = 16
++				}
++				cipher.XORKeyStream(msg[:length], msg[:length])
++				wire := append(padding, msg...)
++				packets = append(packets, map[string]any{"type": i + 1, "header": h, "payload": hex.EncodeToString(wire)})
++			}
++		}
++		cases = append(cases, map[string]any{"name": c.Name, "parameters": params, "packets": packets})
++	}
++	out := map[string]any{"generator": "generate_wire_vectors.go using pinned upstream x/crypto", "header_key": base64.StdEncoding.EncodeToString(key), "server_public_key": base64.StdEncoding.EncodeToString(pub), "cases": cases}
++	data, _ := json.MarshalIndent(out, "", "  ")
++	fmt.Println(string(data))
++}
+--- a/experimental/awg-prefilter/prefilter.c
++++ b/experimental/awg-prefilter/prefilter.c
+@@ -1,6 +1,5 @@
+ /* SPDX-License-Identifier: MIT
+  * LAB PROTOTYPE: AWG 3.1 prefilter, not client authentication.
+- * shortcut: only S1-S4=12 and H1-H4=1,2,3,4; extend after interoperability tests.
+  */
+ #define _GNU_SOURCE
+ #include <arpa/inet.h>
+@@ -28,7 +27,10 @@
+ enum verdict { MALFORMED, HEADER, MAC, CRYPTO, INIT, RESPONSE, COOKIE, DATA, REASONS };
+ static const char *names[] = {"malformed", "header", "mac1", "crypto", "init", "response", "cookie", "transport"};
+ /* Largest IPv4 header, UDP header, AWG nonce and initiation through MAC1. */
+-enum { COPY_RANGE = 60 + 8 + 12 + 148 - 16 };
++static unsigned copy_range = 60 + 8 + 12 + 148 - 16;
++static uint32_t paddings[4] = {12, 12, 12, 12};
++static uint32_t headers[4][2] = {{1,1}, {2,2}, {3,3}, {4,4}};
++static int random_trailers = 1; /* Legacy two-key files accepted trailers. */
+ /* The lab offers bursts up to 4096 packets; 2048 overflowed on the faster backend. */
+ enum { QUEUE_MAXLEN = 4096 };
+ static uint64_t counts[REASONS], bytes, copied_bytes, netlink_enobufs;
+@@ -104,6 +106,38 @@
+     OPENSSL_cleanse(decoded, sizeof(decoded));
+ }
+ 
++static uint32_t wire_number(const char *text) {
++    if (!*text) fail("Missing wire parameter");
++    for (const char *p=text; *p; p++) if (*p<'0' || *p>'9') fail("Invalid wire parameter");
++    char *end; errno=0;
++    unsigned long value=strtoul(text,&end,10);
++    if (errno || *end || value>UINT32_MAX) fail("Wire parameter out of range");
++    return (uint32_t)value;
++}
++
++static void wire_parameter(char *line, unsigned *seen) {
++    char *value=strchr(line,'=');
++    if (!value) fail("Invalid wire parameter");
++    *value++=0;
++    unsigned index, bit;
++    if (strlen(line)==2 && line[1]>='1' && line[1]<='4' && (line[0]=='S' || line[0]=='H')) {
++        index=(unsigned)(line[1]-'1');bit=1u<<(index+(line[0]=='S'?0:4));
++        if (*seen&bit) fail("Duplicate wire parameter");
++        if (line[0]=='S') paddings[index]=wire_number(value);
++        else {
++            char *dash=strchr(value,'-');
++            if (dash) *dash++=0;
++            headers[index][0]=wire_number(value);
++            headers[index][1]=dash?wire_number(dash):headers[index][0];
++        }
++    } else if (!strcmp(line,"RandomTrailers")) {
++        bit=1u<<8;
++        if (*seen&bit || (strcmp(value,"0") && strcmp(value,"1"))) fail("Invalid trailer parameter");
++        random_trailers=value[0]=='1';
++    } else fail("Unknown wire parameter");
++    *seen|=bit;
++}
++
+ static void load_keys(const char *path) {
+     int fd = open(path, O_RDONLY | O_NOFOLLOW);
+     struct stat st;
+@@ -118,8 +152,24 @@
+     if (!fgets(line, sizeof(line), file)) fail("Missing server public key");
+     line[strcspn(line, "\n")] = 0;
+     decode_key(line, "ServerPublicKey=", public_key);
+-    if (fgetc(file) != EOF || ferror(file)) fail("Unexpected key file contents");
++    unsigned seen=0;
++    while (fgets(line,sizeof(line),file)) {
++        if (!strchr(line,'\n') && !feof(file)) fail("Wire parameter too long");
++        line[strcspn(line,"\n")]=0;wire_parameter(line,&seen);
++    }
++    if (ferror(file) || (seen && seen!=511)) fail("Incomplete wire parameters");
+     fclose(file);
++    const unsigned sizes[4]={148,92,64,32},needed[4]={132,76,4,4};
++    copy_range=0;
++    for (unsigned i=0;i<4;i++) {
++        if (paddings[i]<12 || paddings[i]>65507-sizes[i] || headers[i][0]>headers[i][1]) fail("Invalid wire parameters");
++        for (unsigned j=0;j<i;j++)
++            if (headers[i][0]<=headers[j][1] && headers[j][0]<=headers[i][1]) fail("Overlapping header ranges");
++        unsigned required=60+8+paddings[i]+needed[i];
++        if (required>copy_range) copy_range=required;
++    }
++    /* NFQA_PAYLOAD is a 16-bit attribute; message fields end before MAC2/tag. */
++    if (copy_range>65531) copy_range=65531;
+     OPENSSL_cleanse(line, sizeof(line));
+     memcpy(material, "mac1----", 8);
+     memcpy(material + 8, public_key, 32);
+@@ -134,7 +184,7 @@
+ static uint16_t be16(const unsigned char *p) { return (uint16_t)((p[0] << 8) | p[1]); }
+ 
+ static enum verdict inspect(const unsigned char *ip, size_t length, size_t original_length) {
+-    size_t required_copy = original_length < COPY_RANGE ? original_length : COPY_RANGE;
++    size_t required_copy = original_length < copy_range ? original_length : copy_range;
+     if (length > original_length || length < required_copy) return MALFORMED;
+     if (length < 28 || ip[0] >> 4 != 4 || ip[9] != 17) return MALFORMED;
+     size_t ihl = (ip[0] & 15) * 4u, total = be16(ip + 2);
+@@ -146,27 +196,30 @@
+     size_t size = udp_length - 8;
+     if (size < 16) return HEADER;
+     if (length < ihl + 8 + 16) return MALFORMED;
+-    unsigned char iv[16] = {0}, plain[148 - 16];
++    unsigned char iv[16] = {0}, plain[148 - 16], mask[4]={0};
+     memcpy(iv + 4, payload, 12);
+     int produced = 0;
+     TIMER_START(header_start);
+     if (!EVP_EncryptInit_ex(cipher, EVP_chacha20(), NULL, hpk, iv) ||
+-        !EVP_EncryptUpdate(cipher, plain, &produced, payload + 12, 4) || produced != 4) return CRYPTO;
++        !EVP_EncryptUpdate(cipher, mask, &produced, mask, 4) || produced != 4) return CRYPTO;
++    unsigned selected=4;
++    const unsigned sizes[4]={148,92,64,32};
++    for (unsigned i=0;i<4;i++) {
++        if (size<paddings[i]+sizes[i] || (i<3 && !random_trailers && size!=paddings[i]+sizes[i])) continue;
++        if (length<ihl+8+paddings[i]+4) return MALFORMED;
++        const unsigned char *field=payload+paddings[i];
++        uint32_t type=(uint32_t)(field[0]^mask[0]) | ((uint32_t)(field[1]^mask[1])<<8) |
++                      ((uint32_t)(field[2]^mask[2])<<16) | ((uint32_t)(field[3]^mask[3])<<24);
++        if (type>=headers[i][0] && type<=headers[i][1]) {selected=i;break;}
++    }
+     TIMER_STOP(header_start, header_ns);
+-    uint32_t type = (uint32_t)plain[0] | ((uint32_t)plain[1] << 8) |
+-                    ((uint32_t)plain[2] << 16) | ((uint32_t)plain[3] << 24);
+-    size_t fixed;
+-    switch (type) {
+-        case 1: fixed = 148; break;
+-        case 2: fixed = 92; break;
+-        case 3: return size >= 12 + 64 ? COOKIE : MALFORMED;
+-        case 4: return size >= 12 + 32 ? DATA : MALFORMED;
+-        default: return HEADER;
+-    }
+-    if (size < 12 + fixed) return MALFORMED;
+-    if (length < ihl + 8 + 12 + fixed - 16) return MALFORMED;
++    if (selected==4) return HEADER;
++    if (selected>=2) return selected==2?COOKIE:DATA;
++    size_t fixed=sizes[selected],padding=paddings[selected];
++    for (unsigned i=0;i<4;i++) plain[i]=payload[padding+i]^mask[i];
++    if (length < ihl + 8 + padding + fixed - 16) return MALFORMED;
+     TIMER_START(handshake_start);
+-    if (!EVP_EncryptUpdate(cipher, plain + 4, &produced, payload + 16, (int)fixed - 20) ||
++    if (!EVP_EncryptUpdate(cipher, plain + 4, &produced, payload + padding + 4, (int)fixed - 20) ||
+         produced != (int)fixed - 20) return CRYPTO;
+     unsigned char expected[16];
+     size_t output_size = 0, wanted = sizeof(expected);
+@@ -175,7 +228,7 @@
+         !EVP_MAC_final(mac, expected, &output_size, sizeof(expected)) || output_size != 16) return CRYPTO;
+     TIMER_STOP(handshake_start, handshake_ns);
+     if (CRYPTO_memcmp(expected, plain + fixed - 32, 16)) return MAC;
+-    return type == 1 ? INIT : RESPONSE;
++    return selected==0?INIT:RESPONSE;
+ }
+ 
+ #ifdef PREFILTER_BATCH
+@@ -337,7 +390,7 @@
+         if (!handle || nfq_bind_pf(handle, AF_INET)) fail("Cannot bind NFQUEUE");
+         size_t original_length = 0;
+         struct nfq_q_handle *queue = nfq_create_queue(handle, (uint16_t)number, callback, &original_length);
+-        if (!queue || nfq_set_mode(queue, NFQNL_COPY_PACKET, COPY_RANGE) || nfq_set_queue_maxlen(queue, QUEUE_MAXLEN))
++        if (!queue || nfq_set_mode(queue, NFQNL_COPY_PACKET, copy_range) || nfq_set_queue_maxlen(queue, QUEUE_MAXLEN))
+             fail("Cannot configure NFQUEUE");
+         int fd = nfq_fd(handle), buffer_size = 4 * 1024 * 1024;
+         /* SO_RCVBUF alone is silently clamped by net.core.rmem_max. */
+@@ -347,11 +400,14 @@
+ #ifdef PREFILTER_BATCH
+         queue_fd = fd;
+         queue_number = (uint16_t)number;
+-        char buffers[BATCH_SIZE][DATAGRAM_SIZE] __attribute__((aligned));
++        size_t datagram_size=copy_range+4096;
++        if (datagram_size<DATAGRAM_SIZE) datagram_size=DATAGRAM_SIZE;
++        char *buffers=malloc(BATCH_SIZE*datagram_size);
++        if (!buffers) fail("Cannot allocate receive batch");
+         struct iovec incoming_iov[BATCH_SIZE];
+         struct mmsghdr incoming[BATCH_SIZE] = {0};
+         for (int i = 0; i < BATCH_SIZE; i++) {
+-            incoming_iov[i] = (struct iovec){ .iov_base = buffers[i], .iov_len = DATAGRAM_SIZE };
++            incoming_iov[i] = (struct iovec){ .iov_base = buffers+i*datagram_size, .iov_len = datagram_size };
+             incoming[i].msg_hdr.msg_iov = &incoming_iov[i];
+             incoming[i].msg_hdr.msg_iovlen = 1;
+         }
+@@ -360,7 +416,7 @@
+         char buffer[131072] __attribute__((aligned));
+         int receive_batch = 1;
+ #endif
+-        printf("ready rcvbuf=%d queue_maxlen=%d copy_range=%d receive_batch=%d\n", buffer_size, QUEUE_MAXLEN, COPY_RANGE, receive_batch);
++        printf("ready rcvbuf=%d queue_maxlen=%d copy_range=%u receive_batch=%d\n", buffer_size, QUEUE_MAXLEN, copy_range, receive_batch);
+         fflush(stdout);
+         while (!stopping) {
+             if (reporting) { report(); reporting = 0; }
+@@ -384,7 +440,7 @@
+                     result = 1;
+                     break;
+                 }
+-                if (handle_datagram(handle, buffers[i], (int)incoming[i].msg_len, &original_length, (uint16_t)number) < 0) { result = 1; break; }
++                if (handle_datagram(handle, buffers+i*datagram_size, (int)incoming[i].msg_len, &original_length, (uint16_t)number) < 0) { result = 1; break; }
+             }
+             if (!result && flush_verdicts() < 0) result = 1;
+ #else
+@@ -394,6 +450,9 @@
+             if (result) { perror("Queue processing failed"); break; }
+         }
+         report();
++#ifdef PREFILTER_BATCH
++        free(buffers);
++#endif
+         nfq_destroy_queue(queue);
+         nfq_close(handle);
+     }
+--- /dev/null
++++ b/experimental/awg-prefilter/research/v37-lease-restore-probe.py
+@@ -0,0 +1,60 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: MIT
++"""Disposable kit-entry only: real nft timeout/conntrack restore checks, no hooks."""
++import argparse
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import time
++
++p=argparse.ArgumentParser(description=__doc__)
++p.add_argument('--vm-test',action='store_true',required=True)
++p.add_argument('--agent-directory',type=Path,required=True)
++a=p.parse_args()
++assert os.geteuid()==0 and Path('/etc/hostname').read_text().strip()=='kit-entry'
++sys.path.insert(0,str(a.agent_directory));import agent
++config={'entry':'192.168.76.10','exit':'192.168.76.20','vpn_port':32497}
++flow=next((f for port in (32497,32498,42501,42502,42503) if (f:=agent.read_flow(config,port)) and f.source in ('192.168.76.30','192.168.76.31')),None)
++assert flow,'Probe an original native lab client before running this check'
++agent.TABLE='cw37_lease_ip';agent.LATE_TABLE='cw37_lease_bridge'
++boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
++def nft(*args,data=None):return subprocess.run(['nft',*args],input=data,text=True,capture_output=True,timeout=2,check=True)
++owned=[]
++try:
++ for family,table in [('ip',agent.TABLE),('bridge',agent.LATE_TABLE)]:
++  assert subprocess.run(['nft','list','table',family,table],capture_output=True).returncode!=0
++  nft('-f','-',data=f'table {family} {table} {{ set trusted {{ typeof ip saddr . udp sport . ct id; flags timeout; timeout 10s; }}\n}}\n')
++  owned.append((family,table))
++  nft('-f','-',data=f'add element {family} {table} trusted {{ {flow.source} . {flow.port} . {flow.identity} timeout 3s }}\n')
++ with tempfile.TemporaryDirectory(prefix='cw37-lease-',dir='/root') as directory:
++  path=Path(directory)/'status.json';config['status']=str(path)
++  previous=agent.Entry(agent.ESCROW_SOCKET,True);previous.leases[flow]=('ab'*16,time.monotonic()+5)
++  value={'time_ns':time.monotonic_ns(),**agent.entry_values(previous,config,boot,time.monotonic())}
++  path.write_text(json.dumps(value));path.chmod(0o600)
++  state=agent.Entry(agent.ESCROW_SOCKET,True)
++  assert agent.restore_leases(state,config,boot)==1
++  assert state.leases[flow][1]<=previous.leases[flow][1]
++  assert 0<state.leases[flow][1]-time.monotonic()<=3
++  restored_deadline=state.leases[flow][1]
++  assert not state.pending and not state.peer_stamp and not state.auth_hints
++  path.chmod(0o644);assert agent.restore_leases(agent.Entry(agent.ESCROW_SOCKET,True),config,boot)==0;path.chmod(0o600)
++  assert agent.restore_leases(agent.Entry(agent.ESCROW_SOCKET,True),config,'other-boot')==0
++  wrong=json.loads(path.read_text());wrong['leases'][0]['identity']=flow.identity%0xffffffff+1
++  for family,table in owned:
++   nft('-f','-',data=f"add element {family} {table} trusted {{ {flow.source} . {flow.port} . {wrong['leases'][0]['identity']} timeout 3s }}\n")
++  path.write_text(json.dumps(wrong));assert agent.restore_leases(agent.Entry(agent.ESCROW_SOCKET,True),config,boot)==0
++  path.write_text(json.dumps(value))
++  nft('flush','set','bridge',agent.LATE_TABLE,'trusted')
++  assert agent.restore_leases(agent.Entry(agent.ESCROW_SOCKET,True),config,boot)==0
++  value['lease_context'][-1]=False;path.write_text(json.dumps(value))
++  assert agent.restore_leases(agent.Entry(),config,boot)==1
++  time.sleep(3.1)
++  assert agent.restore_leases(agent.Entry(),config|{'status':str(path)},boot)==0
++  kernel=json.loads(nft('-j','list','set','ip',agent.TABLE,'trusted').stdout)
++  assert not next(v['set'] for v in kernel['nftables'] if 'set' in v).get('elem')
++  print(json.dumps({'real_kernel_expiry':True,'same_conntrack_generation_required':True,'both_sets_required':True,'private_cache_required':True,'boot_scope_required':True,'original_deadline':previous.leases[flow][1],'restored_deadline':restored_deadline,'no_hooks_installed':True}))
++finally:
++ for family,table in reversed(owned):nft('delete','table',family,table)
+--- /dev/null
++++ b/experimental/awg-prefilter/test-wire-vectors.json
+@@ -0,0 +1,175 @@
++{
++  "cases": [
++    {
++      "name": "mixed",
++      "packets": [
++        {
++          "header": 100100,
++          "payload": "000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693c747f552d7416cbe7e116e5418d675c2c2ab80197562bc277885fc2f972e06b7fa6dcacd4ecb555ef3f836a556868bf5bd2b9152d62e4b6a181820ce61f6140c06d4ab481c8ede52f89de26f20a642a3e3a5787a45fb1ea8b9c7a245acea1e9c833b4b82be07119a7285fb28ba8ca6d2d62352c7a4e6cd04f7b78ffb595cd1b50786cd69033660214a4fb841b9704ba89960889b",
++          "type": 1
++        },
++        {
++          "header": 100199,
++          "payload": "000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a447f552d7416cbe7e116e5418d675c2c2ab80197562bc277885fc2f972e06b7fa6dcacd4ecb555ef3f836a556868bf5bd2b9152d62e4b6a181820ce61f6140c06d4ab481c8ede52f89de26f20a642a3e3a5787a45fb1ea8b9c7a245acea1e9c833b4b82be07119a7285fb28ba8ca6d2d62352c7099dae3046c596e8cc00dc4ec86eec71033660214a4fb841b9704ba89960889b",
++          "type": 1
++        },
++        {
++          "header": 200100,
++          "payload": "010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764c979eddc221efd25ccd3f81524621dcb19ca1501446aaf6a3acfd2bcce2e28e2163b09a2bc95f1c45092e0d3d11afaaf2cc279fab6b446acfc2241c4aefa7645cb409556bed31a96f8d37859e293b2fa14e799347b2b9085d104c88c",
++          "type": 2
++        },
++        {
++          "header": 200199,
++          "payload": "010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a57646a7aeddc221efd25ccd3f81524621dcb19ca1501446aaf6a3acfd2bcce2e28e2163b09a2bc95f1c45092e0d3d11afaaf2cc279fab6b446acfc2241c458700ce92c3814b7f77f2491b3c45e9ee293b2fa14e799347b2b9085d104c88c",
++          "type": 2
++        },
++        {
++          "header": 300100,
++          "payload": "020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835a2c4c84ad9e13b313a35c6c24906102e94c7af026cdc87b663fbf927dbe263d00d87a1e54f311d20a68e658a0b02bdc8deb49c9b63b1a2d5cceef7ba17def23b",
++          "type": 3
++        },
++        {
++          "header": 300199,
++          "payload": "020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b283541c4c84ad9e13b313a35c6c24906102e94c7af026cdc87b663fbf927dbe263d00d87a1e54f311d20a68e658a0b02bdc8deb49c9b63b1a2d5cceef7ba17def23b",
++          "type": 3
++        },
++        {
++          "header": 400100,
++          "payload": "03101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90625e65474245ee77b064a16c9db0061d100000000000000000000000000000000",
++          "type": 4
++        },
++        {
++          "header": 400199,
++          "payload": "03101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90686e75474245ee77b064a16c9db0061d100000000000000000000000000000000",
++          "type": 4
++        }
++      ],
++      "parameters": {
++        "H1": "100100-100199",
++        "H2": "200100-200199",
++        "H3": "300100-300199",
++        "H4": "400100-400199",
++        "RandomTrailers": "1",
++        "S1": "32",
++        "S2": "48",
++        "S3": "64",
++        "S4": "80"
++      }
++    },
++    {
++      "name": "equal",
++      "packets": [
++        {
++          "header": 0,
++          "payload": "000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3c3c0f452d7416cbe7e116e5418d675c2c2ab80197562bc277885fc2f972e06b7fa6dcacd4ecb555ef3f836a556868bf5bd2b9152d62e4b6a181820ce61f6140c06d4ab481c8ede52f89de26f20a642a3e3a5787a45fb1ea8b9c7a245acea1e9c833b4b82be07119a7285fb28ba8ca6d2d62352c7f514e9dc8179cfba608a577f372bc818033660214a4fb841b9704ba89960889b",
++          "type": 1
++        },
++        {
++          "header": 0,
++          "payload": "000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3c3c0f452d7416cbe7e116e5418d675c2c2ab80197562bc277885fc2f972e06b7fa6dcacd4ecb555ef3f836a556868bf5bd2b9152d62e4b6a181820ce61f6140c06d4ab481c8ede52f89de26f20a642a3e3a5787a45fb1ea8b9c7a245acea1e9c833b4b82be07119a7285fb28ba8ca6d2d62352c7f514e9dc8179cfba608a577f372bc818033660214a4fb841b9704ba89960889b",
++          "type": 1
++        },
++        {
++          "header": 2147483648,
++          "payload": "010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d46d74ee5c221efd25ccd3f81524621dcb19ca1501446aaf6a3acfd2bcce2e28e2163b09a2bc95f1c45092e0d3d11afaaf2cc279fab6b446acfc2241c453d09f93a7ed61316f5309cb849bbe11e293b2fa14e799347b2b9085d104c88c",
++          "type": 2
++        },
++        {
++          "header": 2147483663,
++          "payload": "010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d46274ee5c221efd25ccd3f81524621dcb19ca1501446aaf6a3acfd2bcce2e28e2163b09a2bc95f1c45092e0d3d11afaaf2cc279fab6b446acfc2241c44bd8981b4d7ea7c79aa428290806f4ade293b2fa14e799347b2b9085d104c88c",
++          "type": 2
++        },
++        {
++          "header": 123456,
++          "payload": "020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5a6b2cd4ad9e13b313a35c6c24906102e94c7af026cdc87b663fbf927dbe263d00d87a1e54f311d20a68e658a0b02bdc8deb49c9b63b1a2d5cceef7ba17def23b",
++          "type": 3
++        },
++        {
++          "header": 123499,
++          "payload": "020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d58db2cd4ad9e13b313a35c6c24906102e94c7af026cdc87b663fbf927dbe263d00d87a1e54f311d20a68e658a0b02bdc8deb49c9b63b1a2d5cceef7ba17def23b",
++          "type": 3
++        },
++        {
++          "header": 4294967280,
++          "payload": "03101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d63103ad8b245ee77b064a16c9db0061d100000000000000000000000000000000",
++          "type": 4
++        },
++        {
++          "header": 4294967295,
++          "payload": "03101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d63e03ad8b245ee77b064a16c9db0061d100000000000000000000000000000000",
++          "type": 4
++        }
++      ],
++      "parameters": {
++        "H1": "0",
++        "H2": "2147483648-2147483663",
++        "H3": "123456-123499",
++        "H4": "4294967280-4294967295",
++        "RandomTrailers": "0",
++        "S1": "96",
++        "S2": "96",
++        "S3": "96",
++        "S4": "96"
++      }
++    },
++    {
++      "name": "large",
++      "packets": [
++        {
++          "header": 70000,
++          "payload": "000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3b3d1f552d7416cbe7e116e5418d675c2c2ab80197562bc277885fc2f972e06b7fa6dcacd4ecb555ef3f836a556868bf5bd2b9152d62e4b6a181820ce61f6140c06d4ab481c8ede52f89de26f20a642a3e3a5787a45fb1ea8b9c7a245acea1e9c833b4b82be07119a7285fb28ba8ca6d2d62352c798d7713aba2cfe76fddd8c213e24da6e033660214a4fb841b9704ba89960889b",
++          "type": 1
++        },
++        {
++          "header": 70009,
++          "payload": "000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3bad1f552d7416cbe7e116e5418d675c2c2ab80197562bc277885fc2f972e06b7fa6dcacd4ecb555ef3f836a556868bf5bd2b9152d62e4b6a181820ce61f6140c06d4ab481c8ede52f89de26f20a642a3e3a5787a45fb1ea8b9c7a245acea1e9c833b4b82be07119a7285fb28ba8ca6d2d62352c702c83728226a3463ccb79feccc388b95033660214a4fb841b9704ba89960889b",
++          "type": 1
++        },
++        {
++          "header": 80000,
++          "payload": "010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4ed4cefdc221efd25ccd3f81524621dcb19ca1501446aaf6a3acfd2bcce2e28e2163b09a2bc95f1c45092e0d3d11afaaf2cc279fab6b446acfc2241c4ae18036f4371480dce7f9a49fbe83941e293b2fa14e799347b2b9085d104c88c",
++          "type": 2
++        },
++        {
++          "header": 80009,
++          "payload": "010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4e44cefdc221efd25ccd3f81524621dcb19ca1501446aaf6a3acfd2bcce2e28e2163b09a2bc95f1c45092e0d3d11afaaf2cc279fab6b446acfc2241c4d626ce36fc37582d70825ece56b66a9fe293b2fa14e799347b2b9085d104c88c",
++          "type": 2
++        },
++        {
++          "header": 90000,
++          "payload": "020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5760fcd4ad9e13b313a35c6c24906102e94c7af026cdc87b663fbf927dbe263d00d87a1e54f311d20a68e658a0b02bdc8deb49c9b63b1a2d5cceef7ba17def23b",
++          "type": 3
++        },
++        {
++          "header": 90009,
++          "payload": "020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f603101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f57f0fcd4ad9e13b313a35c6c24906102e94c7af026cdc87b663fbf927dbe263d00d87a1e54f311d20a68e658a0b02bdc8deb49c9b63b1a2d5cceef7ba17def23b",
++          "type": 3
++        },
++        {
++          "header": 100000,
++          "payload": "03101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c6976617a5374245ee77b064a16c9db0061d100000000000000000000000000000000",
++          "type": 4
++        },
++        {
++          "header": 100009,
++          "payload": "03101d2a3744515e6b7885929facb9c6d3e0edfa0714212e3b4855626f7c8996a3b0bdcad7e4f1fe0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919eabb8c5d2dfecf90613202d3a4754616e7b8895a2afbcc9d6e3f0fd0a1724313e4b5865727f8c99a6b3c0cddae7f4010e1b2835424f5c6976687a5374245ee77b064a16c9db0061d100000000000000000000000000000000",
++          "type": 4
++        }
++      ],
++      "parameters": {
++        "H1": "70000-70009",
++        "H2": "80000-80009",
++        "H3": "90000-90009",
++        "H4": "100000-100009",
++        "RandomTrailers": "1",
++        "S1": "1024",
++        "S2": "512",
++        "S3": "256",
++        "S4": "128"
++      }
++    }
++  ],
++  "generator": "generate_wire_vectors.go using pinned upstream x/crypto",
++  "header_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
++  "server_public_key": "Pz49PDs6OTg3NjU0MzIxMC8uLSwrKikoJyYlJCMiISA="
++}
+--- a/experimental/awg-prefilter/test_prefilter.py
++++ b/experimental/awg-prefilter/test_prefilter.py
+@@ -9,11 +9,12 @@
+ import tempfile
+ import unittest
+ 
+-from export_keys import export
++from export_keys import export, wire_parameters
+ 
+ HERE = Path(__file__).resolve().parent
+ BINARY = Path(os.environ.get('PREFILTER_BINARY', str(HERE / 'prefilter'))).resolve()
+ VECTORS = json.loads((HERE / 'test-vectors.json').read_text())
++WIRE_VECTORS = json.loads((HERE / 'test-wire-vectors.json').read_text())
+ 
+ 
+ def packet(payload):
+@@ -150,7 +151,8 @@
+         state['parameters'].update({'H' + str(i): str(i) for i in range(1, 5)})
+         output = self.key.with_name('exported')
+         export(state, output)
+-        self.assertEqual(output.read_text(), self.key.read_text())
++        self.assertEqual(output.read_text(), self.key.read_text()+''.join(f'{k}={v}\n' for k,v in wire_parameters(state['parameters']).items()))
++        self.assertNotIn('DO-NOT-EXPORT', output.read_text())
+         self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+         with self.assertRaises(FileExistsError):
+             export(state, output)
+@@ -158,8 +160,46 @@
+             with self.subTest(address=address), self.assertRaises(ValueError):
+                 export(dict(state, endpoint=address), self.key.with_name('refused'))
+         state['parameters']['S4'] = '16'
+-        with self.assertRaises(ValueError):
+-            export(state, self.key.with_name('refused'))
++        export(state, self.key.with_name('changed-padding'))
++
++    def test_wire_validation_rejects_ambiguous_or_unusable_parameters(self):
++        parameters={**{f'S{i}':'12' for i in range(1,5)},**{f'H{i}':str(i) for i in range(1,5)}}
++        for key,value in [('S1','11'),('S2','65507'),('S3',True),('S4','-1'),
++                          ('H1','2-10'),('H1','10-9'),('H4','4294967296'),('H2','-1'),
++                          ('H3','1-2-3'),('RandomTrailers','maybe')]:
++            with self.subTest(key=key,value=value),self.assertRaises(ValueError):
++                wire_parameters(parameters|{key:value})
++        self.assertEqual(wire_parameters(parameters|{'H1':'0','H4':'4294967294-4294967295'})['H4'],'4294967294-4294967295')
++
++    def test_upstream_go_vectors_for_padding_header_ranges_and_trailers(self):
++        for case in WIRE_VECTORS['cases']:
++            parameters=wire_parameters(case['parameters'])
++            self.key.write_text('HeaderProtectionKey='+WIRE_VECTORS['header_key']+'\nServerPublicKey='+WIRE_VECTORS['server_public_key']+'\n'+''.join(f'{k}={v}\n' for k,v in parameters.items()))
++            copied=max(68+int(parameters[f'S{i}'])+n for i,n in enumerate((132,76,4,4),1))
++            for vector in case['packets']:
++                number=vector['type'];payload=bytes.fromhex(vector['payload'])
++                reason=('init','response','cookie','transport')[number-1]
++                with self.subTest(case=case['name'],number=number,header=vector['header']):
++                    raw=packet(payload)
++                    self.check(raw,True,reason)
++                    raw=packet(payload+bytes(2048))
++                    allowed=parameters['RandomTrailers']=='1' or number==4
++                    self.check(raw,allowed,reason if allowed else 'header')
++                    self.check(raw[:copied],allowed,reason if allowed else 'header',original_length=len(raw))
++                    if number<3:
++                        damaged=bytearray(payload);damaged[int(parameters[f'S{number}'])+30]^=1
++                        self.check(packet(damaged),False,'mac1')
++
++    def test_c_wire_parser_rejects_partial_duplicate_and_invalid_settings(self):
++        original=self.key.read_text()
++        full=''.join(f'{k}={v}\n' for k,v in wire_parameters({**{f'S{i}':'12' for i in range(1,5)},**{f'H{i}':str(i) for i in range(1,5)}}).items())
++        for value in ('S1=12\n',full+'S1=12\n',full+'Unknown=1\n',full.replace('S1=12','S1=11'),
++                      full.replace('H1=1','H1=2-10'),full.replace('H1=1','H1=4294967296'),
++                      full.replace('H1=1','H1=4-3'),full.replace('RandomTrailers=0','RandomTrailers=true')):
++            self.key.write_text(original+value)
++            result=subprocess.run([str(BINARY),'--check',str(self.key)],input=b'',capture_output=True)
++            self.assertEqual(result.returncode,1)
++            self.assertNotIn(VECTORS['header_key'].encode(),result.stdout+result.stderr)
+ 
+ 
+ if __name__ == '__main__':

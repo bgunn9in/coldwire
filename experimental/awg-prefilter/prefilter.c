@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: MIT
  * LAB PROTOTYPE: AWG 3.1 prefilter, not client authentication.
- * shortcut: only S1-S4=12 and H1-H4=1,2,3,4; extend after interoperability tests.
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -28,7 +27,10 @@
 enum verdict { MALFORMED, HEADER, MAC, CRYPTO, INIT, RESPONSE, COOKIE, DATA, REASONS };
 static const char *names[] = {"malformed", "header", "mac1", "crypto", "init", "response", "cookie", "transport"};
 /* Largest IPv4 header, UDP header, AWG nonce and initiation through MAC1. */
-enum { COPY_RANGE = 60 + 8 + 12 + 148 - 16 };
+static unsigned copy_range = 60 + 8 + 12 + 148 - 16;
+static uint32_t paddings[4] = {12, 12, 12, 12};
+static uint32_t headers[4][2] = {{1,1}, {2,2}, {3,3}, {4,4}};
+static int random_trailers = 1; /* Legacy two-key files accepted trailers. */
 /* The lab offers bursts up to 4096 packets; 2048 overflowed on the faster backend. */
 enum { QUEUE_MAXLEN = 4096 };
 static uint64_t counts[REASONS], bytes, copied_bytes, netlink_enobufs;
@@ -104,6 +106,38 @@ static void decode_key(const char *line, const char *prefix, unsigned char *key)
     OPENSSL_cleanse(decoded, sizeof(decoded));
 }
 
+static uint32_t wire_number(const char *text) {
+    if (!*text) fail("Missing wire parameter");
+    for (const char *p=text; *p; p++) if (*p<'0' || *p>'9') fail("Invalid wire parameter");
+    char *end; errno=0;
+    unsigned long value=strtoul(text,&end,10);
+    if (errno || *end || value>UINT32_MAX) fail("Wire parameter out of range");
+    return (uint32_t)value;
+}
+
+static void wire_parameter(char *line, unsigned *seen) {
+    char *value=strchr(line,'=');
+    if (!value) fail("Invalid wire parameter");
+    *value++=0;
+    unsigned index, bit;
+    if (strlen(line)==2 && line[1]>='1' && line[1]<='4' && (line[0]=='S' || line[0]=='H')) {
+        index=(unsigned)(line[1]-'1');bit=1u<<(index+(line[0]=='S'?0:4));
+        if (*seen&bit) fail("Duplicate wire parameter");
+        if (line[0]=='S') paddings[index]=wire_number(value);
+        else {
+            char *dash=strchr(value,'-');
+            if (dash) *dash++=0;
+            headers[index][0]=wire_number(value);
+            headers[index][1]=dash?wire_number(dash):headers[index][0];
+        }
+    } else if (!strcmp(line,"RandomTrailers")) {
+        bit=1u<<8;
+        if (*seen&bit || (strcmp(value,"0") && strcmp(value,"1"))) fail("Invalid trailer parameter");
+        random_trailers=value[0]=='1';
+    } else fail("Unknown wire parameter");
+    *seen|=bit;
+}
+
 static void load_keys(const char *path) {
     int fd = open(path, O_RDONLY | O_NOFOLLOW);
     struct stat st;
@@ -118,8 +152,24 @@ static void load_keys(const char *path) {
     if (!fgets(line, sizeof(line), file)) fail("Missing server public key");
     line[strcspn(line, "\n")] = 0;
     decode_key(line, "ServerPublicKey=", public_key);
-    if (fgetc(file) != EOF || ferror(file)) fail("Unexpected key file contents");
+    unsigned seen=0;
+    while (fgets(line,sizeof(line),file)) {
+        if (!strchr(line,'\n') && !feof(file)) fail("Wire parameter too long");
+        line[strcspn(line,"\n")]=0;wire_parameter(line,&seen);
+    }
+    if (ferror(file) || (seen && seen!=511)) fail("Incomplete wire parameters");
     fclose(file);
+    const unsigned sizes[4]={148,92,64,32},needed[4]={132,76,4,4};
+    copy_range=0;
+    for (unsigned i=0;i<4;i++) {
+        if (paddings[i]<12 || paddings[i]>65507-sizes[i] || headers[i][0]>headers[i][1]) fail("Invalid wire parameters");
+        for (unsigned j=0;j<i;j++)
+            if (headers[i][0]<=headers[j][1] && headers[j][0]<=headers[i][1]) fail("Overlapping header ranges");
+        unsigned required=60+8+paddings[i]+needed[i];
+        if (required>copy_range) copy_range=required;
+    }
+    /* NFQA_PAYLOAD is a 16-bit attribute; message fields end before MAC2/tag. */
+    if (copy_range>65531) copy_range=65531;
     OPENSSL_cleanse(line, sizeof(line));
     memcpy(material, "mac1----", 8);
     memcpy(material + 8, public_key, 32);
@@ -134,7 +184,7 @@ static void load_keys(const char *path) {
 static uint16_t be16(const unsigned char *p) { return (uint16_t)((p[0] << 8) | p[1]); }
 
 static enum verdict inspect(const unsigned char *ip, size_t length, size_t original_length) {
-    size_t required_copy = original_length < COPY_RANGE ? original_length : COPY_RANGE;
+    size_t required_copy = original_length < copy_range ? original_length : copy_range;
     if (length > original_length || length < required_copy) return MALFORMED;
     if (length < 28 || ip[0] >> 4 != 4 || ip[9] != 17) return MALFORMED;
     size_t ihl = (ip[0] & 15) * 4u, total = be16(ip + 2);
@@ -146,27 +196,30 @@ static enum verdict inspect(const unsigned char *ip, size_t length, size_t origi
     size_t size = udp_length - 8;
     if (size < 16) return HEADER;
     if (length < ihl + 8 + 16) return MALFORMED;
-    unsigned char iv[16] = {0}, plain[148 - 16];
+    unsigned char iv[16] = {0}, plain[148 - 16], mask[4]={0};
     memcpy(iv + 4, payload, 12);
     int produced = 0;
     TIMER_START(header_start);
     if (!EVP_EncryptInit_ex(cipher, EVP_chacha20(), NULL, hpk, iv) ||
-        !EVP_EncryptUpdate(cipher, plain, &produced, payload + 12, 4) || produced != 4) return CRYPTO;
-    TIMER_STOP(header_start, header_ns);
-    uint32_t type = (uint32_t)plain[0] | ((uint32_t)plain[1] << 8) |
-                    ((uint32_t)plain[2] << 16) | ((uint32_t)plain[3] << 24);
-    size_t fixed;
-    switch (type) {
-        case 1: fixed = 148; break;
-        case 2: fixed = 92; break;
-        case 3: return size >= 12 + 64 ? COOKIE : MALFORMED;
-        case 4: return size >= 12 + 32 ? DATA : MALFORMED;
-        default: return HEADER;
+        !EVP_EncryptUpdate(cipher, mask, &produced, mask, 4) || produced != 4) return CRYPTO;
+    unsigned selected=4;
+    const unsigned sizes[4]={148,92,64,32};
+    for (unsigned i=0;i<4;i++) {
+        if (size<paddings[i]+sizes[i] || (i<3 && !random_trailers && size!=paddings[i]+sizes[i])) continue;
+        if (length<ihl+8+paddings[i]+4) return MALFORMED;
+        const unsigned char *field=payload+paddings[i];
+        uint32_t type=(uint32_t)(field[0]^mask[0]) | ((uint32_t)(field[1]^mask[1])<<8) |
+                      ((uint32_t)(field[2]^mask[2])<<16) | ((uint32_t)(field[3]^mask[3])<<24);
+        if (type>=headers[i][0] && type<=headers[i][1]) {selected=i;break;}
     }
-    if (size < 12 + fixed) return MALFORMED;
-    if (length < ihl + 8 + 12 + fixed - 16) return MALFORMED;
+    TIMER_STOP(header_start, header_ns);
+    if (selected==4) return HEADER;
+    if (selected>=2) return selected==2?COOKIE:DATA;
+    size_t fixed=sizes[selected],padding=paddings[selected];
+    for (unsigned i=0;i<4;i++) plain[i]=payload[padding+i]^mask[i];
+    if (length < ihl + 8 + padding + fixed - 16) return MALFORMED;
     TIMER_START(handshake_start);
-    if (!EVP_EncryptUpdate(cipher, plain + 4, &produced, payload + 16, (int)fixed - 20) ||
+    if (!EVP_EncryptUpdate(cipher, plain + 4, &produced, payload + padding + 4, (int)fixed - 20) ||
         produced != (int)fixed - 20) return CRYPTO;
     unsigned char expected[16];
     size_t output_size = 0, wanted = sizeof(expected);
@@ -175,7 +228,7 @@ static enum verdict inspect(const unsigned char *ip, size_t length, size_t origi
         !EVP_MAC_final(mac, expected, &output_size, sizeof(expected)) || output_size != 16) return CRYPTO;
     TIMER_STOP(handshake_start, handshake_ns);
     if (CRYPTO_memcmp(expected, plain + fixed - 32, 16)) return MAC;
-    return type == 1 ? INIT : RESPONSE;
+    return selected==0?INIT:RESPONSE;
 }
 
 #ifdef PREFILTER_BATCH
@@ -337,7 +390,7 @@ int main(int argc, char **argv) {
         if (!handle || nfq_bind_pf(handle, AF_INET)) fail("Cannot bind NFQUEUE");
         size_t original_length = 0;
         struct nfq_q_handle *queue = nfq_create_queue(handle, (uint16_t)number, callback, &original_length);
-        if (!queue || nfq_set_mode(queue, NFQNL_COPY_PACKET, COPY_RANGE) || nfq_set_queue_maxlen(queue, QUEUE_MAXLEN))
+        if (!queue || nfq_set_mode(queue, NFQNL_COPY_PACKET, copy_range) || nfq_set_queue_maxlen(queue, QUEUE_MAXLEN))
             fail("Cannot configure NFQUEUE");
         int fd = nfq_fd(handle), buffer_size = 4 * 1024 * 1024;
         /* SO_RCVBUF alone is silently clamped by net.core.rmem_max. */
@@ -347,11 +400,14 @@ int main(int argc, char **argv) {
 #ifdef PREFILTER_BATCH
         queue_fd = fd;
         queue_number = (uint16_t)number;
-        char buffers[BATCH_SIZE][DATAGRAM_SIZE] __attribute__((aligned));
+        size_t datagram_size=copy_range+4096;
+        if (datagram_size<DATAGRAM_SIZE) datagram_size=DATAGRAM_SIZE;
+        char *buffers=malloc(BATCH_SIZE*datagram_size);
+        if (!buffers) fail("Cannot allocate receive batch");
         struct iovec incoming_iov[BATCH_SIZE];
         struct mmsghdr incoming[BATCH_SIZE] = {0};
         for (int i = 0; i < BATCH_SIZE; i++) {
-            incoming_iov[i] = (struct iovec){ .iov_base = buffers[i], .iov_len = DATAGRAM_SIZE };
+            incoming_iov[i] = (struct iovec){ .iov_base = buffers+i*datagram_size, .iov_len = datagram_size };
             incoming[i].msg_hdr.msg_iov = &incoming_iov[i];
             incoming[i].msg_hdr.msg_iovlen = 1;
         }
@@ -360,7 +416,7 @@ int main(int argc, char **argv) {
         char buffer[131072] __attribute__((aligned));
         int receive_batch = 1;
 #endif
-        printf("ready rcvbuf=%d queue_maxlen=%d copy_range=%d receive_batch=%d\n", buffer_size, QUEUE_MAXLEN, COPY_RANGE, receive_batch);
+        printf("ready rcvbuf=%d queue_maxlen=%d copy_range=%u receive_batch=%d\n", buffer_size, QUEUE_MAXLEN, copy_range, receive_batch);
         fflush(stdout);
         while (!stopping) {
             if (reporting) { report(); reporting = 0; }
@@ -384,7 +440,7 @@ int main(int argc, char **argv) {
                     result = 1;
                     break;
                 }
-                if (handle_datagram(handle, buffers[i], (int)incoming[i].msg_len, &original_length, (uint16_t)number) < 0) { result = 1; break; }
+                if (handle_datagram(handle, buffers+i*datagram_size, (int)incoming[i].msg_len, &original_length, (uint16_t)number) < 0) { result = 1; break; }
             }
             if (!result && flush_verdicts() < 0) result = 1;
 #else
@@ -394,6 +450,9 @@ int main(int argc, char **argv) {
             if (result) { perror("Queue processing failed"); break; }
         }
         report();
+#ifdef PREFILTER_BATCH
+        free(buffers);
+#endif
         nfq_destroy_queue(queue);
         nfq_close(handle);
     }

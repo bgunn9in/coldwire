@@ -168,9 +168,9 @@ for authenticated hints and lease renewals; other candidates may use at most
 four slots per source IP. These are learned addresses, not an allowlist.
 The observed-flow cache holds at most 128 mappings. B's hints have a shared
 64/s, burst-16 limit. The C filter retains queue
-4096, copy range 212 and grouped individual verdicts.
-The same `S1-S4=12` and `H1-H4=1,2,3,4` filter restrictions apply. IPv6
-outer transport is unsupported.
+4096 and grouped individual verdicts. Its copy range follows the exported
+S/H parameters; default S=12 still needs 212 bytes. See the [base filter's
+parameter format](../README.md). IPv6 outer transport is unsupported.
 
 A lease admits a tuple, so it cannot authenticate every subsequent packet
 on A. A sender able to spoof a currently leased IP and port can enter that
@@ -509,7 +509,10 @@ means classified and `0x20000000` identifies control messages. It preserves
 unrelated mark bits and returns no replacement payload. These marks are
 absent from wire packets. The C variant uses the
 [NFQUEUE verdict metadata API](https://netfilter.org/projects/libnetfilter_queue/doxygen/html/group__nfq__verd.html).
-The lease path reserves `0x10000000`; the example clears all three reserved
+The holding parser still bounds IPv4 packet length to 1536 bytes; larger
+wire packets are outside this combined experiment, even when the base header
+parser accepts their parameters. The lease path reserves `0x10000000`; the
+example clears all three reserved
 bits on ingress. An older unmarked classifier
 fails closed in the combined rules; check that drop counter when debugging
 a mismatched binary/ruleset.
@@ -524,9 +527,32 @@ rules, then start A's helper:
 sudo python3 agent.py --vm-test entry /root/flow-confirmation/config.json
 ```
 
+A requested SIGTERM/SIGINT stop keeps already confirmed kernel/C leases until
+their existing deadlines, at most ten seconds. This avoids flushing live
+traffic on a helper restart. Its root-only status file also records the boot
+ID, relay scope and absolute monotonic deadlines. On startup A restores only
+the intersection with both live kernel sets, then verifies each exact
+conntrack generation. Restoration never issues a new proof or restores old
+nonces, hints or proof-order timestamps. The same file keeps up to 128 observed
+candidates for a fresh challenge after restart. Their original observation
+ages and exact conntrack generations are checked; they restore no lease or
+authenticated-hint priority. Missing, invalid, stale or
+other-boot cache data gives no restored lease. A fatal error in the running
+loop still
+clears its leases; a crash cannot keep them beyond kernel expiry.
+
+This covers a helper restart within one kernel boot. Rebooting the whole A
+VM destroys conntrack and interrupts its network; it needs fresh proofs.
+Stopping the helper alone no longer revokes fast-path grants immediately.
+To revoke those grants, stop A and atomically flush both `trusted` sets
+while keeping the guard rules loaded. C replay is rechecked against those
+sets. A full rollback removes the experimental guards and returns ordinary
+DNAT forwarding.
+
 Both status files report connection state and bounded counters. A also
 records grants, expiry and replaced tuples. Measure early client discards,
 NFQUEUE loss, useful throughput, probe delivery and whole-VM CPU together.
+[V37](../validation-v37.md) tests configurable wire parameters and helper-restart continuity.
 [V36](../validation-v36.md) tests control recovery and vanished NFQUEUE verdicts.
 The [v29 study](../validation-v29.md) tests bounded forward escrow under
 multi-IP noise. [v28](../validation-v28.md) compares admission bursts.
@@ -540,7 +566,8 @@ the original recovery controls and measurement corrections. Earlier admission an
 cold-start controls are in [v19](../validation-v19.md).
 
 For rollback, stop A's helper while its table still exists, remove the
-combined experimental table, then stop the C filter. Restore B's original
+combined experimental IPv4 and optional bridge tables, then stop the C filter.
+Restore B's original
 AWG service command and environment, restart it and reconnect the two lab
 clients. Stop B's helper and confirm ordinary DNAT probes. None of these
 steps belongs on an active server as part of this experiment.

@@ -16,6 +16,7 @@ adds short kernel leases after B authenticates transport traffic. It needs
 server-side changes on A and B, while clients keep their profiles and may
 change IP or NAT port. [v18](validation-v18.md) records multi-flow noise,
 cold connections, movement and the limits of tuple admission.
+[V37](validation-v37.md) checks configurable wire parameters and helper restarts.
 
 ## What it checks
 
@@ -30,10 +31,13 @@ For incoming IPv4/UDP packets selected by the example rules, the process:
    The exit performs their authentication. Rejected packets receive no reply
    from the filter. Accepted packet contents are unchanged.
 
-Only **S1-S4=12 and H1-H4=1,2,3,4** are supported. These are COLDWIRE's current
-defaults. IPv6 outer transport and other parameter combinations are outside
-this prototype. The process copies at most 212 packet bytes from NFQUEUE,
-enough to read initiation MAC1 with a maximum-length IPv4 header. It checks
+The filter reads `S1–S4`, disjoint inclusive `H1–H4` ranges and
+`RandomTrailers` from the exported key file. Header Protection must be enabled;
+each S value must be at least 12 and leave room for its message in an IPv4
+UDP datagram. Larger prefixes can require a lower tunnel MTU. IPv6 outer
+transport remains unsupported. Copying is sized to reach each configured
+message header and handshake MAC1, including a maximum-length IPv4 header.
+The default S=12 settings still copy at most 212 packet bytes. The filter checks
 the copied length against the original length from `NFQA_CAP_LEN` and the
 IP/UDP headers. The parser supports IPv4 options; Linux handles defragmentation
 before the lab's raw-priority queue. NFQUEUE's GSO normalization stays enabled
@@ -69,7 +73,12 @@ make check
 The tests use only Python's standard library. Synthetic public vectors in
 `test-vectors.json` were generated independently with Python cryptography's
 ChaCha20 and hashlib's BLAKE2s. They contain no operational credentials.
-Checks cover malformed packets, altered handshakes, wrong keys, replay,
+The additional `test-wire-vectors.json` fixtures use Go's pinned x/crypto
+ChaCha20 and BLAKE2s implementations. Run `generate_wire_vectors.go` from a
+checkout of the pinned AWG module to regenerate them; Go is not a runtime
+requirement for this C filter. Checks cover header-range endpoints, mixed
+and equal prefixes, prefixes beyond 212 bytes, trailer policy, malformed
+packets, altered handshakes, wrong keys, replay,
 transport-payload tampering, key-file permissions and export restrictions.
 
 For AddressSanitizer and UndefinedBehaviorSanitizer:
@@ -109,9 +118,10 @@ The default `prefilter` build keeps individual submissions.
 The grouped build uses `recvmmsg(MSG_WAITFORONE)` to receive one available
 datagram and drain up to 15 more without waiting. It submits a full group
 or the remaining tail before the next blocking receive. Receive storage is
-bounded at 16 × 8192 bytes. A truncated netlink datagram or failed verdict
+bounded at 16 × max(8192, copy range + 4096) bytes; the default is 128 KiB.
+A truncated netlink datagram or failed verdict
 submission closes the queue. The existing fail-closed behavior then applies.
-Kernel GSO normalization and the 212-byte packet-copy limit stay enabled.
+Kernel GSO normalization stays enabled. The packet-copy limit follows the configured prefixes.
 
 `receive_calls` and `received_datagrams` describe receive operations.
 `send_calls` counts submission attempts, including interrupted retries,
@@ -124,7 +134,7 @@ Prepare an isolated client C, entry A and native AWG exit B. Use RFC1918
 addresses, 1 vCPU and 1024 MiB per VM. First verify ordinary DNAT. The
 following commands are for that lab, not an existing VPN.
 
-On B, export the two filter inputs into a private directory:
+On B, export the two keys and matching wire parameters into a private directory:
 
 ```bash
 sudo install -d -m 700 /root/prefilter-private
@@ -133,11 +143,20 @@ sudo python3 experimental/awg-prefilter/export_keys.py --vm-test \
   --output /root/prefilter-private/keys
 ```
 
-The exporter refuses public exit addresses, unsupported S/H settings and
+The exporter refuses public exit addresses, invalid or overlapping S/H settings and
 existing output files. Transfer the resulting file securely to A, preserving
 root ownership and mode 0600. Its HeaderProtectionKey is secret; keep it and
 packet captures outside Git. The filter refuses symlinks and readable-by-others
-key files.
+key files. Re-export after changing B's wire parameters and restart the lab
+filter with that file. It does not discover parameters from incoming traffic.
+
+The two key lines come first, followed by all nine `S1–S4`, `H1–H4` and
+`RandomTrailers` fields. A header may be a decimal uint32 or `low-high`;
+trailers use `0` or `1`. Partial parameter sets, duplicates and unknown fields
+are rejected. Old two-line files retain S=12, H=1/2/3/4 and trailer acceptance.
+`Jc/Jmin/Jmax`, `I1–I5` and encrypted content padding do not change header
+positions; they need no extra parser fields. Their junk packets are still
+subject to the strict-drop behavior described above.
 
 On A, start the separately built binary with:
 
