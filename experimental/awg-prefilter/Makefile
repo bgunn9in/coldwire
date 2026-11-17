@@ -11,7 +11,11 @@ prefilter-batch: prefilter.c
 test-batch: test_batch.c prefilter.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@ $(LDLIBS)
 
-check: prefilter
+test-netlink: test_netlink.c prefilter.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@ $(LDLIBS)
+
+check: prefilter test-netlink
+	./test-netlink
 	python3 test_prefilter.py
 
 check-batch: prefilter-batch test-batch
@@ -37,7 +41,11 @@ check-escrow: flow-confirmation/escrow
 lab-switch/noise-multi-source: lab-switch/noise-multi-source.c
 	$(CC) $(CFLAGS) $< -o $@
 
-check-lab-tools: lab-switch/noise-multi-source
+lab-switch/udp-load: lab-switch/udp-load.c
+	$(CC) $(CFLAGS) $< -o $@
+
+check-lab-tools: lab-switch/noise-multi-source lab-switch/udp-load
+	./lab-switch/udp-load --self-test
 	./lab-switch/noise-multi-source --self-test
 	python3 lab-switch/udp-capture.py --self-test
 

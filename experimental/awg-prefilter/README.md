@@ -258,6 +258,13 @@ this check for its tuple. Camouflage on both links still needs measurement.
 
 ## Measurements
 
+The [v36 study](validation-v36.md) tests control-channel outages, helper
+restarts and an actual local B reboot. It fixes session recovery and the
+main header filter's handling of a vanished NFQUEUE packet. It also adds
+an independent UDP generator so an interrupted iperf TCP control channel
+cannot determine the UDP delivery result. Outages can still lose traffic;
+see the report for failed acquisitions and remaining limits.
+
 The [v35 latency study](validation-v35.md) ran 12 qualified trials: all
 4,340,141 useful UDP packets and all 1200 ping replies arrived. B's recovery
 maintenance period is now 10 ms instead of 100 ms; replay spacing remains

@@ -1,0 +1,549 @@
+--- a/experimental/awg-prefilter/Makefile
++++ b/experimental/awg-prefilter/Makefile
+@@ -11,7 +11,11 @@
+ test-batch: test_batch.c prefilter.c
+ 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@ $(LDLIBS)
+ 
+-check: prefilter
++test-netlink: test_netlink.c prefilter.c
++	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@ $(LDLIBS)
++
++check: prefilter test-netlink
++	./test-netlink
+ 	python3 test_prefilter.py
+ 
+ check-batch: prefilter-batch test-batch
+@@ -37,7 +41,11 @@
+ lab-switch/noise-multi-source: lab-switch/noise-multi-source.c
+ 	$(CC) $(CFLAGS) $< -o $@
+ 
+-check-lab-tools: lab-switch/noise-multi-source
++lab-switch/udp-load: lab-switch/udp-load.c
++	$(CC) $(CFLAGS) $< -o $@
++
++check-lab-tools: lab-switch/noise-multi-source lab-switch/udp-load
++	./lab-switch/udp-load --self-test
+ 	./lab-switch/noise-multi-source --self-test
+ 	python3 lab-switch/udp-capture.py --self-test
+ 
+--- a/experimental/awg-prefilter/flow-confirmation/agent.py
++++ b/experimental/awg-prefilter/flow-confirmation/agent.py
+@@ -53,6 +53,11 @@
+         self.flows={};self.observed={};self.looked_up={};self.auth_hints={};self.last_escrow=0
+         self.ready=set();self.probed=set()
+         self.pending={};self.leases={};self.last_query={};self.peer_stamp={};self.history=[];self.stats={'queries':0,'grants':0,'rejected':0,'moves':0}
++    def new_control_session(self):
++        # Fresh nonces bind proofs to this authenticated session; B's clock may have restarted.
++        self.pending.clear();self.ready.clear();self.probed.clear();self.peer_stamp.clear()
++    def control_timed_out(self,now):
++        return any(deadline<=now and request not in self.ready for request,(_,deadline) in self.pending.items())
+     def _observe(self,port,now):
+         if port not in self.observed and len(self.observed)>=MAX_PENDING:
+             protected=set(self.leases)|{v[0] for v in self.pending.values()}|{f for f,t in self.auth_hints.items() if t>now}
+@@ -85,11 +90,19 @@
+         else:self.auth_hints.pop(self.flows.pop(port,None),None)
+         if not flow:self.observed.pop(port,None);self.looked_up.pop(port,None)
+         return flow is not None
+-    def current_flows(self,now):
+-        for port in list(self.observed):
+-            if now-self.observed[port]>=LEASE_SECONDS:
++    def current_flows(self,config,now):
++        # C announces a holding flow once; recheck its generation after a control outage.
++        stale=[p for p in self.observed if now-self.observed[p]>=LEASE_SECONDS]
++        for port in stale[:16]:
++            previous=self.flows.get(port)
++            try:current=read_flow(config,port) if previous else None
++            except (OSError,ValueError):
++                self.stats['lookup_failed']=self.stats.get('lookup_failed',0)+1;current=None
++            if previous is not None and current==previous:
++                self.observed[port]=now;self.looked_up[port]=now
++            else:
+                 self.auth_hints.pop(self.flows.pop(port,None),None);self.observed.pop(port);self.looked_up.pop(port,None)
+-        return set(self.flows.values())
++        return {f for p,f in self.flows.items() if now-self.observed[p]<LEASE_SECONDS}
+     def candidate(self,data,config,now):
+         if len(data)!=CANDIDATE.size:return False
+         magic,address,port,identity=CANDIDATE.unpack(data)
+@@ -132,9 +145,10 @@
+         if not pending or pending[1]<=now:return False
+         self.ready.add(message['ready']);return True
+     def probes(self,flows,now):
++        # An acknowledged probe stays untrusted until B authenticates its transport packet.
+         return [(n,f) for n,(f,deadline) in self.pending.items()
+                 if self.escrow_socket and n in self.ready and n not in self.probed
+-                and deadline>now and f in flows and self.auth_hints.get(f,0)>now
++                and deadline>now and f in flows
+                 and (f not in self.leases or self.leases[f][1]<=now)]
+     def confirm(self,message,flows,now):
+         if set(message) not in ({'nonce','peer','stamp'},{'nonce','peer','stamp','recovery'}) or type(message.get('recovery',False)) is not bool or not nonce(message['nonce']) or not nonce(message['peer']) or type(message['stamp']) is not int or message['stamp']<=0:
+@@ -306,6 +320,7 @@
+                 try:
+                     connection=socket.create_connection((config['exit'],39101),timeout=1,source_address=(config['entry'],0))
+                     stream=Stream(ctx.wrap_socket(connection,server_hostname=config['exit']))
++                    state.new_control_session()
+                 except (OSError,ssl.SSLError):next_connect=now+1
+             readers=([listener,events] if role=='exit' else [])+([stream.socket] if stream else [])
+             if candidates:readers.append(candidates)
+@@ -321,10 +336,13 @@
+                         if trusted and not flags and state.candidate(data,config,time.monotonic()):next_tick=0
+                 if role=='exit' and listener in ready:
+                     connection,address=listener.accept()
+-                    if stream or address[0]!=config['entry']:connection.close()
++                    if address[0]!=config['entry']:connection.close()
+                     else:
+                         connection.settimeout(1)
+-                        try:stream=Stream(ctx.wrap_socket(connection,server_side=True));state=Exit(config['entry'])
++                        previous=stream
++                        try:
++                            stream=Stream(ctx.wrap_socket(connection,server_side=True));state=Exit(config['entry'])
++                            if previous:previous.socket.close()
+                         except (OSError,ssl.SSLError):connection.close()
+                 if stream and stream.socket in ready:
+                     for message in stream.read():
+@@ -343,7 +361,7 @@
+                                     except (OSError,ValueError):flow=None
+                                     if flow:fresh.add(flow)
+                                 lease_changed=state.confirm(message,fresh,time.monotonic()) or lease_changed
+-                            flows=state.current_flows(time.monotonic())
++                            flows=state.current_flows(config,time.monotonic())
+                 if role=='exit' and events in ready:
+                     data,ancillary,flags,_=events.recvmsg(256,socket.CMSG_SPACE(12))
+                     trusted=any(level==socket.SOL_SOCKET and kind==socket.SCM_CREDENTIALS and struct.unpack('3i',value[:12])[1]==0 for level,kind,value in ancillary)
+@@ -352,6 +370,9 @@
+                         if stream:
+                             for message in messages:stream.queue(message)
+                 if stream and stream.socket in writes:stream.write()
++                if role=='entry' and stream and state.control_timed_out(time.monotonic()):
++                    state.stats['control_timeouts']=state.stats.get('control_timeouts',0)+1
++                    raise TimeoutError('Control acknowledgement deadline expired')
+             except (OSError,ssl.SSLError,EOFError,AssertionError,ValueError):
+                 if stream:stream.socket.close();stream=None
+                 if role=='entry':
+@@ -359,7 +380,7 @@
+             now=time.monotonic()
+             if role=='entry' and (now>=next_tick or lease_changed):
+                 if now>=next_tick:
+-                    flows=state.current_flows(now)
++                    flows=state.current_flows(config,now)
+                     if not stream:state.leases={f:v for f,v in state.leases.items() if f in flows and v[1]>now}
+                     requests=state.queries(flows,now) if stream else []
+                     for message in requests:stream.queue(message)
+--- a/experimental/awg-prefilter/flow-confirmation/test_agent.py
++++ b/experimental/awg-prefilter/flow-confirmation/test_agent.py
+@@ -13,6 +13,7 @@
+     def setUp(self):
+         self.flow=agent.Flow('192.168.76.30',32497,123,32497)
+         self.entry=agent.Entry();self.exit=agent.Exit('192.168.76.10')
++        self.config={'entry':'192.168.76.10','exit':'192.168.76.20','vpn_port':32497}
+     def event(self,stamp,port=32497):
+         return agent.EVENT.pack(b'CWP1',stamp,bytes([192,168,76,10]),port,bytes.fromhex('ab'*16),42)
+     def proofs(self,messages):return [m for m in messages if 'nonce' in m]
+@@ -58,13 +59,14 @@
+         large={agent.Flow('192.168.76.40',40000+i,i+1,40000+i) for i in range(256)}
+         self.assertEqual(len(self.entry.queries(large,20)),4)
+ 
+-    def test_probe_needs_ready_authenticated_hint_and_live_pending_request(self):
++    def test_probe_needs_ready_and_live_pending_request(self):
+         self.entry.escrow_socket=agent.ESCROW_SOCKET
+         request=self.entry.queries({self.flow},10)[0];name=request['nonce']
+         self.assertFalse(self.entry.acknowledged({'ready':'bad'},10))
+         self.assertFalse(self.entry.acknowledged({'ready':'ff'*16},10))
+         self.assertTrue(self.entry.acknowledged({'ready':name},10.1))
+-        self.assertEqual(self.entry.probes({self.flow},10.2),[])
++        self.assertEqual(self.entry.probes({self.flow},10.2),[(name,self.flow)])
++        self.assertFalse(self.entry.auth_hints or self.entry.leases)
+         self.entry.auth_hints[self.flow]=12
+         self.assertEqual(self.entry.probes(set(),10.2),[])
+         self.assertEqual(self.entry.probes({self.flow},10.2),[(name,self.flow)])
+@@ -78,6 +80,117 @@
+         self.entry.queries(set(),14)
+         self.assertFalse(self.entry.ready);self.assertFalse(self.entry.probed)
+         self.assertFalse(self.entry.acknowledged({'ready':name},14))
++
++    def test_control_timeout_requires_an_expired_unacknowledged_query(self):
++        self.assertFalse(self.entry.control_timed_out(10))
++        query=self.entry.queries({self.flow},10)[0]
++        self.assertFalse(self.entry.control_timed_out(12.999))
++        self.assertTrue(self.entry.control_timed_out(13))
++        self.entry.ready.add(query['nonce'])
++        self.assertFalse(self.entry.control_timed_out(13))
++        self.assertFalse(self.entry.leases)
++
++    def test_new_control_session_rejects_old_proofs_and_accepts_restarted_B_clock(self):
++        first=self.entry.queries({self.flow},10)[0]
++        old={'nonce':first['nonce'],'peer':'ab'*16,'stamp':100000000000}
++        self.assertTrue(self.entry.confirm(old,{self.flow},10.2))
++        deadline=self.entry.leases[self.flow][1]
++        pending=self.entry.queries({self.flow},13)[0]
++        stale_pending={'nonce':pending['nonce'],'peer':'ab'*16,'stamp':200000000000}
++        self.entry.ready.add(pending['nonce']);self.entry.probed.add(pending['nonce'])
++        self.entry.new_control_session()
++        self.assertFalse(self.entry.pending or self.entry.ready or self.entry.probed or self.entry.peer_stamp)
++        self.assertEqual(self.entry.leases[self.flow][1],deadline)
++        self.assertFalse(self.entry.confirm(old,{self.flow},13.1))
++        self.assertFalse(self.entry.confirm(stale_pending,{self.flow},13.1))
++        query=self.entry.queries({self.flow},16)[0]
++        restarted=agent.Exit('192.168.76.10')
++        self.assertTrue(restarted.query(query,1))
++        proof=self.proofs(restarted.event(self.event(1100000000),1.2))[0]
++        self.assertTrue(self.entry.confirm(proof,{self.flow},16.3))
++        self.assertLess(proof['stamp'],old['stamp'])
++
++    def test_serve_reconnects_before_pruning_an_unacknowledged_query(self):
++        handlers={};clock=[10.0];steps=[0];connection=mock.Mock();queries=[]
++        class FakeStream:
++            def __init__(self,sock):self.socket=sock;self.outgoing=bytearray()
++            def queue(self,message):queries.append(message)
++            def read(self):return [{'hint':32497}]
++        def select(readers,writers,errors,timeout):
++            steps[0]+=1
++            if steps[0]==1:return [connection],[],[]
++            clock[0]=13.01
++            if steps[0]==3:handlers[agent.signal.SIGTERM]()
++            return [],[],[]
++        context=mock.Mock();context.wrap_socket.return_value=connection
++        config={'entry':'192.168.76.10','exit':'192.168.76.20','vpn_port':32497,'status':'unused'}
++        with mock.patch.object(agent.os,'geteuid',return_value=0,create=True), \
++             mock.patch.object(agent.Path,'read_text',return_value='kit-entry'), \
++             mock.patch.object(agent,'context',return_value=context), \
++             mock.patch.object(agent.signal,'signal',side_effect=lambda sig,fn:handlers.__setitem__(sig,fn)), \
++             mock.patch.object(agent.socket,'create_connection',return_value=connection) as connects, \
++             mock.patch.object(agent,'Stream',FakeStream), \
++             mock.patch.object(agent.select,'select',side_effect=select), \
++             mock.patch.object(agent.time,'monotonic',side_effect=lambda:clock[0]), \
++             mock.patch.object(agent,'read_flow',return_value=self.flow), \
++             mock.patch.object(agent,'Entry',return_value=self.entry), \
++             mock.patch.object(agent,'install_leases'),mock.patch.object(agent,'snapshot'):
++            agent.serve(config,'entry')
++        self.assertEqual(connects.call_count,1)
++        self.assertEqual(self.entry.stats.get('control_timeouts',0),1)
++        self.assertFalse(self.entry.pending or self.entry.ready or self.entry.probed or self.entry.leases)
++        self.assertTrue(connection.close.called)
++
++    def run_exit_replacement(self,bad_certificate,foreign_source=False):
++        handlers={};step=[0];listener=mock.Mock();events=mock.Mock()
++        first=mock.Mock();second=mock.Mock();observed={}
++        listener.accept.side_effect=[(first,('192.168.76.10',41000)),(second,('192.168.76.55' if foreign_source else '192.168.76.10',41001))]
++        context=mock.Mock()
++        context.wrap_socket.side_effect=[first,agent.ssl.SSLError('invalid certificate') if bad_certificate else second]
++        class FakeStream:
++            def __init__(self,sock):self.socket=sock;self.outgoing=bytearray()
++        def select(readers,writers,errors,timeout):
++            step[0]+=1
++            if step[0]<=2:return [listener],[],[]
++            observed.update(readers=readers,first_closed=first.close.call_count,second_closed=second.close.call_count)
++            handlers[agent.signal.SIGTERM]()
++            return [],[],[]
++        config={'entry':'192.168.76.10','exit':'192.168.76.20','vpn_port':32497,'events':'/run/coldwire-flow/events.sock','status':'unused'}
++        directory=mock.Mock(st_uid=0,st_mode=stat.S_IFDIR|0o700)
++        with mock.patch.object(agent.os,'geteuid',return_value=0,create=True), \
++             mock.patch.object(agent.Path,'read_text',return_value='kit-exit'), \
++             mock.patch.object(agent.Path,'stat',return_value=directory), \
++             mock.patch.object(agent.Path,'exists',return_value=False), \
++             mock.patch.object(agent.Path,'chmod'),mock.patch.object(agent.Path,'unlink'), \
++             mock.patch.object(agent,'context',return_value=context), \
++             mock.patch.object(agent.socket,'socket',side_effect=[listener,events]), \
++             mock.patch.object(agent.socket,'AF_UNIX',1,create=True), \
++             mock.patch.object(agent.socket,'SO_PASSCRED',16,create=True), \
++             mock.patch.object(agent.signal,'signal',side_effect=lambda sig,fn:handlers.__setitem__(sig,fn)), \
++             mock.patch.object(agent,'Stream',FakeStream), \
++             mock.patch.object(agent.select,'select',side_effect=select), \
++             mock.patch.object(agent,'snapshot'):
++            agent.serve(config,'exit')
++        self.assertEqual(context.wrap_socket.call_count,1 if foreign_source else 2)
++        return first,second,observed
++
++    def test_authenticated_replacement_closes_stale_session(self):
++        first,second,observed=self.run_exit_replacement(False)
++        self.assertIn(second,observed['readers']);self.assertNotIn(first,observed['readers'])
++        self.assertEqual(observed['first_closed'],1)
++        self.assertEqual(observed['second_closed'],0)
++
++    def test_foreign_source_cannot_replace_live_session(self):
++        first,second,observed=self.run_exit_replacement(False,True)
++        self.assertIn(first,observed['readers']);self.assertNotIn(second,observed['readers'])
++        self.assertEqual(observed['first_closed'],0)
++        self.assertEqual(observed['second_closed'],1)
++
++    def test_bad_replacement_certificate_preserves_live_session(self):
++        first,second,observed=self.run_exit_replacement(True)
++        self.assertIn(first,observed['readers']);self.assertNotIn(second,observed['readers'])
++        self.assertEqual(observed['first_closed'],0)
++        self.assertEqual(observed['second_closed'],1)
+ 
+     def test_reordered_admission_proof_still_needs_post_query_authentication(self):
+         request=self.entry.queries({self.flow},10)[0]
+@@ -120,10 +233,32 @@
+             lookup.assert_not_called()
+             self.assertTrue(self.entry.hint({'hint':32497},config,10))
+             self.assertFalse(self.entry.hint({'hint':32497},config,10.1));self.assertEqual(lookup.call_count,1)
+-            self.assertEqual(self.entry.current_flows(10.2),{self.flow})
++            self.assertEqual(self.entry.current_flows(self.config,10.2),{self.flow})
+             self.assertFalse(self.entry.leases)
+-            self.assertEqual(len(self.entry.queries(self.entry.current_flows(10.2),10.2)),1)
+-        self.assertEqual(self.entry.current_flows(21),set())
++            self.assertEqual(len(self.entry.queries(self.entry.current_flows(self.config,10.2),10.2)),1)
++        with mock.patch.object(agent,'read_flow',return_value=None):
++            self.assertEqual(self.entry.current_flows(self.config,21),set())
++
++    def test_live_held_generation_survives_a_control_outage_without_becoming_trusted(self):
++        self.entry.flows[32497]=self.flow;self.entry.observed[32497]=10
++        with mock.patch.object(agent,'read_flow',return_value=self.flow) as lookup:
++            self.assertEqual(self.entry.current_flows(self.config,19.9),{self.flow});lookup.assert_not_called()
++            self.assertEqual(self.entry.current_flows(self.config,20),{self.flow});lookup.assert_called_once_with(self.config,32497)
++            self.assertEqual(self.entry.current_flows(self.config,29.9),{self.flow});self.assertEqual(lookup.call_count,1)
++        self.assertFalse(self.entry.auth_hints or self.entry.leases)
++        replacement=agent.Flow('192.168.76.31',42501,124,32497)
++        with mock.patch.object(agent,'read_flow',return_value=replacement):
++            self.assertFalse(self.entry.current_flows(self.config,30))
++        self.assertFalse(self.entry.observed or self.entry.flows)
++
++    def test_generation_recheck_has_a_fixed_batch_and_drops_missing_records(self):
++        flows=[agent.Flow('192.168.76.40',40000+i,i+1,40000+i) for i in range(32)]
++        for f in flows:self.entry.flows[f.translated_port]=f;self.entry.observed[f.translated_port]=0
++        with mock.patch.object(agent,'read_flow',return_value=None) as lookup:
++            self.assertFalse(self.entry.current_flows(self.config,20));self.assertEqual(lookup.call_count,16)
++            self.assertEqual(len(self.entry.observed),16)
++            self.assertFalse(self.entry.current_flows(self.config,20.1));self.assertEqual(lookup.call_count,32)
++        self.assertFalse(self.entry.observed or self.entry.leases)
+ 
+     def test_early_local_candidate_still_needs_generation_and_fresh_proof(self):
+         config={'entry':'192.168.76.10','exit':'192.168.76.20','vpn_port':32497}
+@@ -133,7 +268,7 @@
+             self.assertTrue(self.entry.candidate(event,config,10))
+             lookup.assert_called_once_with(config['entry'],config['exit'],32497,None,original=('192.168.76.30',32497),identity=123)
+             self.assertFalse(self.entry.leases)
+-            query=self.entry.queries(self.entry.current_flows(10),10)[0]
++            query=self.entry.queries(self.entry.current_flows(self.config,10),10)[0]
+             self.assertIn(query['nonce'],self.entry.pending)
+         with mock.patch.object(agent.conntrack,'lookup',side_effect=ValueError('generation changed')):
+             self.assertFalse(self.entry.candidate(event,config,11))
+@@ -148,7 +283,7 @@
+         value=(flow.source,flow.port,flow.identity,flow.translated_port)
+         with mock.patch.object(agent.conntrack,'lookup',return_value=value) as lookup,mock.patch.object(agent,'read_flow',return_value=replacement) as second:
+             self.assertTrue(self.entry.candidate(event,config,10))
+-            self.assertEqual(self.entry.current_flows(10),{flow})
++            self.assertEqual(self.entry.current_flows(self.config,10),{flow})
+             self.assertFalse(self.entry.auth_hints)
+             second.assert_not_called();lookup.assert_called_once()
+         query=self.entry.queries({flow},10)[0]
+@@ -171,12 +306,13 @@
+         config={'entry':'192.168.76.10','exit':'192.168.76.20','vpn_port':32497}
+         with mock.patch.object(agent,'read_flow',side_effect=OSError('temporary netlink failure')):
+             for port in range(10000,20000):self.entry.hint({'hint':port},config,2)
+-        self.assertIn(self.flow,self.entry.current_flows(2))
++        self.assertIn(self.flow,self.entry.current_flows(self.config,2))
+         self.assertIn(self.flow,self.entry.leases)
+         self.assertLessEqual(len(self.entry.flows),agent.MAX_PENDING)
+         self.assertLessEqual(len(self.entry.observed),agent.MAX_PENDING)
+         self.assertLessEqual(len(self.entry.looked_up),agent.MAX_PENDING)
+-        self.assertFalse(self.entry.current_flows(20))
++        with mock.patch.object(agent,'read_flow',side_effect=OSError('unavailable')):
++            self.assertFalse(self.entry.current_flows(self.config,20))
+ 
+     def test_escrow_snapshot_retries_without_extending_lease(self):
+         self.entry.escrow_socket=agent.ESCROW_SOCKET;self.entry.leases[self.flow]=('ab'*16,20)
+@@ -207,6 +343,7 @@
+         self.assertEqual(agent.Stream(BufferedTLS()).read(),[{'n':1},{'n':2}])
+ 
+     def test_confirm_is_immediate_disconnect_keeps_bounded_lease(self):
++        self.entry.peer_stamp['ab'*16]=100000000000
+         clock=[10.0];steps=[0];handlers={};queries=[];installs=[]
+         connection=mock.Mock()
+         class FakeStream:
+@@ -227,6 +364,7 @@
+         with mock.patch.object(agent.os,'geteuid',return_value=0,create=True), \
+              mock.patch.object(agent.Path,'read_text',return_value='kit-entry'), \
+              mock.patch.object(agent,'context',return_value=context), \
++             mock.patch.object(agent,'Entry',return_value=self.entry), \
+              mock.patch.object(agent.signal,'signal',side_effect=lambda sig,fn:handlers.__setitem__(sig,fn)), \
+              mock.patch.object(agent.socket,'create_connection',return_value=connection), \
+              mock.patch.object(agent,'Stream',FakeStream), \
+--- /dev/null
++++ b/experimental/awg-prefilter/lab-switch/udp-load.c
+@@ -0,0 +1,73 @@
++#define _GNU_SOURCE
++#include <arpa/inet.h>
++#include <assert.h>
++#include <errno.h>
++#include <inttypes.h>
++#include <poll.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <time.h>
++#include <unistd.h>
++
++enum { PPS=6000, SECONDS=60, TOTAL=PPS*SECONDS, BATCH=32, PORT=5201 };
++static uint64_t ns(clockid_t id) { struct timespec t;assert(!clock_gettime(id,&t));return (uint64_t)t.tv_sec*1000000000+t.tv_nsec; }
++static void packet(unsigned char *p,size_t size,uint32_t n) { memset(p,0,size);memcpy(p,"CWUDP36!",8);n=htonl(n);memcpy(p+8,&n,4); }
++static uint32_t sequence(const unsigned char *p,size_t size,size_t expected) {
++    uint32_t n;if(size!=expected || memcmp(p,"CWUDP36!",8))return 0;
++    memcpy(&n,p+8,4);n=ntohl(n);return n && n<=TOTAL?n:0;
++}
++static struct sockaddr_in address(const char *text) {
++    assert(!strcmp(text,"10.8.1.1") || !strcmp(text,"10.8.1.2"));
++    struct sockaddr_in a={.sin_family=AF_INET,.sin_port=htons(PORT)};assert(inet_pton(AF_INET,text,&a.sin_addr)==1);return a;
++}
++int main(int argc,char **argv) {
++    if(argc==2 && !strcmp(argv[1],"--self-test")) {
++        unsigned char p[1200];packet(p,sizeof(p),1);assert(sequence(p,sizeof(p),1200)==1);
++        packet(p,sizeof(p),TOTAL);assert(sequence(p,sizeof(p),1200)==TOTAL);
++        packet(p,sizeof(p),TOTAL+1);assert(!sequence(p,sizeof(p),1200));
++        packet(p,sizeof(p),1);p[0]^=1;assert(!sequence(p,sizeof(p),1200));
++        assert(!sequence(p,12,1200));puts("PASS bounded UDP sequence encoding and validation");return 0;
++    }
++    char host[64];assert(!gethostname(host,sizeof(host)) && !geteuid());
++    assert(!strcmp(host,"kit-exit") || !strcmp(host,"kit-client"));
++    assert(argc==4 || argc==5);int sending=!strcmp(argv[1],"send");assert(sending || !strcmp(argv[1],"recv"));assert(argc==(sending?5:4));
++    size_t size=strtoul(argv[sending?4:3],NULL,10);assert(size==128 || size==1200);
++    struct sockaddr_in local=address(argv[2]);assert((!strcmp(host,"kit-exit"))==(!strcmp(argv[2],"10.8.1.1")));
++    int fd=socket(AF_INET,SOCK_DGRAM|SOCK_CLOEXEC,0);assert(fd>=0);
++    int bytes=4*1024*1024;assert(!setsockopt(fd,SOL_SOCKET,sending?SO_SNDBUF:SO_RCVBUFFORCE,&bytes,sizeof(bytes)));
++    int actual=0;socklen_t actual_size=sizeof(actual);assert(!getsockopt(fd,SOL_SOCKET,sending?SO_SNDBUF:SO_RCVBUF,&actual,&actual_size));assert(sending || actual>=bytes);
++    if(sending)local.sin_port=0;
++    assert(!bind(fd,(void *)&local,sizeof(local)));
++    uint64_t start=ns(CLOCK_MONOTONIC),wall=ns(CLOCK_REALTIME);
++    if(sending) {
++        struct sockaddr_in target=address(argv[3]);assert(target.sin_addr.s_addr!=local.sin_addr.s_addr);
++        unsigned char data[BATCH][1200];struct iovec iov[BATCH]={0};struct mmsghdr msg[BATCH]={0};
++        for(unsigned i=0;i<BATCH;i++){iov[i].iov_base=data[i];iov[i].iov_len=size;msg[i].msg_hdr.msg_iov=&iov[i];msg[i].msg_hdr.msg_iovlen=1;msg[i].msg_hdr.msg_name=&target;msg[i].msg_hdr.msg_namelen=sizeof(target);}
++        struct timeval timeout={.tv_sec=1};assert(!setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout)));
++        unsigned sent=0;
++        while(sent<TOTAL) {
++            uint64_t at=start+(uint64_t)sent*1000000000/PPS;struct timespec t={(time_t)(at/1000000000),(long)(at%1000000000)};
++            int e;do{e=clock_nanosleep(CLOCK_MONOTONIC,TIMER_ABSTIME,&t,NULL);}while(e==EINTR);assert(!e);
++            unsigned count=TOTAL-sent<BATCH?TOTAL-sent:BATCH;
++            for(unsigned i=0;i<count;i++){packet(data[i],size,sent+i+1);msg[i].msg_len=0;}
++            unsigned done=0;
++            while(done<count){int n=sendmmsg(fd,msg+done,count-done,0);if(n<0 && errno==EINTR)continue;assert(n>0);done+=(unsigned)n;}
++            sent+=count;
++        }
++        uint64_t at=start+(uint64_t)SECONDS*1000000000;struct timespec t={(time_t)(at/1000000000),(long)(at%1000000000)};
++        while(clock_nanosleep(CLOCK_MONOTONIC,TIMER_ABSTIME,&t,NULL)==EINTR){}
++        uint64_t end=ns(CLOCK_MONOTONIC);
++        printf("{\"tool\":\"coldwire-lab-udp36\",\"sent\":%u,\"payload\":%zu,\"start_monotonic_ns\":%"PRIu64",\"end_monotonic_ns\":%"PRIu64",\"start_wall_ns\":%"PRIu64",\"end_wall_ns\":%"PRIu64",\"seconds\":%.9f,\"batch\":%u,\"socket_buffer_bytes\":%d}\n",sent,size,start,end,wall,ns(CLOCK_REALTIME),(double)(end-start)/1e9,BATCH,actual);
++    } else {
++        unsigned char *seen=calloc(TOTAL+1,1),data[1536];assert(seen);unsigned unique=0,duplicate=0,invalid=0;
++        while(ns(CLOCK_MONOTONIC)-start<UINT64_C(67000000000)) {
++            struct pollfd p={.fd=fd,.events=POLLIN};int ready=poll(&p,1,50);if(ready<0 && errno==EINTR)continue;assert(ready>=0);if(!ready)continue;
++            for(;;){ssize_t n=recv(fd,data,sizeof(data),MSG_DONTWAIT);if(n<0 && (errno==EAGAIN || errno==EWOULDBLOCK))break;if(n<0 && errno==EINTR)continue;assert(n>=0);uint32_t v=sequence(data,(size_t)n,size);if(!v)invalid++;else if(seen[v])duplicate++;else{seen[v]=1;unique++;}}
++        }
++        printf("{\"tool\":\"coldwire-lab-udp36\",\"unique\":%u,\"duplicates\":%u,\"invalid\":%u,\"payload\":%zu,\"socket_buffer_bytes\":%d,\"start_wall_ns\":%"PRIu64",\"end_wall_ns\":%"PRIu64"}\n",unique,duplicate,invalid,size,actual,wall,ns(CLOCK_REALTIME));free(seen);
++    }
++    close(fd);return 0;
++}
+--- a/experimental/awg-prefilter/prefilter.c
++++ b/experimental/awg-prefilter/prefilter.c
+@@ -32,7 +32,7 @@
+ /* The lab offers bursts up to 4096 packets; 2048 overflowed on the faster backend. */
+ enum { QUEUE_MAXLEN = 4096 };
+ static uint64_t counts[REASONS], bytes, copied_bytes, netlink_enobufs;
+-static uint64_t receive_calls, received_datagrams, send_calls, submitted_verdicts;
++static uint64_t receive_calls, received_datagrams, send_calls, submitted_verdicts, verdict_missing;
+ static unsigned char hpk[32], mac_key[32];
+ static EVP_CIPHER_CTX *cipher;
+ static EVP_MAC *algorithm;
+@@ -76,6 +76,7 @@
+     printf("{\"bytes\":%llu,\"copied_bytes\":%llu,\"netlink_enobufs\":%llu",
+            (unsigned long long)bytes, (unsigned long long)copied_bytes,
+            (unsigned long long)netlink_enobufs);
++    printf(",\"verdict_missing\":%llu", (unsigned long long)verdict_missing);
+     for (int i = 0; i < REASONS; i++)
+         printf(",\"%s\":%llu", names[i], (unsigned long long)counts[i]);
+     printf(",\"receive_calls\":%llu,\"received_datagrams\":%llu,\"send_calls\":%llu,\"submitted_verdicts\":%llu",
+@@ -263,7 +264,17 @@
+                           verdict_mark(reason, nfq_get_nfmark(data)));
+ }
+ 
+-static int handle_datagram(struct nfq_handle *handle, char *buffer, int length, size_t *original_length) {
++// Conntrack can discard a queued packet before its individual verdict returns.
++static int missing_verdict(const struct nlmsghdr *h, uint16_t number) {
++    if (h->nlmsg_type!=NLMSG_ERROR || h->nlmsg_len<NLMSG_LENGTH(sizeof(struct nlmsgerr)+sizeof(struct nfgenmsg))) return 0;
++    struct nlmsgerr error;struct nfgenmsg family;
++    memcpy(&error,NLMSG_DATA(h),sizeof(error));
++    memcpy(&family,(const char *)NLMSG_DATA(h)+sizeof(error),sizeof(family));
++    return error.error==-ENOENT && error.msg.nlmsg_type==((NFNL_SUBSYS_QUEUE<<8)|NFQNL_MSG_VERDICT) &&
++        error.msg.nlmsg_len>=NLMSG_LENGTH(sizeof(family)) && ntohs(family.res_id)==number;
++}
++
++static int handle_datagram(struct nfq_handle *handle, char *buffer, int length, size_t *original_length, uint16_t number) {
+     int remaining = length;
+     struct nlmsghdr *header = (struct nlmsghdr *)buffer;
+     while (NLMSG_OK(header, remaining)) {
+@@ -279,7 +290,8 @@
+                 *original_length = ntohl(value);
+             }
+         }
+-        if (nfq_handle_packet(handle, (char *)header, (int)header->nlmsg_len) < 0) return -1;
++        if (missing_verdict(header, number)) verdict_missing++;
++        else if (nfq_handle_packet(handle, (char *)header, (int)header->nlmsg_len) < 0) return -1;
+         /* The final message may omit alignment padding. */
+         if (header->nlmsg_len == (unsigned int)remaining) return 0;
+         header = NLMSG_NEXT(header, remaining);
+@@ -372,12 +384,12 @@
+                     result = 1;
+                     break;
+                 }
+-                if (handle_datagram(handle, buffers[i], (int)incoming[i].msg_len, &original_length) < 0) { result = 1; break; }
++                if (handle_datagram(handle, buffers[i], (int)incoming[i].msg_len, &original_length, (uint16_t)number) < 0) { result = 1; break; }
+             }
+             if (!result && flush_verdicts() < 0) result = 1;
+ #else
+             received_datagrams++;
+-            if (handle_datagram(handle, buffer, (int)n, &original_length) < 0) result = 1;
++            if (handle_datagram(handle, buffer, (int)n, &original_length, (uint16_t)number) < 0) result = 1;
+ #endif
+             if (result) { perror("Queue processing failed"); break; }
+         }
+--- /dev/null
++++ b/experimental/awg-prefilter/test_netlink.c
+@@ -0,0 +1,46 @@
++/* SPDX-License-Identifier: MIT */
++#define _GNU_SOURCE
++#include <assert.h>
++#define nfq_handle_packet mock_handle_packet
++#define main prefilter_main
++#include "prefilter.c"
++#undef main
++#undef nfq_handle_packet
++
++static unsigned handled;
++int mock_handle_packet(struct nfq_handle *handle, char *buffer, int length) {
++    (void)handle; (void)buffer; (void)length;
++    handled++; errno = EOPNOTSUPP; return -1;
++}
++
++int main(void) {
++    unsigned char raw[128] __attribute__((aligned)) = {0};
++    struct nlmsghdr *header = (struct nlmsghdr *)raw;
++    header->nlmsg_type = NLMSG_ERROR;
++    header->nlmsg_len = NLMSG_LENGTH(sizeof(struct nlmsgerr) + sizeof(struct nfgenmsg));
++    struct nlmsgerr error = {.error = -ENOENT, .msg = {
++        .nlmsg_type = (NFNL_SUBSYS_QUEUE << 8) | NFQNL_MSG_VERDICT,
++        .nlmsg_len = NLMSG_LENGTH(sizeof(struct nfgenmsg))}};
++    struct nfgenmsg family = {.res_id = htons(100)};
++    memcpy(NLMSG_DATA(header), &error, sizeof(error));
++    memcpy((char *)NLMSG_DATA(header) + sizeof(error), &family, sizeof(family));
++    size_t original = 0;
++    assert(handle_datagram(NULL, (char *)raw, header->nlmsg_len, &original, 100) == 0);
++    assert(verdict_missing == 1 && handled == 0 && submitted_verdicts == 0);
++    for (unsigned test = 0; test < 5; test++) {
++        error.error = test == 0 ? -EPERM : test == 1 ? 0 : -ENOENT;
++        error.msg.nlmsg_type = (NFNL_SUBSYS_QUEUE << 8) | (test == 2 ? NFQNL_MSG_CONFIG : NFQNL_MSG_VERDICT);
++        error.msg.nlmsg_len = test == 4 ? NLMSG_LENGTH(0) : NLMSG_LENGTH(sizeof(family));
++        family.res_id = htons(test == 3 ? 101 : 100);
++        memcpy(NLMSG_DATA(header), &error, sizeof(error));
++        memcpy((char *)NLMSG_DATA(header) + sizeof(error), &family, sizeof(family));
++        assert(handle_datagram(NULL, (char *)raw, header->nlmsg_len, &original, 100) < 0);
++    }
++    assert(handled == 5 && verdict_missing == 1 && submitted_verdicts == 0);
++    header->nlmsg_len = NLMSG_LENGTH(sizeof(struct nlmsgerr)) - 1;
++    assert(handle_datagram(NULL, (char *)raw, header->nlmsg_len, &original, 100) < 0);
++    assert(verdict_missing == 1);
++    assert(handle_datagram(NULL, (char *)raw, NLMSG_HDRLEN - 1, &original, 100) < 0 && errno == EPROTO);
++    puts("PASS only ENOENT for this queue's individual verdict is nonfatal");
++    return 0;
++}

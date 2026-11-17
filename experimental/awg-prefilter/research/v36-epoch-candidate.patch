@@ -1,0 +1,158 @@
+--- a/experimental/awg-prefilter/flow-confirmation/agent.py
++++ b/experimental/awg-prefilter/flow-confirmation/agent.py
+@@ -18,6 +18,7 @@
+ import subprocess
+ import time
+ import conntrack
++import trace32
+ 
+ TABLE='awg_kernel_guard_lab'
+ LATE_TABLE='awg_escrow_bridge_lab'
+@@ -53,6 +54,11 @@
+         self.flows={};self.observed={};self.looked_up={};self.auth_hints={};self.last_escrow=0
+         self.ready=set();self.probed=set()
+         self.pending={};self.leases={};self.last_query={};self.peer_stamp={};self.history=[];self.stats={'queries':0,'grants':0,'rejected':0,'moves':0}
++    def new_control_session(self):
++        # Fresh nonces bind proofs to this authenticated session; B's clock may have restarted.
++        self.pending.clear();self.ready.clear();self.probed.clear();self.peer_stamp.clear()
++    def control_timed_out(self,now):
++        return any(deadline<=now and request not in self.ready for request,(_,deadline) in self.pending.items())
+     def _observe(self,port,now):
+         if port not in self.observed and len(self.observed)>=MAX_PENDING:
+             protected=set(self.leases)|{v[0] for v in self.pending.values()}|{f for f,t in self.auth_hints.items() if t>now}
+@@ -85,11 +91,19 @@
+         else:self.auth_hints.pop(self.flows.pop(port,None),None)
+         if not flow:self.observed.pop(port,None);self.looked_up.pop(port,None)
+         return flow is not None
+-    def current_flows(self,now):
+-        for port in list(self.observed):
+-            if now-self.observed[port]>=LEASE_SECONDS:
++    def current_flows(self,config,now):
++        # C announces a holding flow once; recheck its generation after a control outage.
++        stale=[p for p in self.observed if now-self.observed[p]>=LEASE_SECONDS]
++        for port in stale[:16]:
++            previous=self.flows.get(port)
++            try:current=read_flow(config,port) if previous else None
++            except (OSError,ValueError):
++                self.stats['lookup_failed']=self.stats.get('lookup_failed',0)+1;current=None
++            if previous is not None and current==previous:
++                self.observed[port]=now;self.looked_up[port]=now
++            else:
+                 self.auth_hints.pop(self.flows.pop(port,None),None);self.observed.pop(port);self.looked_up.pop(port,None)
+-        return set(self.flows.values())
++        return {f for p,f in self.flows.items() if now-self.observed[p]<LEASE_SECONDS}
+     def candidate(self,data,config,now):
+         if len(data)!=CANDIDATE.size:return False
+         magic,address,port,identity=CANDIDATE.unpack(data)
+@@ -132,14 +146,16 @@
+         if not pending or pending[1]<=now:return False
+         self.ready.add(message['ready']);return True
+     def probes(self,flows,now):
++        # An acknowledged probe stays untrusted until B authenticates its transport packet.
+         return [(n,f) for n,(f,deadline) in self.pending.items()
+                 if self.escrow_socket and n in self.ready and n not in self.probed
+-                and deadline>now and f in flows and self.auth_hints.get(f,0)>now
++                and deadline>now and f in flows
+                 and (f not in self.leases or self.leases[f][1]<=now)]
+     def confirm(self,message,flows,now):
+         if set(message) not in ({'nonce','peer','stamp'},{'nonce','peer','stamp','recovery'}) or type(message.get('recovery',False)) is not bool or not nonce(message['nonce']) or not nonce(message['peer']) or type(message['stamp']) is not int or message['stamp']<=0:
+             self.stats['rejected']+=1;return False
+         pending=self.pending.pop(message['nonce'],None)
++        trace32.record('confirmation',stamp=message['stamp'],previous_stamp=self.peer_stamp.get(message['peer'],0),nonce=message['nonce'],pending_alive=bool(pending and pending[1]>now),flow_current=bool(pending and pending[0] in flows))
+         if not pending or pending[0] not in flows or pending[1]<=now or message['stamp']<=self.peer_stamp.get(message['peer'],0):
+             self.stats['rejected']+=1;return False
+         flow=pending[0];peer=message['peer']
+@@ -156,6 +172,7 @@
+         for old in evicted:del self.leases[old]
+         self.history.append({'time_ns':int(now*1e9),'wall_ns':time.time_ns(),'flow':dataclasses.asdict(flow),'peer':peer,'recovery':message.get('recovery',False),'replaced':[dataclasses.asdict(f) for f in evicted]})
+         self.history=self.history[-256:]
++        trace32.record('accepted',stamp=message['stamp'],nonce=message['nonce'])
+         self.stats['grants']+=1;return True
+ 
+ class Exit:
+@@ -275,6 +292,7 @@
+     assert type(config['vpn_port']) is int and 1<=config['vpn_port']<=65535
+     escrow_socket=config.get('escrow_socket') if role=='entry' else None
+     assert escrow_socket in (None,ESCROW_SOCKET)
++    trace32.start(role)
+     ctx=context(config,role);alive=True
+     def stop(*_):
+         nonlocal alive
+@@ -306,6 +324,8 @@
+                 try:
+                     connection=socket.create_connection((config['exit'],39101),timeout=1,source_address=(config['entry'],0))
+                     stream=Stream(ctx.wrap_socket(connection,server_hostname=config['exit']))
++                    trace32.record('new_TLS',prior_stamp=max(state.peer_stamp.values(),default=0))
++                    state.new_control_session()
+                 except (OSError,ssl.SSLError):next_connect=now+1
+             readers=([listener,events] if role=='exit' else [])+([stream.socket] if stream else [])
+             if candidates:readers.append(candidates)
+@@ -321,10 +341,13 @@
+                         if trusted and not flags and state.candidate(data,config,time.monotonic()):next_tick=0
+                 if role=='exit' and listener in ready:
+                     connection,address=listener.accept()
+-                    if stream or address[0]!=config['entry']:connection.close()
++                    if address[0]!=config['entry']:connection.close()
+                     else:
+                         connection.settimeout(1)
+-                        try:stream=Stream(ctx.wrap_socket(connection,server_side=True));state=Exit(config['entry'])
++                        previous=stream
++                        try:
++                            stream=Stream(ctx.wrap_socket(connection,server_side=True));state=Exit(config['entry'])
++                            if previous:previous.socket.close()
+                         except (OSError,ssl.SSLError):connection.close()
+                 if stream and stream.socket in ready:
+                     for message in stream.read():
+@@ -343,7 +366,7 @@
+                                     except (OSError,ValueError):flow=None
+                                     if flow:fresh.add(flow)
+                                 lease_changed=state.confirm(message,fresh,time.monotonic()) or lease_changed
+-                            flows=state.current_flows(time.monotonic())
++                            flows=state.current_flows(config,time.monotonic())
+                 if role=='exit' and events in ready:
+                     data,ancillary,flags,_=events.recvmsg(256,socket.CMSG_SPACE(12))
+                     trusted=any(level==socket.SOL_SOCKET and kind==socket.SCM_CREDENTIALS and struct.unpack('3i',value[:12])[1]==0 for level,kind,value in ancillary)
+@@ -352,6 +375,9 @@
+                         if stream:
+                             for message in messages:stream.queue(message)
+                 if stream and stream.socket in writes:stream.write()
++                if role=='entry' and stream and state.control_timed_out(time.monotonic()):
++                    state.stats['control_timeouts']=state.stats.get('control_timeouts',0)+1
++                    raise TimeoutError('Control acknowledgement deadline expired')
+             except (OSError,ssl.SSLError,EOFError,AssertionError,ValueError):
+                 if stream:stream.socket.close();stream=None
+                 if role=='entry':
+@@ -359,7 +385,7 @@
+             now=time.monotonic()
+             if role=='entry' and (now>=next_tick or lease_changed):
+                 if now>=next_tick:
+-                    flows=state.current_flows(now)
++                    flows=state.current_flows(config,now)
+                     if not stream:state.leases={f:v for f,v in state.leases.items() if f in flows and v[1]>now}
+                     requests=state.queries(flows,now) if stream else []
+                     for message in requests:stream.queue(message)
+--- /dev/null
++++ b/experimental/awg-prefilter/flow-confirmation/trace32.py
+@@ -0,0 +1,22 @@
++import atexit,collections,json,signal,time
++from pathlib import Path
++events=collections.deque(maxlen=16384);dropped=0;role='unset';before=None
++def ctstats():
++ try:
++  lines=Path('/proc/net/stat/nf_conntrack').read_text().splitlines();header=lines[0].split();rows=[dict(zip(header,[int(v,16) for v in line.split()])) for line in lines[1:]]
++  return {key:(rows[0][key] if key=='entries' else sum(row[key] for row in rows)) for key in header}
++ except (OSError,ValueError,IndexError,KeyError):return {'unavailable':True}
++def record(stage,flow=None,**fields):
++ global dropped
++ if flow is not None and flow['source'] not in ('192.168.76.30','192.168.76.31'):return
++ if len(events)==events.maxlen:dropped+=1
++ item={'stage':stage,'mono_ns':time.monotonic_ns(),'wall_ns':time.time_ns(),**fields}
++ if flow is not None:item['flow']=flow
++ events.append(item)
++def dump(*_):
++ if role=='unset':return
++ target=Path('/root/flow-confirmation/trace32-'+role+'.json')
++ target.write_text(json.dumps({'role':role,'capacity':events.maxlen,'dropped':dropped,'events':list(events),'conntrack_before':before,'conntrack_after':ctstats()})+'\n')
++def start(name):
++ global role,before
++ role=name;before=ctstats();atexit.register(dump);signal.signal(signal.SIGUSR1,dump)

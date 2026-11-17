@@ -32,7 +32,7 @@ enum { COPY_RANGE = 60 + 8 + 12 + 148 - 16 };
 /* The lab offers bursts up to 4096 packets; 2048 overflowed on the faster backend. */
 enum { QUEUE_MAXLEN = 4096 };
 static uint64_t counts[REASONS], bytes, copied_bytes, netlink_enobufs;
-static uint64_t receive_calls, received_datagrams, send_calls, submitted_verdicts;
+static uint64_t receive_calls, received_datagrams, send_calls, submitted_verdicts, verdict_missing;
 static unsigned char hpk[32], mac_key[32];
 static EVP_CIPHER_CTX *cipher;
 static EVP_MAC *algorithm;
@@ -76,6 +76,7 @@ static void report(void) {
     printf("{\"bytes\":%llu,\"copied_bytes\":%llu,\"netlink_enobufs\":%llu",
            (unsigned long long)bytes, (unsigned long long)copied_bytes,
            (unsigned long long)netlink_enobufs);
+    printf(",\"verdict_missing\":%llu", (unsigned long long)verdict_missing);
     for (int i = 0; i < REASONS; i++)
         printf(",\"%s\":%llu", names[i], (unsigned long long)counts[i]);
     printf(",\"receive_calls\":%llu,\"received_datagrams\":%llu,\"send_calls\":%llu,\"submitted_verdicts\":%llu",
@@ -263,7 +264,17 @@ static int callback(struct nfq_q_handle *queue, struct nfgenmsg *message, struct
                           verdict_mark(reason, nfq_get_nfmark(data)));
 }
 
-static int handle_datagram(struct nfq_handle *handle, char *buffer, int length, size_t *original_length) {
+// Conntrack can discard a queued packet before its individual verdict returns.
+static int missing_verdict(const struct nlmsghdr *h, uint16_t number) {
+    if (h->nlmsg_type!=NLMSG_ERROR || h->nlmsg_len<NLMSG_LENGTH(sizeof(struct nlmsgerr)+sizeof(struct nfgenmsg))) return 0;
+    struct nlmsgerr error;struct nfgenmsg family;
+    memcpy(&error,NLMSG_DATA(h),sizeof(error));
+    memcpy(&family,(const char *)NLMSG_DATA(h)+sizeof(error),sizeof(family));
+    return error.error==-ENOENT && error.msg.nlmsg_type==((NFNL_SUBSYS_QUEUE<<8)|NFQNL_MSG_VERDICT) &&
+        error.msg.nlmsg_len>=NLMSG_LENGTH(sizeof(family)) && ntohs(family.res_id)==number;
+}
+
+static int handle_datagram(struct nfq_handle *handle, char *buffer, int length, size_t *original_length, uint16_t number) {
     int remaining = length;
     struct nlmsghdr *header = (struct nlmsghdr *)buffer;
     while (NLMSG_OK(header, remaining)) {
@@ -279,7 +290,8 @@ static int handle_datagram(struct nfq_handle *handle, char *buffer, int length, 
                 *original_length = ntohl(value);
             }
         }
-        if (nfq_handle_packet(handle, (char *)header, (int)header->nlmsg_len) < 0) return -1;
+        if (missing_verdict(header, number)) verdict_missing++;
+        else if (nfq_handle_packet(handle, (char *)header, (int)header->nlmsg_len) < 0) return -1;
         /* The final message may omit alignment padding. */
         if (header->nlmsg_len == (unsigned int)remaining) return 0;
         header = NLMSG_NEXT(header, remaining);
@@ -372,12 +384,12 @@ int main(int argc, char **argv) {
                     result = 1;
                     break;
                 }
-                if (handle_datagram(handle, buffers[i], (int)incoming[i].msg_len, &original_length) < 0) { result = 1; break; }
+                if (handle_datagram(handle, buffers[i], (int)incoming[i].msg_len, &original_length, (uint16_t)number) < 0) { result = 1; break; }
             }
             if (!result && flush_verdicts() < 0) result = 1;
 #else
             received_datagrams++;
-            if (handle_datagram(handle, buffer, (int)n, &original_length) < 0) result = 1;
+            if (handle_datagram(handle, buffer, (int)n, &original_length, (uint16_t)number) < 0) result = 1;
 #endif
             if (result) { perror("Queue processing failed"); break; }
         }

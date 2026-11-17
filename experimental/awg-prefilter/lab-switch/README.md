@@ -206,3 +206,28 @@ labels its current occupant. Global counters provide whole-run accounting.
 This remains a lab tool. Its tests do not establish production networking
 support or a maximum packet rate. Measure actual sender and arrival rates,
 useful throughput, drops and whole-VM CPU together.
+
+## Independent useful UDP
+
+`udp-load.c` is a Linux-only workload for the disposable `kit-client` and
+`kit-exit` VMs. It sends exactly 360,000 sequenced packets at 6000/s over
+60 seconds; the receiver runs for 67 seconds and counts unique, duplicate
+and invalid packets. It supports 128- and 1200-byte payloads, only the lab
+addresses `10.8.1.1` and `10.8.1.2`, and UDP port 5201. It has no TCP control
+channel, which makes it usable during deliberate VPN/control outages.
+It is a test application; the VPN binaries and profiles are unchanged.
+
+```sh
+cc -O2 -std=c11 -Wall -Wextra -Werror udp-load.c -o udp-load
+./udp-load --self-test
+```
+
+Start `./udp-load recv 10.8.1.1 128` as root in `kit-exit`, then run
+`./udp-load send 10.8.1.2 10.8.1.1 128` in the client's VPN namespace as root.
+For download, swap the sender and receiver addresses and use payload 1200.
+Keep assertions enabled. The receiver uses `SO_RCVBUFFORCE` for a private
+4-MiB request (8 MiB as reported by Linux); it does not change global sysctls.
+This avoids losing a recovery burst in the lab application's small default
+buffer. Real applications can still overflow their own buffers. Compare
+inner-interface captures with receiver counts, rather than treating both
+as the same loss metric. See [v36](../validation-v36.md).

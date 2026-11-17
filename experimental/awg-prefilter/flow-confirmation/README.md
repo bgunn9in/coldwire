@@ -24,6 +24,13 @@ and [v18 measurements](../validation-v18.md).
 
 ## How admission works
 
+The [v36 control-recovery study](../validation-v36.md) fixes stale TLS
+sessions, B's restarted monotonic clock, and loss of still-live flow
+observations during an outage. The main header filter also tolerates a
+kernel `ENOENT` for an individual verdict whose queued packet has already
+disappeared. Other netlink errors still stop the filter. These changes do
+not extend leases or change client profiles, keys or wire packets.
+
 The [v35 latency study](../validation-v35.md) changes B's existing maintenance
 period from 100 to 10 ms, preserving the 250-ms replay spacing. All 4,340,141
 useful UDP packets and 1200 ping replies in 12 qualified trials arrived.
@@ -117,6 +124,24 @@ The private Unix datagram socket accepts root credentials and carries no
 payload. Its notification format includes a monotonic timestamp, observed
 source address/port, peer identifier and transport counter. B still checks
 every forwarded VPN packet cryptographically.
+
+If a nonce has no acknowledgement by its existing three-second deadline,
+A reconnects the control channel. An acknowledged request without a data
+proof expires normally; it does not itself force a reconnect. B authenticates
+a replacement with mutual TLS before closing the previous stream. A failed
+certificate leaves the old stream intact. A clears old pending nonces and
+proof-order timestamps only after a new authenticated TLS session, so B can
+restart its monotonic clock without making old session proofs reusable.
+
+A keeps at most 128 observed mappings. After ten seconds it rechecks up to
+sixteen old observations per pass with exact conntrack GETs. Only the same
+live generation stays in the cache; a missing or replaced mapping is removed.
+That cache check grants no trust. With escrow enabled, an acknowledged fresh
+nonce may request one held-packet probe even without an earlier authenticated
+port hint. C still checks the exact live generation, and probes share the
+existing 64/s, burst-64 budget and transport-only bridge classification.
+A lease still requires B's fresh cryptographic confirmation. Hints retain
+their challenge priority and reserved slots.
 
 ## Bounds and security limits
 
@@ -213,8 +238,8 @@ sources can still exhaust the shared budget; this is not source authentication.
 Discovery also covers reused NAT tuples whose conntrack entry is still alive;
 requiring `ct original packets 1` would miss them.
 
-Once B acknowledges a pending nonce and A has an authenticated hint for that
-exact flow, A can request one held packet as a forward probe. A rechecks the
+Once B acknowledges a pending nonce, A can request one held packet as a
+forward probe, including for a flow without an earlier authenticated hint. A rechecks the
 generation first and skips the probe if that flow already has a live lease.
 The root-only `CWS1` request expires within one second and
 does not grant a lease. Its local `0x04000000` mark uses the separate 64/s
@@ -502,7 +527,8 @@ sudo python3 agent.py --vm-test entry /root/flow-confirmation/config.json
 Both status files report connection state and bounded counters. A also
 records grants, expiry and replaced tuples. Measure early client discards,
 NFQUEUE loss, useful throughput, probe delivery and whole-VM CPU together.
-The [latest report](../validation-v29.md) tests bounded forward escrow under
+[V36](../validation-v36.md) tests control recovery and vanished NFQUEUE verdicts.
+The [v29 study](../validation-v29.md) tests bounded forward escrow under
 multi-IP noise. [v28](../validation-v28.md) compares admission bursts.
 [v27](../validation-v27.md) tests recovery independently of
 notification sampling. [v26](../validation-v26.md) separates late-response

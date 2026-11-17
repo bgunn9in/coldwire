@@ -53,6 +53,11 @@ class Entry:
         self.flows={};self.observed={};self.looked_up={};self.auth_hints={};self.last_escrow=0
         self.ready=set();self.probed=set()
         self.pending={};self.leases={};self.last_query={};self.peer_stamp={};self.history=[];self.stats={'queries':0,'grants':0,'rejected':0,'moves':0}
+    def new_control_session(self):
+        # Fresh nonces bind proofs to this authenticated session; B's clock may have restarted.
+        self.pending.clear();self.ready.clear();self.probed.clear();self.peer_stamp.clear()
+    def control_timed_out(self,now):
+        return any(deadline<=now and request not in self.ready for request,(_,deadline) in self.pending.items())
     def _observe(self,port,now):
         if port not in self.observed and len(self.observed)>=MAX_PENDING:
             protected=set(self.leases)|{v[0] for v in self.pending.values()}|{f for f,t in self.auth_hints.items() if t>now}
@@ -85,11 +90,19 @@ class Entry:
         else:self.auth_hints.pop(self.flows.pop(port,None),None)
         if not flow:self.observed.pop(port,None);self.looked_up.pop(port,None)
         return flow is not None
-    def current_flows(self,now):
-        for port in list(self.observed):
-            if now-self.observed[port]>=LEASE_SECONDS:
+    def current_flows(self,config,now):
+        # C announces a holding flow once; recheck its generation after a control outage.
+        stale=[p for p in self.observed if now-self.observed[p]>=LEASE_SECONDS]
+        for port in stale[:16]:
+            previous=self.flows.get(port)
+            try:current=read_flow(config,port) if previous else None
+            except (OSError,ValueError):
+                self.stats['lookup_failed']=self.stats.get('lookup_failed',0)+1;current=None
+            if previous is not None and current==previous:
+                self.observed[port]=now;self.looked_up[port]=now
+            else:
                 self.auth_hints.pop(self.flows.pop(port,None),None);self.observed.pop(port);self.looked_up.pop(port,None)
-        return set(self.flows.values())
+        return {f for p,f in self.flows.items() if now-self.observed[p]<LEASE_SECONDS}
     def candidate(self,data,config,now):
         if len(data)!=CANDIDATE.size:return False
         magic,address,port,identity=CANDIDATE.unpack(data)
@@ -132,9 +145,10 @@ class Entry:
         if not pending or pending[1]<=now:return False
         self.ready.add(message['ready']);return True
     def probes(self,flows,now):
+        # An acknowledged probe stays untrusted until B authenticates its transport packet.
         return [(n,f) for n,(f,deadline) in self.pending.items()
                 if self.escrow_socket and n in self.ready and n not in self.probed
-                and deadline>now and f in flows and self.auth_hints.get(f,0)>now
+                and deadline>now and f in flows
                 and (f not in self.leases or self.leases[f][1]<=now)]
     def confirm(self,message,flows,now):
         if set(message) not in ({'nonce','peer','stamp'},{'nonce','peer','stamp','recovery'}) or type(message.get('recovery',False)) is not bool or not nonce(message['nonce']) or not nonce(message['peer']) or type(message['stamp']) is not int or message['stamp']<=0:
@@ -306,6 +320,7 @@ def serve(config,role):
                 try:
                     connection=socket.create_connection((config['exit'],39101),timeout=1,source_address=(config['entry'],0))
                     stream=Stream(ctx.wrap_socket(connection,server_hostname=config['exit']))
+                    state.new_control_session()
                 except (OSError,ssl.SSLError):next_connect=now+1
             readers=([listener,events] if role=='exit' else [])+([stream.socket] if stream else [])
             if candidates:readers.append(candidates)
@@ -321,10 +336,13 @@ def serve(config,role):
                         if trusted and not flags and state.candidate(data,config,time.monotonic()):next_tick=0
                 if role=='exit' and listener in ready:
                     connection,address=listener.accept()
-                    if stream or address[0]!=config['entry']:connection.close()
+                    if address[0]!=config['entry']:connection.close()
                     else:
                         connection.settimeout(1)
-                        try:stream=Stream(ctx.wrap_socket(connection,server_side=True));state=Exit(config['entry'])
+                        previous=stream
+                        try:
+                            stream=Stream(ctx.wrap_socket(connection,server_side=True));state=Exit(config['entry'])
+                            if previous:previous.socket.close()
                         except (OSError,ssl.SSLError):connection.close()
                 if stream and stream.socket in ready:
                     for message in stream.read():
@@ -343,7 +361,7 @@ def serve(config,role):
                                     except (OSError,ValueError):flow=None
                                     if flow:fresh.add(flow)
                                 lease_changed=state.confirm(message,fresh,time.monotonic()) or lease_changed
-                            flows=state.current_flows(time.monotonic())
+                            flows=state.current_flows(config,time.monotonic())
                 if role=='exit' and events in ready:
                     data,ancillary,flags,_=events.recvmsg(256,socket.CMSG_SPACE(12))
                     trusted=any(level==socket.SOL_SOCKET and kind==socket.SCM_CREDENTIALS and struct.unpack('3i',value[:12])[1]==0 for level,kind,value in ancillary)
@@ -352,6 +370,9 @@ def serve(config,role):
                         if stream:
                             for message in messages:stream.queue(message)
                 if stream and stream.socket in writes:stream.write()
+                if role=='entry' and stream and state.control_timed_out(time.monotonic()):
+                    state.stats['control_timeouts']=state.stats.get('control_timeouts',0)+1
+                    raise TimeoutError('Control acknowledgement deadline expired')
             except (OSError,ssl.SSLError,EOFError,AssertionError,ValueError):
                 if stream:stream.socket.close();stream=None
                 if role=='entry':
@@ -359,7 +380,7 @@ def serve(config,role):
             now=time.monotonic()
             if role=='entry' and (now>=next_tick or lease_changed):
                 if now>=next_tick:
-                    flows=state.current_flows(now)
+                    flows=state.current_flows(config,now)
                     if not stream:state.leases={f:v for f,v in state.leases.items() if f in flows and v[1]>now}
                     requests=state.queries(flows,now) if stream else []
                     for message in requests:stream.queue(message)
