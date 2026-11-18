@@ -1,0 +1,155 @@
+diff --git a/experimental/awg-prefilter/flow-confirmation/agent.py b/experimental/awg-prefilter/flow-confirmation/agent.py
+index bc1a39b..3edff25 100644
+--- a/experimental/awg-prefilter/flow-confirmation/agent.py
++++ b/experimental/awg-prefilter/flow-confirmation/agent.py
+@@ -437,7 +437,10 @@ def serve(config,role):
+             if candidates:readers.append(candidates)
+             writable=[stream.socket] if stream and stream.outgoing else []
+             if handshake:(writable if handshake.write else readers).append(handshake.socket)
+-            ready,writes,_=select.select(readers,writable,[],.05)
++            timeout=.05
++            if role=='entry':
++                timeout=min(timeout,max(0,next_tick-now))
++            ready,writes,_=select.select(readers,writable,[],timeout)
+             lease_changed=False;established=False
+             try:
+                 if candidates and candidates in ready:
+diff --git a/experimental/awg-prefilter/flow-confirmation/test_agent.py b/experimental/awg-prefilter/flow-confirmation/test_agent.py
+index a846d66..f8f9c73 100644
+--- a/experimental/awg-prefilter/flow-confirmation/test_agent.py
++++ b/experimental/awg-prefilter/flow-confirmation/test_agent.py
+@@ -134,6 +134,31 @@ class ConfirmationTests(unittest.TestCase):
+         self.assertTrue(self.entry.confirm(proof,{self.flow},16.3))
+         self.assertLess(proof['stamp'],old['stamp'])
+ 
++    def test_entry_select_wakes_for_maintenance_deadline(self):
++        handlers={}
++        clock=[10.0]
++        waits=[]
++
++        def select(readers,writers,errors,timeout):
++            waits.append(timeout)
++            clock[0]=(10.0,10.07,10.1,10.15)[len(waits)-1]
++            if len(waits)==4:
++                handlers[agent.signal.SIGTERM]()
++            return [],[],[]
++
++        with mock.patch.object(agent.os,'geteuid',return_value=0,create=True), \
++             mock.patch.object(agent.Path,'read_text',return_value='kit-entry'), \
++             mock.patch.object(agent,'context'),mock.patch.object(agent,'restore_leases'), \
++             mock.patch.object(agent.signal,'signal',side_effect=lambda sig,fn:handlers.__setitem__(sig,fn)), \
++             mock.patch.object(agent.Handshake,'outgoing',side_effect=ConnectionRefusedError), \
++             mock.patch.object(agent.select,'select',side_effect=select), \
++             mock.patch.object(agent.time,'monotonic',side_effect=lambda:clock[0]), \
++             mock.patch.object(agent,'install_leases'),mock.patch.object(agent,'snapshot'):
++            agent.serve(self.config|{'status':'unused'},'entry')
++        self.assertEqual(len(waits),4)
++        for actual,expected in zip(waits,(0,.05,.03,.05)):
++            self.assertAlmostEqual(actual,expected)
++
+     def test_serve_reconnects_before_pruning_an_unacknowledged_query(self):
+         handlers={};clock=[10.0];steps=[0];connection=mock.Mock();connection.pending.return_value=0;queries=[]
+         opening=mock.Mock(socket=connection,write=True,deadline=12);opening.advance.return_value=True
+diff --git a/experimental/awg-prefilter/lab-switch/native-switch.c b/experimental/awg-prefilter/lab-switch/native-switch.c
+index bbfaffa..fa478c7 100644
+--- a/experimental/awg-prefilter/lab-switch/native-switch.c
++++ b/experimental/awg-prefilter/lab-switch/native-switch.c
+@@ -26,6 +26,7 @@ typedef struct {
+     int active, has_mac;
+     uint64_t pending_since, frames_in, bytes_sent, peak_pending;
+     uint64_t short_sends, blocked_sends, max_pending_age;
++    uint64_t output_drops, last_progress, max_progress_gap;
+ } Peer;
+ 
+ typedef struct { unsigned char mac[6]; int used, peer; uint64_t age; } Mac;
+@@ -62,6 +63,11 @@ static uint32_t be32(const unsigned char *p) {
+ 
+ static unsigned be16(const unsigned char *p) { return (unsigned)p[0] << 8 | p[1]; }
+ 
++static uint64_t queued_send_gap(const Peer *p, uint64_t now) {
++    uint64_t current = p->pending ? now - p->last_progress : 0;
++    return current > p->max_progress_gap ? current : p->max_progress_gap;
++}
++
+ static void initialize(void) {
+     LARGE_INTEGER value;
+     assert(QueryPerformanceFrequency(&value) && value.QuadPart > 0);
+@@ -78,9 +84,7 @@ static void initialize(void) {
+ static void disconnect_peer(int index) {
+     Peer *p = &peers[index];
+     if (p->fd != INVALID_SOCKET) closesocket(p->fd);
+-    p->fd = INVALID_SOCKET;
+-    p->active = p->has_mac = 0;
+-    p->input_len = p->head = p->pending = 0;
++    *p = (Peer){.fd = INVALID_SOCKET, .input = p->input, .output = p->output};
+     for (int i = 0; i < MACS; i++) if (macs[i].used && macs[i].peer == index) macs[i].used = 0;
+ }
+ 
+@@ -104,8 +108,12 @@ static void learn(const unsigned char *mac, int peer) {
+ 
+ static int enqueue(Peer *p, const unsigned char *data, size_t size) {
+     assert(p->pending <= OUTPUT_CAP);
+-    if (size > OUTPUT_CAP - p->pending) { drops++; return 0; }
+-    if (!p->pending) p->pending_since = now_ns();
++    if (size > OUTPUT_CAP - p->pending) {
++        drops++;
++        p->output_drops++;
++        return 0;
++    }
++    if (!p->pending) p->pending_since = p->last_progress = now_ns();
+     size_t tail = (p->head + p->pending) % OUTPUT_CAP;
+     size_t first = size < OUTPUT_CAP - tail ? size : OUTPUT_CAP - tail;
+     memcpy(p->output + tail, data, first);
+@@ -205,6 +213,8 @@ static void write_stats(const char *path) {
+         fprintf(f, "%s{\"source_mac\":", comma++ ? "," : "");
+         if (p->has_mac) fprintf(f, "\"%02x%02x%02x%02x%02x%02x\"", p->mac[0], p->mac[1], p->mac[2], p->mac[3], p->mac[4], p->mac[5]);
+         else fputs("null", f);
++        fprintf(f, ",\"output_drops\":%" PRIu64 ",\"max_queued_send_gap_ns\":%" PRIu64,
++                p->output_drops, queued_send_gap(p, now_ns()));
+         fprintf(f, ",\"frames_in\":%" PRIu64 ",\"bytes_sent\":%" PRIu64 ",\"short_sends\":%" PRIu64
+                 ",\"blocked_sends\":%" PRIu64 ",\"peak_pending_bytes\":%" PRIu64 ",\"max_pending_age_ns\":%" PRIu64 "}",
+                 p->frames_in, p->bytes_sent, p->short_sends, p->blocked_sends, p->peak_pending, p->max_pending_age);
+@@ -225,8 +235,14 @@ static void self_test(void) {
+     assert(enqueue(p, bytes, 4));
+     assert(p->output[OUTPUT_CAP-2] == 1 && p->output[OUTPUT_CAP-1] == 2 && p->output[0] == 3 && p->output[1] == 4);
+     p->pending = OUTPUT_CAP;
+-    assert(!enqueue(p, bytes, 1) && p->pending == OUTPUT_CAP && drops == 1);
++    assert(!enqueue(p, bytes, 1) && p->pending == OUTPUT_CAP && drops == 1 && p->output_drops == 1);
++    assert(peers[1].output_drops == 0);
++    p->pending_since = 10;
++    p->last_progress = 30;
++    p->max_progress_gap = 20;
++    assert(queued_send_gap(p, 40) == 20 && queued_send_gap(p, 60) == 30);
+     disconnect_peer(0);
++    assert(!p->output_drops && !p->last_progress && !p->max_progress_gap);
+     for (unsigned i = 0; i < MACS + 4; i++) {
+         unsigned char mac[] = {2, 0, 0, 0, 0, (unsigned char)i};
+         frames++; learn(mac, 1); assert(lookup(mac) == 1);
+@@ -317,7 +333,10 @@ int main(int argc, char **argv) {
+                 if (count == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) { blocked_sends++; p->blocked_sends++; continue; }
+                 if (count <= 0) { disconnect_peer(i); continue; }
+                 if ((size_t)count < amount) { short_sends++; p->short_sends++; }
+-                uint64_t age = now_ns()-p->pending_since;
++                uint64_t stamp = now_ns();
++                p->max_progress_gap = queued_send_gap(p, stamp);
++                p->last_progress = stamp;
++                uint64_t age = stamp - p->pending_since;
+                 if (age > max_pending_age) max_pending_age = age;
+                 if (age > p->max_pending_age) p->max_pending_age = age;
+                 p->bytes_sent += (uint64_t)count;
+diff --git a/experimental/awg-prefilter/lab-switch/test_switch.py b/experimental/awg-prefilter/lab-switch/test_switch.py
+index b09e4f1..fcd78c0 100644
+--- a/experimental/awg-prefilter/lab-switch/test_switch.py
++++ b/experimental/awg-prefilter/lab-switch/test_switch.py
+@@ -121,6 +121,11 @@ def main():
+             '192.168.76.43': 1, '192.168.76.55': 1}
+         assert stats['dropped'] == 0 and stats['malformed_connections'] == 1
+         assert stats['rejected_connections'] == 1 and stats['tcp_nodelay']
++
++        ports = {p['source_mac']:p for p in stats['port_stats']}
++        assert all(p['output_drops'] == 0 for p in ports.values())
++        recipient = ports[mb.hex()]
++        assert 0 <= recipient['max_queued_send_gap_ns'] <= recipient['max_pending_age_ns']
+         print('PASS TCP framing, maximum length, ring wrap/order, unicast, opaque payload, peer cap and exact counter')
+     finally:
+         for client in clients:

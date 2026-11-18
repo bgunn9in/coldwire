@@ -134,6 +134,31 @@ class ConfirmationTests(unittest.TestCase):
         self.assertTrue(self.entry.confirm(proof,{self.flow},16.3))
         self.assertLess(proof['stamp'],old['stamp'])
 
+    def test_entry_select_wakes_for_maintenance_deadline(self):
+        handlers={}
+        clock=[10.0]
+        waits=[]
+
+        def select(readers,writers,errors,timeout):
+            waits.append(timeout)
+            clock[0]=(10.0,10.07,10.1,10.15)[len(waits)-1]
+            if len(waits)==4:
+                handlers[agent.signal.SIGTERM]()
+            return [],[],[]
+
+        with mock.patch.object(agent.os,'geteuid',return_value=0,create=True), \
+             mock.patch.object(agent.Path,'read_text',return_value='kit-entry'), \
+             mock.patch.object(agent,'context'),mock.patch.object(agent,'restore_leases'), \
+             mock.patch.object(agent.signal,'signal',side_effect=lambda sig,fn:handlers.__setitem__(sig,fn)), \
+             mock.patch.object(agent.Handshake,'outgoing',side_effect=ConnectionRefusedError), \
+             mock.patch.object(agent.select,'select',side_effect=select), \
+             mock.patch.object(agent.time,'monotonic',side_effect=lambda:clock[0]), \
+             mock.patch.object(agent,'install_leases'),mock.patch.object(agent,'snapshot'):
+            agent.serve(self.config|{'status':'unused'},'entry')
+        self.assertEqual(len(waits),4)
+        for actual,expected in zip(waits,(0,.05,.03,.05)):
+            self.assertAlmostEqual(actual,expected)
+
     def test_serve_reconnects_before_pruning_an_unacknowledged_query(self):
         handlers={};clock=[10.0];steps=[0];connection=mock.Mock();connection.pending.return_value=0;queries=[]
         opening=mock.Mock(socket=connection,write=True,deadline=12);opening.advance.return_value=True

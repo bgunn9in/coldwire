@@ -4,6 +4,7 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <afunix.h>
 #include <windows.h>
 #include <assert.h>
 #include <inttypes.h>
@@ -26,6 +27,7 @@ typedef struct {
     int active, has_mac;
     uint64_t pending_since, frames_in, bytes_sent, peak_pending;
     uint64_t short_sends, blocked_sends, max_pending_age;
+    uint64_t output_drops, last_progress, max_progress_gap;
 } Peer;
 
 typedef struct { unsigned char mac[6]; int used, peer; uint64_t age; } Mac;
@@ -39,6 +41,7 @@ static uint64_t noise_frames, noise_first_ns, noise_last_ns, short_sends, blocke
 static uint64_t noise_source_frames[16];
 static uint64_t malformed_connections, rejected_connections;
 static volatile LONG stopping;
+static BOOL use_unix;
 
 static uint64_t now_ns(void) {
     LARGE_INTEGER value;
@@ -62,6 +65,11 @@ static uint32_t be32(const unsigned char *p) {
 
 static unsigned be16(const unsigned char *p) { return (unsigned)p[0] << 8 | p[1]; }
 
+static uint64_t queued_send_gap(const Peer *p, uint64_t now) {
+    uint64_t current = p->pending ? now - p->last_progress : 0;
+    return current > p->max_progress_gap ? current : p->max_progress_gap;
+}
+
 static void initialize(void) {
     LARGE_INTEGER value;
     assert(QueryPerformanceFrequency(&value) && value.QuadPart > 0);
@@ -78,9 +86,7 @@ static void initialize(void) {
 static void disconnect_peer(int index) {
     Peer *p = &peers[index];
     if (p->fd != INVALID_SOCKET) closesocket(p->fd);
-    p->fd = INVALID_SOCKET;
-    p->active = p->has_mac = 0;
-    p->input_len = p->head = p->pending = 0;
+    *p = (Peer){.fd = INVALID_SOCKET, .input = p->input, .output = p->output};
     for (int i = 0; i < MACS; i++) if (macs[i].used && macs[i].peer == index) macs[i].used = 0;
 }
 
@@ -104,8 +110,12 @@ static void learn(const unsigned char *mac, int peer) {
 
 static int enqueue(Peer *p, const unsigned char *data, size_t size) {
     assert(p->pending <= OUTPUT_CAP);
-    if (size > OUTPUT_CAP - p->pending) { drops++; return 0; }
-    if (!p->pending) p->pending_since = now_ns();
+    if (size > OUTPUT_CAP - p->pending) {
+        drops++;
+        p->output_drops++;
+        return 0;
+    }
+    if (!p->pending) p->pending_since = p->last_progress = now_ns();
     size_t tail = (p->head + p->pending) % OUTPUT_CAP;
     size_t first = size < OUTPUT_CAP - tail ? size : OUTPUT_CAP - tail;
     memcpy(p->output + tail, data, first);
@@ -179,14 +189,14 @@ static void write_stats(const char *path) {
     unsigned ports = 0, learned = 0;
     for (int i = 0; i < PEERS; i++) ports += peers[i].active != 0;
     for (int i = 0; i < MACS; i++) learned += macs[i].used != 0;
-    fprintf(f, "{\"version\":\"native-c-v1-observed\",\"tcp_nodelay\":true,"
+    fprintf(f, "{\"version\":\"native-c-v1-observed\",\"tcp_nodelay\":%s,"
             "\"frames\":%" PRIu64 ",\"copies\":%" PRIu64 ",\"dropped\":%" PRIu64 ","
             "\"peak_pending_bytes\":%" PRIu64 ",\"max_pending_age_ns\":%" PRIu64 ","
             "\"short_sends\":%" PRIu64 ",\"blocked_sends\":%" PRIu64 ","
             "\"malformed_connections\":%" PRIu64 ",\"rejected_connections\":%" PRIu64 ","
             "\"ports\":%u,\"learned_macs\":%u,\"process_cpu_ns\":%" PRIu64 ",\"snapshot_ns\":%" PRIu64 ","
             "\"noise_frames\":%" PRIu64 ",\"noise_first_ns\":",
-            frames, copies, drops, peak_pending, max_pending_age, short_sends, blocked_sends,
+            use_unix ? "false" : "true", frames, copies, drops, peak_pending, max_pending_age, short_sends, blocked_sends,
             malformed_connections, rejected_connections, ports, learned, cpu_ns(), now_ns(), noise_frames);
     nullable(f, noise_first_ns); fputs(",\"noise_last_ns\":", f); nullable(f, noise_last_ns);
     fputs(",\"noise_source_frames\":{", f);
@@ -205,6 +215,8 @@ static void write_stats(const char *path) {
         fprintf(f, "%s{\"source_mac\":", comma++ ? "," : "");
         if (p->has_mac) fprintf(f, "\"%02x%02x%02x%02x%02x%02x\"", p->mac[0], p->mac[1], p->mac[2], p->mac[3], p->mac[4], p->mac[5]);
         else fputs("null", f);
+        fprintf(f, ",\"output_drops\":%" PRIu64 ",\"max_queued_send_gap_ns\":%" PRIu64,
+                p->output_drops, queued_send_gap(p, now_ns()));
         fprintf(f, ",\"frames_in\":%" PRIu64 ",\"bytes_sent\":%" PRIu64 ",\"short_sends\":%" PRIu64
                 ",\"blocked_sends\":%" PRIu64 ",\"peak_pending_bytes\":%" PRIu64 ",\"max_pending_age_ns\":%" PRIu64 "}",
                 p->frames_in, p->bytes_sent, p->short_sends, p->blocked_sends, p->peak_pending, p->max_pending_age);
@@ -225,8 +237,14 @@ static void self_test(void) {
     assert(enqueue(p, bytes, 4));
     assert(p->output[OUTPUT_CAP-2] == 1 && p->output[OUTPUT_CAP-1] == 2 && p->output[0] == 3 && p->output[1] == 4);
     p->pending = OUTPUT_CAP;
-    assert(!enqueue(p, bytes, 1) && p->pending == OUTPUT_CAP && drops == 1);
+    assert(!enqueue(p, bytes, 1) && p->pending == OUTPUT_CAP && drops == 1 && p->output_drops == 1);
+    assert(peers[1].output_drops == 0);
+    p->pending_since = 10;
+    p->last_progress = 30;
+    p->max_progress_gap = 20;
+    assert(queued_send_gap(p, 40) == 20 && queued_send_gap(p, 60) == 30);
     disconnect_peer(0);
+    assert(!p->output_drops && !p->last_progress && !p->max_progress_gap);
     for (unsigned i = 0; i < MACS + 4; i++) {
         unsigned char mac[] = {2, 0, 0, 0, 0, (unsigned char)i};
         frames++; learn(mac, 1); assert(lookup(mac) == 1);
@@ -259,19 +277,34 @@ static BOOL WINAPI control(DWORD event) {
 int main(int argc, char **argv) {
     initialize();
     if (argc == 2 && !strcmp(argv[1], "--self-test")) { self_test(); return 0; }
-    if (argc != 3) { fputs("Usage: native-switch PORT STATS_JSON\n", stderr); return 2; }
+    if (argc != 3) { fputs("Usage: native-switch PORT|unix:PATH STATS_JSON\n", stderr); return 2; }
     char *end;
-    long port = strtol(argv[1], &end, 10);
-    if (!*argv[1] || *end || port < 1024 || port > 65535 || strlen(argv[2])+5 >= MAX_PATH) return 2;
+    use_unix = !strncmp(argv[1], "unix:", 5);
+    const char *path = argv[1] + (use_unix ? 5 : 0);
+    long port = use_unix ? 0 : strtol(path, &end, 10);
+    if (!*path || strlen(argv[2]) + 5 >= MAX_PATH) return 2;
+    if (!use_unix && (*end || port < 1024 || port > 65535)) return 2;
     WSADATA data;
     assert(!WSAStartup(MAKEWORD(2,2), &data));
-    SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    SOCKET listener = socket(use_unix ? AF_UNIX : AF_INET, SOCK_STREAM, 0);
     assert(listener != INVALID_SOCKET);
-    BOOL exclusive = TRUE;
-    assert(!setsockopt(listener, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&exclusive, sizeof(exclusive)));
-    struct sockaddr_in address = {0};
-    address.sin_family = AF_INET; address.sin_port = htons((u_short)port); address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    assert(!bind(listener, (struct sockaddr *)&address, sizeof(address)) && !listen(listener, PEERS));
+    if (use_unix) {
+        struct sockaddr_un addr = { .sun_family = AF_UNIX };
+        if (strlen(path) >= sizeof(addr.sun_path)) return 2;
+        strcpy(addr.sun_path, path);
+        if (bind(listener, (struct sockaddr *)&addr, sizeof(addr))) {
+            fprintf(stderr, "AF_UNIX bind failed: %d\n", WSAGetLastError());
+            return 1;
+        }
+    } else {
+        BOOL exclusive = TRUE;
+        assert(!setsockopt(listener, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&exclusive, sizeof(exclusive)));
+        struct sockaddr_in address = {0};
+        address.sin_family = AF_INET; address.sin_port = htons((u_short)port);
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        assert(!bind(listener, (struct sockaddr *)&address, sizeof(address)));
+    }
+    assert(!listen(listener, PEERS));
     u_long nonblocking = 1;
     assert(!ioctlsocket(listener, FIONBIO, &nonblocking));
     assert(SetConsoleCtrlHandler(control, TRUE));
@@ -295,7 +328,10 @@ int main(int argc, char **argv) {
                 if (slot == PEERS) { rejected_connections++; closesocket(fd); }
                 else {
                     BOOL enabled = TRUE;
-                    assert(!setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&enabled, sizeof(enabled)));
+                    if (!use_unix) {
+                        assert(!setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
+                                           (const char *)&enabled, sizeof(enabled)));
+                    }
                     assert(!ioctlsocket(fd, FIONBIO, &nonblocking));
                     peers[slot].fd = fd; peers[slot].active = 1;
                 }
@@ -317,7 +353,10 @@ int main(int argc, char **argv) {
                 if (count == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) { blocked_sends++; p->blocked_sends++; continue; }
                 if (count <= 0) { disconnect_peer(i); continue; }
                 if ((size_t)count < amount) { short_sends++; p->short_sends++; }
-                uint64_t age = now_ns()-p->pending_since;
+                uint64_t stamp = now_ns();
+                p->max_progress_gap = queued_send_gap(p, stamp);
+                p->last_progress = stamp;
+                uint64_t age = stamp - p->pending_since;
                 if (age > max_pending_age) max_pending_age = age;
                 if (age > p->max_pending_age) p->max_pending_age = age;
                 p->bytes_sent += (uint64_t)count;

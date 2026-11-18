@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Disposable IPv4 lab only: queue 101 must be alive; nf_conntrack_acct=1 required.
+# Disposable IPv4 lab only: queues 101 and 102 must be alive; nf_conntrack_acct=1 required.
 # Split 6000/s + 2048 burst across bulk (4976/1024), discovery (960/960), probes (64/64).
 table ip awg_kernel_guard_lab {
     set unknown_sources {
@@ -44,10 +44,10 @@ table ip awg_kernel_guard_lab {
     }
     chain unconfirmed {
         # The optional bridge supplement replaces this chain atomically.
-        counter queue num 101
+        counter queue to numgen inc mod 2 offset 101
     }
     chain hold {
-        ct status confirmed counter queue num 101
+        ct status confirmed counter queue to numgen inc mod 2 offset 101
         goto unconfirmed
     }
     chain guard {

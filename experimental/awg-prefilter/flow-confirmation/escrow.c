@@ -25,7 +25,6 @@
 #include <time.h>
 #include <unistd.h>
 
-// shortcut: kernel 6.12.117 caps one NFQUEUE at 65536; split queues for larger backlogs.
 #define CAPACITY 131072U
 #define FLOW_LIMIT 8192U
 #define GRANT_LIMIT 128U
@@ -40,16 +39,21 @@
 #define PROBE 2
 #define BATCH 64U
 #define QUEUE 101
+#define QUEUES 2U
+// Cover the largest IPv4/UDP header and its 12-byte transport nonce.
+#define COPY_BYTES 80U
 
 struct key { uint32_t ip, ct; uint16_t port; };
-struct flow { struct key key; unsigned count; uint16_t next; };
+struct flow { struct key key; unsigned count; uint16_t next; unsigned char notice_pending; };
 struct grant { struct key key; uint64_t until; };
-struct packet { uint64_t until; uint32_t id, mark; uint16_t length, flow; };
+struct packet { uint64_t until; uint32_t id, mark; uint16_t length, flow, queue; };
+_Static_assert(sizeof(struct flow)==20,"flow metadata must stay bounded");
 static struct flow flows[FLOW_LIMIT];
 static struct grant grants[GRANT_LIMIT];
 static uint16_t buckets[BUCKETS],free_flows[FLOW_LIMIT];
 static unsigned free_count;
 static uint64_t hash_seed;
+_Static_assert(sizeof(struct packet)==24,"packet metadata must stay bounded");
 static struct packet packets[CAPACITY];
 static uint64_t head, tail;
 static unsigned grant_count, held, held_bytes;
@@ -66,6 +70,9 @@ static volatile sig_atomic_t stopping, reporting;
 static int queue_fd, testing;
 static int candidate_fd=-1;
 static uint64_t candidate_sent,candidate_failed;
+static unsigned retry_cursor;
+static uint64_t retry_after,candidate_retries;
+static int testing_candidate_failure;
 static unsigned refresh_next=FLOW_LIMIT;
 static uint64_t refresh_until,refresh_requests,refresh_sent,refresh_expired;
 static unsigned verdict_count;
@@ -101,7 +108,7 @@ static void free_flow(unsigned index) {
     uint16_t *link=&buckets[bucket(flows[index].key)];
     while (*link && *link!=index+1) link=&flows[*link-1].next;
     assert(*link && free_count<FLOW_LIMIT);
-    *link=flows[index].next;flows[index].next=0;
+    *link=flows[index].next;flows[index].next=0;flows[index].notice_pending=0;
     free_flows[free_count++]=(uint16_t)index;
 }
 static uint16_t read16(const void *p) { uint16_t v; memcpy(&v,p,2); return ntohs(v); }
@@ -109,13 +116,14 @@ static uint32_t read32(const void *p) { uint32_t v; memcpy(&v,p,4); return ntohl
 static uint64_t read64(const void *p) {
     return ((uint64_t)read32(p) << 32) | read32((const char *)p + 4);
 }
+static int valid_queue(uint16_t queue) { return queue>=QUEUE && queue<QUEUE+QUEUES; }
 static int missing_verdict(const struct nlmsghdr *h) {
     if (h->nlmsg_type!=NLMSG_ERROR || h->nlmsg_len<NLMSG_LENGTH(sizeof(struct nlmsgerr)+sizeof(struct nfgenmsg))) return 0;
     struct nlmsgerr error;struct nfgenmsg family;
     memcpy(&error,NLMSG_DATA(h),sizeof(error));
     memcpy(&family,(const char *)NLMSG_DATA(h)+sizeof(error),sizeof(family));
     return error.error==-ENOENT && error.msg.nlmsg_type==((NFNL_SUBSYS_QUEUE<<8)|NFQNL_MSG_VERDICT) &&
-        error.msg.nlmsg_len>=NLMSG_LENGTH(sizeof(family)) && read16(&family.res_id)==QUEUE;
+        error.msg.nlmsg_len>=NLMSG_LENGTH(sizeof(family)) && valid_queue(read16(&family.res_id));
 }
 static int flush(void) {
     if (!verdict_count) return 0;
@@ -129,18 +137,23 @@ static int flush(void) {
     if (n<0 || (size_t)n!=wanted) return -1;
     verdict_count=0; return 0;
 }
-static void verdict(uint32_t id, uint32_t mark, int accept) {
-    if (testing) return;
-    struct nlmsghdr *h=nfq_nlmsg_put(verdict_buffers[verdict_count],NFQNL_MSG_VERDICT,QUEUE);
+static struct nlmsghdr *verdict_message(char *buffer,uint16_t queue,uint32_t id,uint32_t mark,int accept) {
+    assert(valid_queue(queue));
+    struct nlmsghdr *h=nfq_nlmsg_put(buffer,NFQNL_MSG_VERDICT,queue);
     h->nlmsg_flags=NLM_F_REQUEST;
     nfq_nlmsg_verdict_put(h,(int)id,accept?NF_ACCEPT:NF_DROP);
     nfq_nlmsg_verdict_put_mark(h,mark | (accept && !(mark & PROBE_MARK)?RELEASE_MARK:0));
+    return h;
+}
+static void verdict(uint16_t queue, uint32_t id, uint32_t mark, int accept) {
+    if (testing) return;
+    struct nlmsghdr *h=verdict_message(verdict_buffers[verdict_count],queue,id,mark,accept);
     verdict_iov[verdict_count++]=(struct iovec){.iov_base=h,.iov_len=h->nlmsg_len};
     if (verdict_count==BATCH && flush()) fatal("send verdicts");
 }
 static void remove_packet(struct packet *p, int accept) {
     assert(p->length && flows[p->flow].count);
-    verdict(p->id,p->mark | (accept==PROBE?PROBE_MARK:0),accept!=0);
+    verdict(p->queue,p->id,p->mark | (accept==PROBE?PROBE_MARK:0),accept!=0);
     flows[p->flow].count--;
     if (!flows[p->flow].count) free_flow(p->flow);
     held--; held_bytes-=p->length; p->length=0;
@@ -160,7 +173,7 @@ static int authorized(struct key key, uint64_t now) {
     return 0;
 }
 static int candidate(struct key key) {
-    if (testing) return 1;
+    if (testing) return !testing_candidate_failure;
     const char *path="/run/coldwire-escrow/candidates.sock";
     struct stat st;
     if (lstat(path,&st) || !S_ISSOCK(st.st_mode) || st.st_uid || (st.st_mode&0777)!=0600) { candidate_failed++;return 0; }
@@ -178,29 +191,42 @@ static void refresh_candidates(uint64_t now) {
     while (refresh_next<FLOW_LIMIT && count<64) {
         unsigned f=refresh_next++;
         if (!flows[f].count) continue;
-        if (!candidate(flows[f].key)) { refresh_next--;break; }
+        flows[f].notice_pending=!candidate(flows[f].key);
+        if (flows[f].notice_pending) { refresh_next--;break; }
         refresh_sent++;count++;
     }
     if (refresh_next==FLOW_LIMIT) refresh_until=0;
 }
-static void hold(struct key key, uint32_t id, uint32_t mark, unsigned length, uint64_t now) {
+static void retry_candidates(uint64_t now) {
+    if (now<retry_after) return;
+    retry_after=now+TTL_NS/10;
+    unsigned attempts=0;
+    for (unsigned scanned=0;scanned<FLOW_LIMIT && attempts<64;scanned++) {
+        unsigned f=retry_cursor;retry_cursor=(retry_cursor+1)%FLOW_LIMIT;
+        if (!flows[f].count || !flows[f].notice_pending) continue;
+        attempts++;candidate_retries++;
+        if (!candidate(flows[f].key)) break;
+        flows[f].notice_pending=0;
+    }
+}
+static void hold(uint16_t queue, struct key key, uint32_t id, uint32_t mark, unsigned length, uint64_t now) {
     received++; expire(now);
-    if (authorized(key,now)) { verdict(id,mark,1); released++; return; }
+    if (authorized(key,now)) { verdict(queue,id,mark,1); released++; return; }
     unsigned f=find_flow(key);
     if ((f==FLOW_LIMIT && !free_count) || tail-head==CAPACITY || held_bytes+length>BYTE_LIMIT || (f<FLOW_LIMIT && flows[f].count>=PER_FLOW)) {
         if (f==FLOW_LIMIT && !free_count) bound_flows++;
         if (tail-head==CAPACITY) bound_packets++;
         if (held_bytes+length>BYTE_LIMIT) bound_bytes++;
         if (f<FLOW_LIMIT && flows[f].count>=PER_FLOW) bound_perflow++;
-        bounded++; verdict(id,mark,0); return;
+        bounded++; verdict(queue,id,mark,0); return;
     }
     if (f==FLOW_LIMIT) {
         f=free_flows[--free_count];flows[f].key=key;
         unsigned b=bucket(key);flows[f].next=buckets[b];buckets[b]=(uint16_t)(f+1);
-        candidate(key);
+        flows[f].notice_pending=!candidate(key);
     }
     struct packet *p=&packets[tail++%CAPACITY];
-    *p=(struct packet){.until=now+HOLD_NS,.id=id,.mark=mark,.length=(uint16_t)length,.flow=(uint16_t)f};
+    *p=(struct packet){.until=now+HOLD_NS,.id=id,.mark=mark,.length=(uint16_t)length,.flow=(uint16_t)f,.queue=queue};
     flows[f].count++; held++; held_bytes+=length;
     if (held>high_packets) high_packets=held;
     if (held_bytes>high_bytes) high_bytes=held_bytes;
@@ -273,8 +299,8 @@ static void report(void) {
            ",\"bounded\":%"PRIu64",\"invalid\":%"PRIu64",\"control_bad\":%"PRIu64
            ",\"control_ok\":%"PRIu64",\"held\":%u,\"held_bytes\":%u,\"high_packets\":%"PRIu64
            ",\"high_bytes\":%"PRIu64",\"netlink_enobufs\":%"PRIu64",\"send_calls\":%"PRIu64",\"candidate_sent\":%"PRIu64",\"candidate_failed\":%"PRIu64
-           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64",\"probed\":%"PRIu64",\"control_expired\":%"PRIu64",\"probe_limited\":%"PRIu64",\"late_packets\":%"PRIu64",\"refresh_requests\":%"PRIu64",\"refresh_sent\":%"PRIu64",\"refresh_expired\":%"PRIu64",\"early_probed\":%"PRIu64",\"early_limited\":%"PRIu64"}\n",
-           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing,probed,control_expired,probe_limited,late_packets,refresh_requests,refresh_sent,refresh_expired,early_probed,early_limited);
+           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64",\"probed\":%"PRIu64",\"control_expired\":%"PRIu64",\"probe_limited\":%"PRIu64",\"late_packets\":%"PRIu64",\"refresh_requests\":%"PRIu64",\"refresh_sent\":%"PRIu64",\"refresh_expired\":%"PRIu64",\"early_probed\":%"PRIu64",\"early_limited\":%"PRIu64",\"candidate_retries\":%"PRIu64"}\n",
+           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing,probed,control_expired,probe_limited,late_packets,refresh_requests,refresh_sent,refresh_expired,early_probed,early_limited,candidate_retries);
     fflush(stdout);
 }
 static void signal_handler(int sig) { if (sig==SIGUSR1) reporting=1; else stopping=1; }
@@ -352,6 +378,11 @@ static int late_key(const struct nlattr *attr, struct key *key, const unsigned c
     return 1;
 }
 static int parse_packet(struct nlmsghdr *h) {
+    struct nfgenmsg family;
+    if (h->nlmsg_len<NLMSG_LENGTH(sizeof(family))) return -1;
+    memcpy(&family,NLMSG_DATA(h),sizeof(family));
+    uint16_t queue=read16(&family.res_id);
+    if (!valid_queue(queue)) return -1;
     struct nlattr *a[NFQA_MAX+1]={0};
     if (nfq_nlmsg_parse(h,a)<0 || !a[NFQA_PACKET_HDR] ||
         a[NFQA_PACKET_HDR]->nla_len!=NLA_HDRLEN+sizeof(struct nfqnl_msg_packet_hdr)) return -1;
@@ -363,9 +394,6 @@ static int parse_packet(struct nlmsghdr *h) {
         mark=read32((char *)a[NFQA_MARK]+NLA_HDRLEN);
     }
     struct key key={0};
-    struct nfgenmsg family;
-    if (h->nlmsg_len<NLMSG_LENGTH(sizeof(family))) return -1;
-    memcpy(&family,NLMSG_DATA(h),sizeof(family));
     int late=family.nfgen_family==AF_BRIDGE && ph.hook==NF_BR_POST_ROUTING;
     size_t size=a[NFQA_PAYLOAD]?a[NFQA_PAYLOAD]->nla_len-NLA_HDRLEN:0;
     const unsigned char *ip=a[NFQA_PAYLOAD]?(unsigned char *)a[NFQA_PAYLOAD]+NLA_HDRLEN:NULL;
@@ -384,12 +412,22 @@ static int parse_packet(struct nlmsghdr *h) {
         memcpy(&key.ip,ip+12,4);key.port=read16(ip+ihl);
     }
     if (!key.port || (mark & (RELEASE_MARK|PROBE_MARK))) goto reject;
-    hold(key,id,mark,length,clock_ns()); return 0;
+    hold(queue,key,id,mark,length,clock_ns()); return 0;
 reject:
-    invalid++; verdict(id,mark,0); return 0;
+    invalid++; verdict(queue,id,mark,0); return 0;
 }
 static void selftest(void) {
     testing=1;init_flows();
+    for (uint16_t q=QUEUE;q<QUEUE+QUEUES;q++) {
+        char encoded[256] __attribute__((aligned));
+        struct nlmsghdr *v=verdict_message(encoded,q,42,0,1);
+        struct nfgenmsg *fg=NLMSG_DATA(v);
+        struct nlattr *fields[NFQA_MAX+1]={0};
+        assert(read16(&fg->res_id)==q && nfq_nlmsg_parse(v,fields)>=0);
+        const struct nfqnl_msg_verdict_hdr *vh=(const void *)((const char *)fields[NFQA_VERDICT_HDR]+NLA_HDRLEN);
+        assert(read32(&vh->id)==42 && read32(&vh->verdict)==NF_ACCEPT);
+        assert(read32((const char *)fields[NFQA_MARK]+NLA_HDRLEN)==RELEASE_MARK);
+    }
     unsigned char reply[128] __attribute__((aligned))={0};
     struct nlmsghdr *header=(struct nlmsghdr *)reply;
     header->nlmsg_type=NLMSG_ERROR;header->nlmsg_len=NLMSG_LENGTH(sizeof(struct nlmsgerr)+sizeof(struct nfgenmsg));
@@ -397,6 +435,9 @@ static void selftest(void) {
     struct nfgenmsg family={.res_id=htons(QUEUE)};
     memcpy(NLMSG_DATA(header),&error,sizeof(error));memcpy((char *)NLMSG_DATA(header)+sizeof(error),&family,sizeof(family));
     assert(missing_verdict(header));
+    family.res_id=htons(QUEUE+1);memcpy((char *)NLMSG_DATA(header)+sizeof(error),&family,sizeof(family));assert(missing_verdict(header));
+    family.res_id=htons(QUEUE+QUEUES);memcpy((char *)NLMSG_DATA(header)+sizeof(error),&family,sizeof(family));assert(!missing_verdict(header));
+    family.res_id=htons(QUEUE);memcpy((char *)NLMSG_DATA(header)+sizeof(error),&family,sizeof(family));
     error.error=-EPERM;memcpy(NLMSG_DATA(header),&error,sizeof(error));assert(!missing_verdict(header));
     error.error=-ENOENT;error.msg.nlmsg_type=(NFNL_SUBSYS_QUEUE<<8)|NFQNL_MSG_CONFIG;memcpy(NLMSG_DATA(header),&error,sizeof(error));assert(!missing_verdict(header));
     error.msg.nlmsg_type=(NFNL_SUBSYS_QUEUE<<8)|NFQNL_MSG_VERDICT;memcpy(NLMSG_DATA(header),&error,sizeof(error));
@@ -426,7 +467,7 @@ static void selftest(void) {
     identity->nla_len=7;assert(!conntrack(outer,&parsed));identity->nla_len=8;
     value=0;memcpy(attrs+8,&value,4);assert(!conntrack(outer,&parsed));
     struct key k={.ip=123,.port=456,.ct=789}, other=k; other.ct++;
-    hold(k,0,0,128,1); hold(other,1,0,128,1);
+    hold(QUEUE,k,0,0,128,1); hold(QUEUE,other,1,0,128,1);
     unsigned char message[24]={ 'C','W','E','1',0,1 };
     memcpy(message+6,&k.ip,4);
     uint16_t p=htons(k.port); uint32_t c=htonl(k.ct), n=htonl(1000);
@@ -434,20 +475,20 @@ static void selftest(void) {
     assert(!control(message,sizeof(message),0,2));
     assert(!control(message,sizeof(message)-1,1,2));
     assert(control(message,sizeof(message),1,2) && released==1 && held==1);
-    hold(k,2,0,128,3); assert(released==2 && held==1);
+    hold(QUEUE,k,2,0,128,3); assert(released==2 && held==1);
     assert(control((unsigned char *)"CWE1\0\0",6,1,4));
-    hold(k,3,0,128,5); assert(held==2);
+    hold(QUEUE,k,3,0,128,5); assert(held==2);
     expire(HOLD_NS+6); assert(!held && expired==2 && head==tail);
-    for (unsigned i=0;i<PER_FLOW+1;i++) hold(k,i,0,128,2*TTL_NS);
+    for (unsigned i=0;i<PER_FLOW+1;i++) hold((uint16_t)(QUEUE+i%QUEUES),k,i,0,128,2*TTL_NS);
     assert(held==PER_FLOW && bounded==1);
     expire(2*TTL_NS+HOLD_NS); assert(!held && !held_bytes);
-    for (unsigned i=0;i<FLOW_LIMIT;i++) { k.ct=i+1; hold(k,i,0,128,4*TTL_NS); }
-    k.ct=FLOW_LIMIT+1; hold(k,99,0,128,4*TTL_NS); assert(held==FLOW_LIMIT && bounded==2);
+    for (unsigned i=0;i<FLOW_LIMIT;i++) { k.ct=i+1; hold((uint16_t)(QUEUE+i%QUEUES),k,i,0,128,4*TTL_NS); }
+    k.ct=FLOW_LIMIT+1; hold(QUEUE,k,99,0,128,4*TTL_NS); assert(held==FLOW_LIMIT && bounded==2);
     expire(4*TTL_NS+HOLD_NS); assert(!held);
-    for (unsigned i=0;i<CAPACITY+1;i++) { k.ct=i%8+1; hold(k,i,0,128,6*TTL_NS); }
+    for (unsigned i=0;i<CAPACITY+1;i++) { k.ct=i%8+1; hold((uint16_t)(QUEUE+i%QUEUES),k,i,0,128,6*TTL_NS); }
     assert(held==CAPACITY && bounded==3);
     expire(6*TTL_NS+HOLD_NS); assert(!held && head==tail);
-    for (unsigned i=0;i<BYTE_LIMIT/1536+100;i++) { k.ct=i%8+1; hold(k,i,0,1536,8*TTL_NS); }
+    for (unsigned i=0;i<BYTE_LIMIT/1536+100;i++) { k.ct=i%8+1; hold((uint16_t)(QUEUE+i%QUEUES),k,i,0,1536,8*TTL_NS); }
     assert(held_bytes<=BYTE_LIMIT && bounded>3);
     expire(8*TTL_NS+HOLD_NS); assert(!held && !held_bytes && free_count==FLOW_LIMIT);
     for (unsigned i=0;i<BUCKETS;i++) assert(!buckets[i]);
@@ -458,16 +499,16 @@ static void selftest(void) {
     memcpy(request+8,&p,2);memcpy(request+10,&c,4);
     uint64_t until=10*TTL_NS+TTL_NS/2;uint32_t hi=htonl((uint32_t)(until>>32)),lo=htonl((uint32_t)until);
     memcpy(request+14,&hi,4);memcpy(request+18,&lo,4);
-    hold(probe_key,1,0,128,10*TTL_NS);
+    hold(QUEUE,probe_key,1,0,128,10*TTL_NS);
     assert(!control(request,sizeof(request),0,10*TTL_NS));
     assert(!control(request,sizeof(request)-1,1,10*TTL_NS));
     assert(control(request,sizeof(request),1,10*TTL_NS) && probed==1 && !held && !grant_count);
-    hold(probe_key,2,0,128,10*TTL_NS);
+    hold(QUEUE,probe_key,2,0,128,10*TTL_NS);
     assert(held==1 && !authorized(probe_key,10*TTL_NS));
     assert(!control(request,sizeof(request),1,until));
     expire(10*TTL_NS+HOLD_NS);assert(!held && !held_bytes);
     struct key newer=probe_key;newer.ct++;
-    hold(probe_key,3,0,128,12*TTL_NS);hold(newer,4,0,128,12*TTL_NS);
+    hold(QUEUE,probe_key,3,0,128,12*TTL_NS);hold(QUEUE,newer,4,0,128,12*TTL_NS);
     unsigned char snapshot[42]={ 'C','W','E','1',0,2 };
     for (unsigned i=0;i<2;i++) {
         unsigned char *record=snapshot+6+18*i;
@@ -500,6 +541,13 @@ static void selftest(void) {
     assert(!parse_packet((struct nlmsghdr *)late_message) && held==1);
     struct key late_identity={.ip=inet_addr("192.168.76.31"),.port=42501,.ct=789};
     assert(find_flow(late_identity)<FLOW_LIMIT && late_packets==1);
+    memcpy(late_message,late_fixture,sizeof(late_fixture));
+    ((struct nfgenmsg *)NLMSG_DATA((struct nlmsghdr *)late_message))->res_id=htons(QUEUE+1);
+    assert(!parse_packet((struct nlmsghdr *)late_message) && held==2);
+    assert(packets[head%CAPACITY].id==packets[(head+1)%CAPACITY].id);
+    assert(packets[head%CAPACITY].queue==QUEUE && packets[(head+1)%CAPACITY].queue==QUEUE+1);
+    ((struct nfgenmsg *)NLMSG_DATA((struct nlmsghdr *)late_message))->res_id=htons(QUEUE+QUEUES);
+    assert(parse_packet((struct nlmsghdr *)late_message)==-1 && held==2);
     expire(UINT64_MAX);assert(!held);
     // Unconfirmed overflow reaches the bridge before header inspection.
     memcpy(late_message,late_fixture,sizeof(late_fixture));
@@ -522,6 +570,17 @@ static void selftest(void) {
         (void)parse_packet((struct nlmsghdr *)late_message);
         assert(!held);
     }
+    // The metadata copy covers a 60-byte IPv4 header, UDP, and a 12-byte nonce.
+    unsigned char options[sizeof(late_fixture)+COPY_BYTES-28] __attribute__((aligned))={0};
+    memcpy(options,late_fixture,176);
+    struct nlmsghdr *oh=(void *)options;oh->nlmsg_len=sizeof(options);
+    struct nlattr *payload=(void *)(options+172);payload->nla_len=NLA_HDRLEN+COPY_BYTES;
+    unsigned char *option_ip=options+176;memcpy(option_ip,late_fixture+176,20);
+    option_ip[0]=0x4f;p=htons(COPY_BYTES);memcpy(option_ip+2,&p,2);
+    memcpy(option_ip+60,late_fixture+196,8);p=htons(COPY_BYTES-60);memcpy(option_ip+64,&p,2);
+    assert(!parse_packet(oh) && held==1);expire(UINT64_MAX);assert(!held);
+    payload->nla_len=NLA_HDRLEN+64;oh->nlmsg_len=176+64;
+    assert(!parse_packet(oh) && !held);
     unsigned char duplicate[28] __attribute__((aligned));memcpy(duplicate,attrs,20);
     ((struct nlattr *)duplicate)->nla_len=28;
     value=htonl(789);memcpy(duplicate+8,&value,4);
@@ -534,26 +593,26 @@ static void selftest(void) {
     memcpy(request+14,&hi,4);memcpy(request+18,&lo,4);
     uint64_t old_probed=probed;
     for (unsigned i=0;i<65;i++) {
-        hold(probe_key,i,0,128,20*TTL_NS);
+        hold((uint16_t)(QUEUE+i%QUEUES),probe_key,i,0,128,20*TTL_NS);
         assert(control(request,sizeof(request),1,20*TTL_NS));
     }
     assert(probed-old_probed==64 && probe_limited==1 && held==1);
     assert(control(request,sizeof(request),1,20*TTL_NS+TTL_NS/64));
     assert(probed-old_probed==65 && !held);
     expire(UINT64_MAX);assert(!held && !held_bytes && free_count==FLOW_LIMIT);
-    hold(probe_key,90,0,128,29*TTL_NS);
-    hold(probe_key,91,0,128,29*TTL_NS+TTL_NS/4);
+    hold(QUEUE,probe_key,90,0,128,29*TTL_NS);
+    hold(QUEUE,probe_key,91,0,128,29*TTL_NS+TTL_NS/4);
     until=29*TTL_NS+TTL_NS/2;hi=htonl((uint32_t)(until>>32));lo=htonl((uint32_t)until);
     memcpy(request+14,&hi,4);memcpy(request+18,&lo,4);
     assert(control(request,sizeof(request),1,29*TTL_NS+TTL_NS/4));
     assert(held==1 && packets[head%CAPACITY].id==90 && packets[head%CAPACITY].length);
     expire(UINT64_MAX);assert(!held);
-    hold(probe_key,99,0,128,30*TTL_NS);
+    hold(QUEUE,probe_key,99,0,128,30*TTL_NS);
     expire(31*TTL_NS+TTL_NS/2);
     assert(held==1 && !authorized(probe_key,31*TTL_NS+TTL_NS/2));
     expire(30*TTL_NS+HOLD_NS);
     assert(!held && !held_bytes && free_count==FLOW_LIMIT);
-    hold(probe_key,100,0,128,40*TTL_NS);
+    hold(QUEUE,probe_key,100,0,128,40*TTL_NS);
     unsigned old_grants=grant_count,flow_index=find_flow(probe_key);
     assert(!control((unsigned char *)"CWR1",4,0,40*TTL_NS));
     assert(!control((unsigned char *)"CWR1x",5,1,40*TTL_NS));
@@ -575,12 +634,12 @@ static void selftest(void) {
     memcpy(early_request+14,&hi,4);memcpy(early_request+18,&lo,4);
     assert(!control(early_request,22,0,60*TTL_NS) && !control(early_request,21,1,60*TTL_NS));
     uint64_t old_early=early_probed,old_limit=early_limited,old_total=probed;
-    for(unsigned i=0;i<33;i++){hold(probe_key,i,0,128,60*TTL_NS);assert(control(early_request,22,1,60*TTL_NS));}
+    for(unsigned i=0;i<33;i++){hold((uint16_t)(QUEUE+i%QUEUES),probe_key,i,0,128,60*TTL_NS);assert(control(early_request,22,1,60*TTL_NS));}
     assert(early_probed-old_early==32 && probed-old_total==32 && early_limited-old_limit==1 && held==1);
     assert(probe_credits==32*TTL_NS && !authorized(probe_key,60*TTL_NS));
     memcpy(request+14,&hi,4);memcpy(request+18,&lo,4);
     assert(control(request,22,1,60*TTL_NS) && !held && probed-old_total==33);
-    hold(probe_key,99,0,128,60*TTL_NS+TTL_NS/32);
+    hold(QUEUE,probe_key,99,0,128,60*TTL_NS+TTL_NS/32);
     assert(control(early_request,22,1,60*TTL_NS+TTL_NS/32) && !held && early_probed-old_early==33);
     expire(UINT64_MAX);assert(!held && !held_bytes);
     probe_credits=64*TTL_NS;probe_clock=70*TTL_NS;
@@ -589,11 +648,47 @@ static void selftest(void) {
     memcpy(early_request+14,&hi,4);memcpy(early_request+18,&lo,4);
     memcpy(request+14,&hi,4);memcpy(request+18,&lo,4);
     old_total=probed;
-    for(unsigned i=0;i<32;i++){hold(probe_key,i,0,128,70*TTL_NS);assert(control(early_request,22,1,70*TTL_NS));}
-    for(unsigned i=0;i<32;i++){hold(probe_key,32+i,0,128,70*TTL_NS);assert(control(request,22,1,70*TTL_NS));}
-    hold(probe_key,64,0,128,70*TTL_NS);assert(control(request,22,1,70*TTL_NS));
+    for(unsigned i=0;i<32;i++){hold((uint16_t)(QUEUE+i%QUEUES),probe_key,i,0,128,70*TTL_NS);assert(control(early_request,22,1,70*TTL_NS));}
+    for(unsigned i=0;i<32;i++){hold((uint16_t)(QUEUE+i%QUEUES),probe_key,32+i,0,128,70*TTL_NS);assert(control(request,22,1,70*TTL_NS));}
+    hold(QUEUE,probe_key,64,0,128,70*TTL_NS);assert(control(request,22,1,70*TTL_NS));
     assert(held==1 && probed-old_total==64 && !probe_credits && !authorized(probe_key,70*TTL_NS));
     expire(UINT64_MAX);assert(!held && !held_bytes);
+    // A lease releases the same generation on both queues; its budgets are shared.
+    grant_count=0;
+    struct key cross={.ip=123,.port=456,.ct=789};
+    hold(QUEUE,cross,42,0,128,80*TTL_NS);hold(QUEUE+1,cross,42,0,128,80*TTL_NS);
+    assert(held==2 && flows[find_flow(cross)].count==2);
+    unsigned char cross_snapshot[24]={'C','W','E','1',0,1};
+    memcpy(cross_snapshot+6,&cross.ip,4);p=htons(cross.port);c=htonl(cross.ct);
+    memcpy(cross_snapshot+10,&p,2);memcpy(cross_snapshot+12,&c,4);
+    until=80*TTL_NS+TTL_NS/2;hi=htonl((uint32_t)(until>>32));lo=htonl((uint32_t)until);
+    memcpy(cross_snapshot+16,&hi,4);memcpy(cross_snapshot+20,&lo,4);
+    uint64_t before_release=released;
+    assert(control(cross_snapshot,sizeof(cross_snapshot),1,80*TTL_NS));
+    assert(!held && !held_bytes && released-before_release==2 && free_count==FLOW_LIMIT);
+    expire(UINT64_MAX);
+    // A failed local notice is retried without granting trust or extending holding.
+    grant_count=0;testing_candidate_failure=1;retry_after=0;retry_cursor=0;
+    struct key failed={.ip=456,.port=789,.ct=1000};
+    hold(QUEUE,failed,1,0,128,90*TTL_NS);
+    unsigned failed_index=find_flow(failed);assert(flows[failed_index].notice_pending);
+    uint64_t old_retries=candidate_retries;
+    retry_candidates(90*TTL_NS);assert(candidate_retries==old_retries+1 && flows[failed_index].notice_pending);
+    testing_candidate_failure=0;retry_candidates(90*TTL_NS+TTL_NS/20);
+    assert(candidate_retries==old_retries+1 && held==1 && !grant_count);
+    retry_candidates(90*TTL_NS+TTL_NS/10);
+    assert(candidate_retries==old_retries+2 && !flows[failed_index].notice_pending && held==1 && !grant_count);
+    expire(90*TTL_NS+HOLD_NS);assert(!held && !flows[failed_index].notice_pending);
+    testing_candidate_failure=1;retry_after=0;retry_cursor=0;
+    for (unsigned i=0;i<70;i++) { failed.ct=2000+i;hold((uint16_t)(QUEUE+i%QUEUES),failed,i,0,128,100*TTL_NS); }
+    testing_candidate_failure=0;old_retries=candidate_retries;
+    retry_candidates(100*TTL_NS);assert(candidate_retries==old_retries+64 && held==70 && !grant_count);
+    retry_candidates(100*TTL_NS+TTL_NS/10);assert(candidate_retries==old_retries+70 && held==70);
+    expire(UINT64_MAX);assert(!held && !held_bytes && free_count==FLOW_LIMIT);
+    testing_candidate_failure=1;failed.ct=3000;hold(QUEUE,failed,1,0,128,110*TTL_NS);failed_index=find_flow(failed);
+    assert(flows[failed_index].notice_pending);expire(110*TTL_NS+HOLD_NS);assert(!flows[failed_index].notice_pending);
+    testing_candidate_failure=0;old_retries=candidate_retries;retry_candidates(120*TTL_NS);
+    assert(candidate_retries==old_retries && !held && !grant_count);
     puts("PASS escrow identity, revocation, expiry, packet/flow/byte bounds and root-only snapshots");
 }
 int main(int argc, char **argv) {
@@ -618,21 +713,26 @@ int main(int argc, char **argv) {
     struct nfq_handle *handle=nfq_open();
     if (!handle || nfq_bind_pf(handle,AF_INET)) fatal("NFQUEUE open");
     // Raw packet parsing retains the original skb; no copied payload is reinjected.
-    struct nfq_q_handle *q=nfq_create_queue(handle,QUEUE,NULL,NULL);
-    if (!q || nfq_set_mode(q,NFQNL_COPY_PACKET,128) || nfq_set_queue_maxlen(q,CAPACITY) ||
-        nfq_set_queue_flags(q,NFQA_CFG_F_CONNTRACK,NFQA_CFG_F_CONNTRACK)) fatal("NFQUEUE config");
-    queue_fd=nfq_fd(handle); int buffer_size=16*1024*1024;
+    struct nfq_q_handle *queues[QUEUES];
+    for (unsigned i=0;i<QUEUES;i++) {
+        queues[i]=nfq_create_queue(handle,(uint16_t)(QUEUE+i),NULL,NULL);
+        if (!queues[i] || nfq_set_mode(queues[i],NFQNL_COPY_PACKET,COPY_BYTES) || nfq_set_queue_maxlen(queues[i],CAPACITY/QUEUES) ||
+            nfq_set_queue_flags(queues[i],NFQA_CFG_F_CONNTRACK,NFQA_CFG_F_CONNTRACK)) fatal("NFQUEUE config");
+    }
+    queue_fd=nfq_fd(handle); int buffer_size=20*1024*1024;
     if (setsockopt(queue_fd,SOL_SOCKET,SO_RCVBUFFORCE,&buffer_size,sizeof(buffer_size))) fatal("netlink buffer");
+    socklen_t buffer_length=sizeof(buffer_size);
+    if (getsockopt(queue_fd,SOL_SOCKET,SO_RCVBUF,&buffer_size,&buffer_length)) fatal("netlink buffer query");
     char buffers[BATCH][8192] __attribute__((aligned));
     struct iovec iov[BATCH]; struct mmsghdr incoming[BATCH]={0};
     for (unsigned i=0;i<BATCH;i++) {
         iov[i]=(struct iovec){.iov_base=buffers[i],.iov_len=sizeof(buffers[i])};
         incoming[i].msg_hdr.msg_iov=&iov[i]; incoming[i].msg_hdr.msg_iovlen=1;
     }
-    printf("ready queue=%d copy=128 max=%u ttl_ms=2600 byte_limit=%u flow_limit=%u per_flow=%u\n",QUEUE,CAPACITY,BYTE_LIMIT,FLOW_LIMIT,PER_FLOW); fflush(stdout);
+    printf("ready queues=%d-%u copy=%u total_max=%u ttl_ms=2600 byte_limit=%u flow_limit=%u per_flow=%u recvbuf_bytes=%d\n",QUEUE,QUEUE+QUEUES-1,COPY_BYTES,CAPACITY,BYTE_LIMIT,FLOW_LIMIT,PER_FLOW,buffer_size); fflush(stdout);
     int status=0;
     while (!stopping) {
-        expire(clock_ns()); refresh_candidates(clock_ns()); if (flush()) { status=1; break; }
+        expire(clock_ns()); refresh_candidates(clock_ns()); retry_candidates(clock_ns()); if (flush()) { status=1; break; }
         if (reporting) { report(); reporting=0; }
         struct pollfd fds[2]={{.fd=control_fd,.events=POLLIN},{.fd=queue_fd,.events=POLLIN}};
         if (poll(fds,2,10)<0) { if (errno==EINTR) continue; status=1; break; }
@@ -682,6 +782,7 @@ int main(int argc, char **argv) {
         }
     }
     expire(UINT64_MAX); if (flush()) status=1; report();
-    nfq_destroy_queue(q); nfq_close(handle); close(control_fd); unlink(path);
+    for (unsigned i=0;i<QUEUES;i++) nfq_destroy_queue(queues[i]);
+    nfq_close(handle); close(control_fd); unlink(path);
     return status;
 }

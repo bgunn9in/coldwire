@@ -121,6 +121,11 @@ def main():
             '192.168.76.43': 1, '192.168.76.55': 1}
         assert stats['dropped'] == 0 and stats['malformed_connections'] == 1
         assert stats['rejected_connections'] == 1 and stats['tcp_nodelay']
+
+        ports = {p['source_mac']:p for p in stats['port_stats']}
+        assert all(p['output_drops'] == 0 for p in ports.values())
+        recipient = ports[mb.hex()]
+        assert 0 <= recipient['max_queued_send_gap_ns'] <= recipient['max_pending_age_ns']
         print('PASS TCP framing, maximum length, ring wrap/order, unicast, opaque payload, peer cap and exact counter')
     finally:
         for client in clients:

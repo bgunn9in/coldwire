@@ -13,7 +13,7 @@ table bridge awg_escrow_bridge_lab {
     chain held {
         type filter hook postrouting priority 300; policy accept;
         meta mark & 0x02000000 == 0 return
-        oifname "enp0s3" ether type ip ip saddr 192.168.76.10 ip daddr 192.168.76.20 udp dport 32497 ct status confirmed counter queue num 101
+        oifname "enp0s3" ether type ip ip saddr 192.168.76.10 ip daddr 192.168.76.20 udp dport 32497 ct status confirmed counter queue to numgen inc mod 2 offset 101
         counter drop comment "late_unconfirmed"
     }
     chain validate {

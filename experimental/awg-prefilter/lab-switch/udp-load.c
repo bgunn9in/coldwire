@@ -23,13 +23,29 @@ static struct sockaddr_in address(const char *text) {
     assert(!strcmp(text,"10.8.1.1") || !strcmp(text,"10.8.1.2"));
     struct sockaddr_in a={.sin_family=AF_INET,.sin_port=htons(PORT)};assert(inet_pton(AF_INET,text,&a.sin_addr)==1);return a;
 }
+static void missing_by_second(const unsigned char *seen, unsigned counts[SECONDS]) {
+    for (unsigned i = 0; i < TOTAL; i++) {
+        if (!seen[i + 1]) counts[i / PPS]++;
+    }
+}
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--self-test")) {
         unsigned char p[1200];packet(p,sizeof(p),1);assert(sequence(p,sizeof(p),1200)==1);
         packet(p,sizeof(p),TOTAL);assert(sequence(p,sizeof(p),1200)==TOTAL);
         packet(p,sizeof(p),TOTAL+1);assert(!sequence(p,sizeof(p),1200));
         packet(p,sizeof(p),1);p[0]^=1;assert(!sequence(p,sizeof(p),1200));
-        assert(!sequence(p,12,1200));puts("PASS bounded UDP sequence encoding and validation");return 0;
+        assert(!sequence(p,12,1200));
+        unsigned char *seen = malloc(TOTAL + 1);
+        assert(seen);
+        memset(seen, 1, TOTAL + 1);
+        seen[1] = seen[PPS] = seen[PPS + 1] = seen[TOTAL] = 0;
+        unsigned missing[SECONDS] = {0};
+        missing_by_second(seen, missing);
+        assert(missing[0] == 2 && missing[1] == 1 && missing[SECONDS - 1] == 1);
+        for (unsigned i = 2; i < SECONDS - 1; i++) assert(!missing[i]);
+        free(seen);
+        puts("PASS bounded UDP sequence validation and missing-packet bins");
+        return 0;
     }
     char host[64];assert(!gethostname(host,sizeof(host)) && !geteuid());
     assert(!strcmp(host,"kit-exit") || !strcmp(host,"kit-client"));
@@ -67,7 +83,13 @@ int main(int argc,char **argv) {
             struct pollfd p={.fd=fd,.events=POLLIN};int ready=poll(&p,1,50);if(ready<0 && errno==EINTR)continue;assert(ready>=0);if(!ready)continue;
             for(;;){ssize_t n=recv(fd,data,sizeof(data),MSG_DONTWAIT);if(n<0 && (errno==EAGAIN || errno==EWOULDBLOCK))break;if(n<0 && errno==EINTR)continue;assert(n>=0);uint32_t v=sequence(data,(size_t)n,size);if(!v)invalid++;else if(seen[v])duplicate++;else{seen[v]=1;unique++;}}
         }
-        printf("{\"tool\":\"coldwire-lab-udp36\",\"unique\":%u,\"duplicates\":%u,\"invalid\":%u,\"payload\":%zu,\"socket_buffer_bytes\":%d,\"start_wall_ns\":%"PRIu64",\"end_wall_ns\":%"PRIu64"}\n",unique,duplicate,invalid,size,actual,wall,ns(CLOCK_REALTIME));free(seen);
+        uint64_t end_wall = ns(CLOCK_REALTIME);
+        unsigned missing[SECONDS] = {0};
+        missing_by_second(seen, missing);
+        free(seen);
+        printf("{\"tool\":\"coldwire-lab-udp36\",\"unique\":%u,\"duplicates\":%u,\"invalid\":%u,\"payload\":%zu,\"socket_buffer_bytes\":%d,\"start_wall_ns\":%"PRIu64",\"end_wall_ns\":%"PRIu64",\"missing_by_scheduled_second\":[",unique,duplicate,invalid,size,actual,wall,end_wall);
+        for (unsigned i = 0; i < SECONDS; i++) printf("%s%u", i ? "," : "", missing[i]);
+        puts("]}");
     }
     close(fd);return 0;
 }

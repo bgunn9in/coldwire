@@ -437,7 +437,10 @@ def serve(config,role):
             if candidates:readers.append(candidates)
             writable=[stream.socket] if stream and stream.outgoing else []
             if handshake:(writable if handshake.write else readers).append(handshake.socket)
-            ready,writes,_=select.select(readers,writable,[],.05)
+            timeout=.05
+            if role=='entry':
+                timeout=min(timeout,max(0,next_tick-now))
+            ready,writes,_=select.select(readers,writable,[],timeout)
             lease_changed=False;established=False
             try:
                 if candidates and candidates in ready:

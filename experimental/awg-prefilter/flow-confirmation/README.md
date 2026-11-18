@@ -24,6 +24,11 @@ and [v18 measurements](../validation-v18.md).
 
 ## How admission works
 
+The [v40 queue study](../validation-v40.md) splits holding between two queues
+in one process. Queue numbers stay attached to packet IDs; all holding and
+probe budgets remain shared. It addresses the per-queue kernel ceiling
+identified in v39 without changing clients.
+
 The [v39 timing study](../validation-v39.md) adds one early probe after the
 nonce request has been written, with an ACK-gated fallback. Early probes use
 a 32/s sub-budget within the unchanged aggregate limit. B still requires a
@@ -31,6 +36,13 @@ fresh authenticated event after receiving the query. The study also records
 a lower kernel NFQUEUE ceiling than the configured packet bound.
 
 The [v38 crash-recovery study](../validation-v38.md) keeps TLS connection and handshake work nonblocking. A continues draining candidate notices and maintaining kernel leases while reconnecting; B keeps the current authenticated stream until a replacement is verified. TCP/TLS setup has a two-second deadline on A and a one-second deadline on B. A requests one bounded refresh of held-flow metadata after startup. This root-only `CWR1` request grants no traffic. C reannounces live identities in batches of at most 64 notices per pass for at most one second.
+
+A failed local candidate notice stays pending while its exact flow has held
+packets. C retries at most 64 pending notices per 100-ms pass and stops that
+pass on a failed send. The cursor rotates between flows; repeated failures
+coalesce in one bit per flow. Empty or expired flows clear that bit. The
+startup refresh uses the same pending flag when a notice fails. These are
+untrusted metadata notices, not proofs, leases or extra VPN probes.
 
 A also limits cached untrusted observations to four per learned source IPv4. Live leases and authenticated hints retain priority. Rejected excess identities skip the conntrack lookup; accepted candidates, probes and grants still require exact-generation checks. Many clients behind one NAT share these untrusted slots.
 
@@ -223,7 +235,7 @@ make check-escrow
 In the disposable entry VM, enable `net.netfilter.nf_conntrack_acct=1` before
 creating test flows. Create `/run/coldwire-escrow` as root with mode 0700 and
 start `escrow --vm-test` before loading its rules. It accepts only hostname
-`kit-entry` and binds queue 101. Add
+`kit-entry` and binds queues 101 and 102 on one netlink socket. Add
 `"escrow_socket": "/run/coldwire-escrow/grants.sock"` to A's private helper
 configuration. Queue 100 and the original classification-enabled prefilter
 remain in use. The helper must install its kernel lease before notifying
@@ -237,7 +249,7 @@ sudo ./flow-confirmation/escrow --vm-test
 The example splits the existing 6000/s, burst-2048 aggregate allowance into
 4976/s with burst 1024 for bulk traffic, 960/s with burst 960 for discovery,
 and 64/s with burst 64 for forward probes. Samples still go through header inspection;
-it cannot authenticate a client. Excess traffic enters queue 101, with no
+it cannot authenticate a client. Excess traffic enters queues 101/102, with no
 queue bypass or fail-open option. Only confirmed IPv4/UDP conntrack entries
 and individual IP packets up to 1536 bytes are eligible for holding.
 Conntrack confirmation is kernel tracking state; it grants no VPN identity.
@@ -267,16 +279,27 @@ packets and missing mappings still prevent recovery. Update the agent and C
 holding binary together. [V39](../validation-v39.md) records the timing and
 failure controls; the earlier v34 early-probe experiment remains rejected.
 
-The process keeps kernel packet IDs and metadata, with a 128-byte netlink
-copy. Linux retains the original encrypted skb and its conntrack reference.
+The process keeps kernel packet IDs and metadata, with an 80-byte packet
+copy in each netlink message. This covers a 60-byte IPv4 header, UDP and the
+12-byte transport nonce. Conntrack attributes and netlink overhead are
+additional. The shared receive-buffer request is 20 MiB (40 MiB as
+reported by Linux). Linux retains the original encrypted skb and its conntrack reference.
 Bounds are 2.6 seconds, 131072 packets, 8192 pending flow identities, 16384
 packets per identity and 32 MiB of wire bytes. A salted hash table replaces
 the linear flow search. Kernel skb overhead is additional;
-the byte limit is not a total-RAM limit. Expired or excess packets are dropped. The configured
-packet bound is also subject to kernel NFQUEUE limits. In the v39 kernel
-6.12.117 lab, one queue's hash table caps outstanding entries at 65536 despite
-the 131072 setting. A queue can therefore drop packets before C reaches its
-own capacity; check queue drops and kernel hash-insertion errors.
+the byte limit is not a total-RAM limit. Expired or excess packets are dropped. The packet bound is shared
+by both queues. Each kernel queue is configured for 65536 pending packets;
+C keeps one global packet ring and one set of byte, flow and probe budgets.
+A packet's identity includes its queue number, because two queues can issue
+the same packet ID. Its verdict returns to that exact queue.
+
+The rules alternate packets with `queue to numgen inc mod 2 offset 101`.
+A plain queue range hashes IP addresses on this kernel; NAT makes the bridge
+packets share those addresses, so a range can send them all to one queue.
+One process drains both queues. There is no bypass if either listener is
+missing. Update C and both rule examples together. [V40](../validation-v40.md)
+records the capacity test, wrong-queue and missing-listener controls, and
+native-client measurements. This does not extend the 2.6-second holding limit.
 
 A root-only Unix socket receives up to 128 lease records per snapshot for the exact source
 IPv4, source port and conntrack ID. On release, the next nftables hook checks
@@ -308,7 +331,7 @@ The three `coldwire-*.service.example` files provide restart settings for
 the disposable `kit-entry` and `kit-exit` hosts only. They are not VPS units
 or an installer. V30 tested their automatic restarts and control-channel
 expiry with native clients; it did not test failure under a saturated link.
-An `ENOENT` reply to this process's queue-101 verdict is counted rather than
+An `ENOENT` reply to this process's queue-101 or queue-102 verdict is counted rather than
 stopping all forwarding: the kernel has already removed that packet. Other
 netlink errors remain fatal. V30 exercises this with a real hook reload.
 Packets discarded by a hook change remain lost.

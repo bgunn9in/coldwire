@@ -19,6 +19,10 @@ cold connections, movement and the limits of tuple admission.
 [V37](validation-v37.md) checks configurable wire parameters and helper restarts.
 [V38](validation-v38.md) investigates SIGKILL during roaming, nonblocking TLS recovery and finite holding/replay windows.
 [V39](validation-v39.md) traces delayed packets and tests early probes within the existing admission budget.
+[V40](validation-v40.md) tests two holding queues in one process, shared budgets, exact verdict routing and retries of failed candidate notices.
+[V41](validation-v41.md) fixes a maintenance timer at A and measures socket backpressure in the lab switch.
+[V42](validation-v42.md) compares UDP capture with delivery counts from the lab receiver.
+[V43](validation-v43.md) investigates QEMU receive stalls and validates the lab switch over AF_UNIX.
 
 ## What it checks
 

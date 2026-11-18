@@ -40,6 +40,27 @@ The statistics path is an explicit output file: it is replaced once per
 second through a temporary file. Use a path that fits Windows `MAX_PATH` and the active Windows code page;
 the helper uses the ANSI path APIs.
 
+Each connection reports `output_drops` and `max_queued_send_gap_ns`. The
+first counts frames that could not fit in that connection's output ring.
+The second measures the longest interval with data waiting and no successful
+write to its socket. `max_pending_age_ns` measures how long the ring was
+continuously nonempty, including time when writes were succeeding.
+
+On a Windows host with AF_UNIX support, the lab data interfaces can connect
+over a local socket file. Choose a new path in a directory owned by the lab.
+The full path must fit in 107 bytes. For example, start the switch with:
+
+```powershell
+& "$lab\native-switch.exe" 'unix:C:\lab\cw.sock' "$lab\switch-stats.json"
+```
+
+Point the QEMU data NIC at
+`-netdev stream,id=lab,addr.type=unix,addr.path=C:/lab/cw.sock`. Leave its
+Virtio `netdev=lab` device and the management NIC as configured. Start the
+switch before QEMU. After shutting down the lab, remove its socket file
+before reusing the path. The `tcp_nodelay` statistic is false in this mode.
+AF_UNIX was checked on Windows with QEMU 11.1.3/WHPX.
+
 ## QEMU on Windows: write each frame together
 
 The [v11 study](../validation-v11.md) traced intermittent rate shortfalls
@@ -229,5 +250,8 @@ Keep assertions enabled. The receiver uses `SO_RCVBUFFORCE` for a private
 4-MiB request (8 MiB as reported by Linux); it does not change global sysctls.
 This avoids losing a recovery burst in the lab application's small default
 buffer. Real applications can still overflow their own buffers. Compare
-inner-interface captures with receiver counts, rather than treating both
-as the same loss metric. See [v36](../validation-v36.md).
+inner-interface captures with receiver counts. The receiver reports
+`missing_by_scheduled_second`, 60 counts derived from sequence numbers after
+the run. Index 0 covers sequences 1 through 6000. The bins follow the sender's
+schedule and carry no capture timestamps. Use them for delivery counts when
+running without a UDP capture. See [v36](../validation-v36.md).
