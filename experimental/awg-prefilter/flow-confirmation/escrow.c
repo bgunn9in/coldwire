@@ -25,6 +25,7 @@
 #include <time.h>
 #include <unistd.h>
 
+// shortcut: kernel 6.12.117 caps one NFQUEUE at 65536; split queues for larger backlogs.
 #define CAPACITY 131072U
 #define FLOW_LIMIT 8192U
 #define GRANT_LIMIT 128U
@@ -59,6 +60,7 @@ static uint64_t verdict_missing;
 static uint64_t probed;
 static uint64_t control_expired;
 static uint64_t probe_limited,probe_credits=64*TTL_NS,probe_clock;
+static uint64_t early_probed,early_limited,early_credits=32*TTL_NS,early_clock;
 static uint64_t late_packets;
 static volatile sig_atomic_t stopping, reporting;
 static int queue_fd, testing;
@@ -205,6 +207,7 @@ static void hold(struct key key, uint32_t id, uint32_t mark, unsigned length, ui
 }
 static int probe_control(const unsigned char *data, size_t size, int root, uint64_t now) {
     if (!root || size!=22) return 0;
+    int early=!memcmp(data,"CWT1",4);
     struct key key;memcpy(&key.ip,data+4,4);key.port=read16(data+8);key.ct=read32(data+10);
     uint64_t until=read64(data+14);
     if (!key.port || !key.ct || until<=now || until-now>TTL_NS) return 0;
@@ -220,6 +223,14 @@ static int probe_control(const unsigned char *data, size_t size, int root, uint6
                 if (probe_credits>64*TTL_NS) probe_credits=64*TTL_NS;
                 if (now>probe_clock) probe_clock=now;
                 if (probe_credits<TTL_NS) { probe_limited++;break; }
+                if (early) {
+                    uint64_t elapsed=now>=early_clock?now-early_clock:0;
+                    early_credits=elapsed>=TTL_NS?32*TTL_NS:early_credits+elapsed*32;
+                    if (early_credits>32*TTL_NS)early_credits=32*TTL_NS;
+                    if (now>early_clock)early_clock=now;
+                    if (early_credits<TTL_NS){early_limited++;break;}
+                    early_credits-=TTL_NS;early_probed++;
+                }
                 probe_credits-=TTL_NS;
                 remove_packet(p,PROBE);break;
             }
@@ -233,7 +244,7 @@ static int control(const unsigned char *data, size_t size, int root, uint64_t no
         if (!root) return 0;
         refresh_next=0;refresh_until=now+TTL_NS;refresh_requests++;return 1;
     }
-    if (size>=4 && !memcmp(data,"CWS1",4)) return probe_control(data,size,root,now);
+    if (size>=4 && (!memcmp(data,"CWS1",4) || !memcmp(data,"CWT1",4))) return probe_control(data,size,root,now);
     if (!root || size<6 || memcmp(data,"CWE1",4)) return 0;
     unsigned count=read16(data+4);
     if (count>GRANT_LIMIT || size!=6+18*count) return 0;
@@ -262,8 +273,8 @@ static void report(void) {
            ",\"bounded\":%"PRIu64",\"invalid\":%"PRIu64",\"control_bad\":%"PRIu64
            ",\"control_ok\":%"PRIu64",\"held\":%u,\"held_bytes\":%u,\"high_packets\":%"PRIu64
            ",\"high_bytes\":%"PRIu64",\"netlink_enobufs\":%"PRIu64",\"send_calls\":%"PRIu64",\"candidate_sent\":%"PRIu64",\"candidate_failed\":%"PRIu64
-           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64",\"probed\":%"PRIu64",\"control_expired\":%"PRIu64",\"probe_limited\":%"PRIu64",\"late_packets\":%"PRIu64",\"refresh_requests\":%"PRIu64",\"refresh_sent\":%"PRIu64",\"refresh_expired\":%"PRIu64"}\n",
-           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing,probed,control_expired,probe_limited,late_packets,refresh_requests,refresh_sent,refresh_expired);
+           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64",\"probed\":%"PRIu64",\"control_expired\":%"PRIu64",\"probe_limited\":%"PRIu64",\"late_packets\":%"PRIu64",\"refresh_requests\":%"PRIu64",\"refresh_sent\":%"PRIu64",\"refresh_expired\":%"PRIu64",\"early_probed\":%"PRIu64",\"early_limited\":%"PRIu64"}\n",
+           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing,probed,control_expired,probe_limited,late_packets,refresh_requests,refresh_sent,refresh_expired,early_probed,early_limited);
     fflush(stdout);
 }
 static void signal_handler(int sig) { if (sig==SIGUSR1) reporting=1; else stopping=1; }
@@ -557,6 +568,32 @@ static void selftest(void) {
     refresh_candidates(41*TTL_NS);
     assert(!refresh_until && refresh_expired==timed_out+1 && held==1);
     expire(UINT64_MAX);assert(!held && !held_bytes && free_count==FLOW_LIMIT);
+    probe_credits=64*TTL_NS;probe_clock=60*TTL_NS;
+    early_credits=32*TTL_NS;early_clock=60*TTL_NS;
+    unsigned char early_request[22];memcpy(early_request,request,22);memcpy(early_request,"CWT1",4);
+    until=60*TTL_NS+TTL_NS/2;hi=htonl((uint32_t)(until>>32));lo=htonl((uint32_t)until);
+    memcpy(early_request+14,&hi,4);memcpy(early_request+18,&lo,4);
+    assert(!control(early_request,22,0,60*TTL_NS) && !control(early_request,21,1,60*TTL_NS));
+    uint64_t old_early=early_probed,old_limit=early_limited,old_total=probed;
+    for(unsigned i=0;i<33;i++){hold(probe_key,i,0,128,60*TTL_NS);assert(control(early_request,22,1,60*TTL_NS));}
+    assert(early_probed-old_early==32 && probed-old_total==32 && early_limited-old_limit==1 && held==1);
+    assert(probe_credits==32*TTL_NS && !authorized(probe_key,60*TTL_NS));
+    memcpy(request+14,&hi,4);memcpy(request+18,&lo,4);
+    assert(control(request,22,1,60*TTL_NS) && !held && probed-old_total==33);
+    hold(probe_key,99,0,128,60*TTL_NS+TTL_NS/32);
+    assert(control(early_request,22,1,60*TTL_NS+TTL_NS/32) && !held && early_probed-old_early==33);
+    expire(UINT64_MAX);assert(!held && !held_bytes);
+    probe_credits=64*TTL_NS;probe_clock=70*TTL_NS;
+    early_credits=32*TTL_NS;early_clock=70*TTL_NS;
+    until=70*TTL_NS+TTL_NS/2;hi=htonl((uint32_t)(until>>32));lo=htonl((uint32_t)until);
+    memcpy(early_request+14,&hi,4);memcpy(early_request+18,&lo,4);
+    memcpy(request+14,&hi,4);memcpy(request+18,&lo,4);
+    old_total=probed;
+    for(unsigned i=0;i<32;i++){hold(probe_key,i,0,128,70*TTL_NS);assert(control(early_request,22,1,70*TTL_NS));}
+    for(unsigned i=0;i<32;i++){hold(probe_key,32+i,0,128,70*TTL_NS);assert(control(request,22,1,70*TTL_NS));}
+    hold(probe_key,64,0,128,70*TTL_NS);assert(control(request,22,1,70*TTL_NS));
+    assert(held==1 && probed-old_total==64 && !probe_credits && !authorized(probe_key,70*TTL_NS));
+    expire(UINT64_MAX);assert(!held && !held_bytes);
     puts("PASS escrow identity, revocation, expiry, packet/flow/byte bounds and root-only snapshots");
 }
 int main(int argc, char **argv) {

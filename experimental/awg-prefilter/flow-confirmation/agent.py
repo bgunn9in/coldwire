@@ -52,11 +52,11 @@ class Entry:
         self.escrow_socket=escrow_socket
         self.late_escrow=late_escrow
         self.flows={};self.observed={};self.looked_up={};self.auth_hints={};self.last_escrow=0
-        self.ready=set();self.probed=set()
+        self.ready=set();self.probed=set();self.sent=set();self.early_probed=set()
         self.pending={};self.leases={};self.last_query={};self.peer_stamp={};self.history=[];self.stats={'queries':0,'grants':0,'rejected':0,'moves':0}
     def new_control_session(self):
         # Fresh nonces bind proofs to this authenticated session; B's clock may have restarted.
-        self.pending.clear();self.ready.clear();self.probed.clear();self.peer_stamp.clear()
+        self.pending.clear();self.ready.clear();self.probed.clear();self.sent.clear();self.early_probed.clear();self.peer_stamp.clear()
     def control_timed_out(self,now):
         return any(deadline<=now and request not in self.ready for request,(_,deadline) in self.pending.items())
     def _observe(self,port,now):
@@ -126,7 +126,7 @@ class Entry:
         return True
     def queries(self,flows,now):
         self.pending={n:v for n,v in self.pending.items() if v[0] in flows and v[1]>now}
-        self.ready.intersection_update(self.pending);self.probed.intersection_update(self.pending)
+        self.ready.intersection_update(self.pending);self.probed.intersection_update(self.pending);self.sent.intersection_update(self.pending);self.early_probed.intersection_update(self.pending)
         self.leases={f:v for f,v in self.leases.items() if f in flows and v[1]>now}
         self.last_query={f:t for f,t in self.last_query.items() if f in flows}
         self.auth_hints={f:t for f,t in self.auth_hints.items() if f in flows and t>now}
@@ -153,9 +153,9 @@ class Entry:
         if not pending or pending[1]<=now:return False
         self.ready.add(message['ready']);return True
     def probes(self,flows,now):
-        # An acknowledged probe stays untrusted until B authenticates its transport packet.
+        # Every probe stays untrusted until B authenticates a fresh transport packet.
         return [(n,f) for n,(f,deadline) in self.pending.items()
-                if self.escrow_socket and n in self.ready and n not in self.probed
+                if self.escrow_socket and ((n in self.ready and n not in self.probed) or (n in self.sent and n not in self.ready and n not in self.early_probed))
                 and deadline>now and f in flows
                 and (f not in self.leases or self.leases[f][1]<=now)]
     def confirm(self,message,flows,now):
@@ -296,12 +296,12 @@ def sync_escrow(state,now):
     state.last_escrow=now
     if not notify_escrow(state):state.stats['escrow_notify_failed']=state.stats.get('escrow_notify_failed',0)+1
 
-def probe_escrow(state,flow,now):
+def probe_escrow(state,flow,now,early=False):
     try:
-        if state.escrow_socket!=ESCROW_SOCKET:return False
+        if state.escrow_socket!=ESCROW_SOCKET or type(early) is not bool:return False
         parent=Path(ESCROW_SOCKET).parent.lstat();info=Path(ESCROW_SOCKET).lstat()
         if not stat.S_ISDIR(parent.st_mode) or parent.st_uid or stat.S_IMODE(parent.st_mode)!=0o700 or not stat.S_ISSOCK(info.st_mode) or info.st_uid or stat.S_IMODE(info.st_mode)!=0o600:return False
-        data=b'CWS1'+ESCROW_RECORD.pack(ipaddress.IPv4Address(flow.source).packed,flow.port,flow.identity,int((now+RECOVERY_SECONDS)*1e9))
+        data=(b'CWT1' if early else b'CWS1')+ESCROW_RECORD.pack(ipaddress.IPv4Address(flow.source).packed,flow.port,flow.identity,int((now+RECOVERY_SECONDS)*1e9))
         with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as connection:
             connection.setblocking(False);return connection.sendto(data,ESCROW_SOCKET)==len(data)
     except (OSError,ValueError,struct.error):return False
@@ -487,14 +487,16 @@ def serve(config,role):
                         messages=state.event(data,time.monotonic())
                         if stream:
                             for message in messages:stream.queue(message)
-                if stream and stream.socket in writes:stream.write()
+                if stream and stream.socket in writes:
+                    stream.write()
+                    if role=='entry' and not stream.outgoing:state.sent.update(state.pending)
                 if role=='entry' and stream and state.control_timed_out(time.monotonic()):
                     state.stats['control_timeouts']=state.stats.get('control_timeouts',0)+1
                     raise TimeoutError('Control acknowledgement deadline expired')
             except (OSError,ssl.SSLError,EOFError,AssertionError,ValueError):
                 if stream:stream.socket.close();stream=None
                 if role=='entry':
-                    state.pending.clear();state.ready.clear();state.probed.clear();next_connect=time.monotonic()+.2
+                    state.pending.clear();state.ready.clear();state.probed.clear();state.sent.clear();state.early_probed.clear();next_connect=time.monotonic()+.2
             now=time.monotonic()
             if role=='entry' and (now>=next_tick or lease_changed):
                 if now>=next_tick:
@@ -507,7 +509,10 @@ def serve(config,role):
                     for request,flow in state.probes(flows,now):
                         try:current=read_flow(config,flow.translated_port)
                         except (OSError,ValueError):current=None
-                        if current==flow and probe_escrow(state,flow,now):state.probed.add(request)
+                        if current==flow:
+                            early=request not in state.ready
+                            delivered=probe_escrow(state,flow,now,early=True) if early else probe_escrow(state,flow,now)
+                            if delivered:(state.early_probed if early else state.probed).add(request)
                     next_tick=now+POLL_SECONDS
                 shape=tuple(sorted((f.source,f.port,f.identity,v[0],v[1]) for f,v in state.leases.items()))
                 if shape!=last_lease_shape:

@@ -24,6 +24,12 @@ and [v18 measurements](../validation-v18.md).
 
 ## How admission works
 
+The [v39 timing study](../validation-v39.md) adds one early probe after the
+nonce request has been written, with an ACK-gated fallback. Early probes use
+a 32/s sub-budget within the unchanged aggregate limit. B still requires a
+fresh authenticated event after receiving the query. The study also records
+a lower kernel NFQUEUE ceiling than the configured packet bound.
+
 The [v38 crash-recovery study](../validation-v38.md) keeps TLS connection and handshake work nonblocking. A continues draining candidate notices and maintaining kernel leases while reconnecting; B keeps the current authenticated stream until a replacement is verified. TCP/TLS setup has a two-second deadline on A and a one-second deadline on B. A requests one bounded refresh of held-flow metadata after startup. This root-only `CWR1` request grants no traffic. C reannounces live identities in batches of at most 64 notices per pass for at most one second.
 
 A also limits cached untrusted observations to four per learned source IPv4. Live leases and authenticated hints retain priority. Rejected excess identities skip the conntrack lookup; accepted candidates, probes and grants still require exact-generation checks. Many clients behind one NAT share these untrusted slots.
@@ -244,23 +250,33 @@ sources can still exhaust the shared budget; this is not source authentication.
 Discovery also covers reused NAT tuples whose conntrack entry is still alive;
 requiring `ct original packets 1` would miss them.
 
-Once B acknowledges a pending nonce, A can request one held packet as a
-forward probe, including for a flow without an earlier authenticated hint. A rechecks the
-generation first and skips the probe if that flow already has a live lease.
-The root-only `CWS1` request expires within one second and
-does not grant a lease. Its local `0x04000000` mark uses the separate 64/s
-kernel limit, then queue 100 still inspects it and B still authenticates it.
-Prerouting probes clear this mark before classification. The probe can supply a new
-post-request event even if the client has already left that NAT mapping.
-Replayed or invalid ciphertext cannot supply that event. Holding expiry is
-unchanged, and a missing mapping or a full budget can still prevent recovery.
+After the TLS output buffer drains, A may request one early held packet on
+its next maintenance pass. `CWT1` limits these early probes to 32/s with burst
+32, within C's existing shared 64/s, burst-64 probe budget. The request can
+still arrive at B after its UDP probe. Such a pre-query event cannot prove a
+flow; after B acknowledges the nonce, A may request one `CWS1` fallback.
+A rechecks the exact conntrack generation and skips probes for live leases.
+Both root-only requests expire within one second and grant no lease.
+
+The local `0x04000000` mark also passes a separate 64/s kernel limit. Queue
+100 checks the header and B authenticates the transport packet. Prerouting
+probes clear this mark before classification. A valid post-query event can
+recover packets from a NAT mapping the client has already left. Duplicate or
+invalid ciphertext cannot provide that event. Full budgets, expired holding
+packets and missing mappings still prevent recovery. Update the agent and C
+holding binary together. [V39](../validation-v39.md) records the timing and
+failure controls; the earlier v34 early-probe experiment remains rejected.
 
 The process keeps kernel packet IDs and metadata, with a 128-byte netlink
 copy. Linux retains the original encrypted skb and its conntrack reference.
 Bounds are 2.6 seconds, 131072 packets, 8192 pending flow identities, 16384
 packets per identity and 32 MiB of wire bytes. A salted hash table replaces
 the linear flow search. Kernel skb overhead is additional;
-the byte limit is not a total-RAM limit. Expired or excess packets are dropped.
+the byte limit is not a total-RAM limit. Expired or excess packets are dropped. The configured
+packet bound is also subject to kernel NFQUEUE limits. In the v39 kernel
+6.12.117 lab, one queue's hash table caps outstanding entries at 65536 despite
+the 131072 setting. A queue can therefore drop packets before C reaches its
+own capacity; check queue drops and kernel hash-insertion errors.
 
 A root-only Unix socket receives up to 128 lease records per snapshot for the exact source
 IPv4, source port and conntrack ID. On release, the next nftables hook checks

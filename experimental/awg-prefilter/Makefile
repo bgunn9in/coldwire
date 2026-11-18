@@ -36,6 +36,7 @@ flow-confirmation/escrow: flow-confirmation/escrow.c
 check-escrow: flow-confirmation/escrow
 	./flow-confirmation/escrow --self-test
 	python3 flow-confirmation/test_agent.py
+	python3 flow-confirmation/test_early.py
 	python3 flow-confirmation/test_conntrack.py
 
 lab-switch/noise-multi-source: lab-switch/noise-multi-source.c
