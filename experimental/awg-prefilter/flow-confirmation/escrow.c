@@ -25,18 +25,19 @@
 #include <time.h>
 #include <unistd.h>
 
-#define CAPACITY 32768U
+#define CAPACITY 131072U
 #define FLOW_LIMIT 8192U
 #define GRANT_LIMIT 128U
 #define BUCKETS (2U*FLOW_LIMIT)
-#define PER_FLOW 8192U
-#define BYTE_LIMIT (16U * 1024U * 1024U)
+#define PER_FLOW 16384U
+#define BYTE_LIMIT (32U * 1024U * 1024U)
 #define TTL_NS UINT64_C(1000000000)
+#define HOLD_NS (26*TTL_NS/10)
 #define RELEASE_MARK UINT32_C(0x08000000)
 #define PROBE_MARK UINT32_C(0x04000000)
 #define LATE_MARK UINT32_C(0x02000000)
 #define PROBE 2
-#define BATCH 16U
+#define BATCH 64U
 #define QUEUE 101
 
 struct key { uint32_t ip, ct; uint16_t port; };
@@ -63,6 +64,8 @@ static volatile sig_atomic_t stopping, reporting;
 static int queue_fd, testing;
 static int candidate_fd=-1;
 static uint64_t candidate_sent,candidate_failed;
+static unsigned refresh_next=FLOW_LIMIT;
+static uint64_t refresh_until,refresh_requests,refresh_sent,refresh_expired;
 static unsigned verdict_count;
 static char verdict_buffers[BATCH][256] __attribute__((aligned));
 static struct iovec verdict_iov[BATCH];
@@ -154,17 +157,29 @@ static int authorized(struct key key, uint64_t now) {
         if (grants[i].until>now && equal(grants[i].key,key)) return 1;
     return 0;
 }
-static void candidate(struct key key) {
-    if (testing) return;
+static int candidate(struct key key) {
+    if (testing) return 1;
     const char *path="/run/coldwire-escrow/candidates.sock";
     struct stat st;
-    if (lstat(path,&st) || !S_ISSOCK(st.st_mode) || st.st_uid || (st.st_mode&0777)!=0600) { candidate_failed++;return; }
+    if (lstat(path,&st) || !S_ISSOCK(st.st_mode) || st.st_uid || (st.st_mode&0777)!=0600) { candidate_failed++;return 0; }
     unsigned char data[14];memcpy(data,"CWC1",4);memcpy(data+4,&key.ip,4);
     uint16_t port=htons(key.port);uint32_t ct=htonl(key.ct);
     memcpy(data+8,&port,2);memcpy(data+10,&ct,4);
     struct sockaddr_un addr={.sun_family=AF_UNIX};strcpy(addr.sun_path,path);
-    if (sendto(candidate_fd,data,sizeof(data),MSG_DONTWAIT,(struct sockaddr *)&addr,sizeof(addr))==(ssize_t)sizeof(data)) candidate_sent++;
-    else candidate_failed++;
+    if (sendto(candidate_fd,data,sizeof(data),MSG_DONTWAIT,(struct sockaddr *)&addr,sizeof(addr))==(ssize_t)sizeof(data)) { candidate_sent++;return 1; }
+    candidate_failed++;return 0;
+}
+static void refresh_candidates(uint64_t now) {
+    if (!refresh_until) return;
+    if (now>=refresh_until) { refresh_until=0;refresh_expired++;return; }
+    unsigned count=0;
+    while (refresh_next<FLOW_LIMIT && count<64) {
+        unsigned f=refresh_next++;
+        if (!flows[f].count) continue;
+        if (!candidate(flows[f].key)) { refresh_next--;break; }
+        refresh_sent++;count++;
+    }
+    if (refresh_next==FLOW_LIMIT) refresh_until=0;
 }
 static void hold(struct key key, uint32_t id, uint32_t mark, unsigned length, uint64_t now) {
     received++; expire(now);
@@ -183,7 +198,7 @@ static void hold(struct key key, uint32_t id, uint32_t mark, unsigned length, ui
         candidate(key);
     }
     struct packet *p=&packets[tail++%CAPACITY];
-    *p=(struct packet){.until=now+TTL_NS,.id=id,.mark=mark,.length=(uint16_t)length,.flow=(uint16_t)f};
+    *p=(struct packet){.until=now+HOLD_NS,.id=id,.mark=mark,.length=(uint16_t)length,.flow=(uint16_t)f};
     flows[f].count++; held++; held_bytes+=length;
     if (held>high_packets) high_packets=held;
     if (held_bytes>high_bytes) high_bytes=held_bytes;
@@ -196,8 +211,9 @@ static int probe_control(const unsigned char *data, size_t size, int root, uint6
     expire(now);
     unsigned f=find_flow(key);
     if (f<FLOW_LIMIT && !authorized(key,now)) {
-        for (uint64_t i=head;i<tail;i++) {
-            struct packet *p=&packets[i%CAPACITY];
+        // The newest held packet has the best chance of fitting B's replay window.
+        for (uint64_t i=tail;i>head;) {
+            struct packet *p=&packets[--i%CAPACITY];
             if (p->length && p->flow==f) {
                 uint64_t elapsed=now>=probe_clock?now-probe_clock:0;
                 probe_credits=elapsed>=TTL_NS?64*TTL_NS:probe_credits+elapsed*64;
@@ -213,6 +229,10 @@ static int probe_control(const unsigned char *data, size_t size, int root, uint6
     return 1;
 }
 static int control(const unsigned char *data, size_t size, int root, uint64_t now) {
+    if (size==4 && !memcmp(data,"CWR1",4)) {
+        if (!root) return 0;
+        refresh_next=0;refresh_until=now+TTL_NS;refresh_requests++;return 1;
+    }
     if (size>=4 && !memcmp(data,"CWS1",4)) return probe_control(data,size,root,now);
     if (!root || size<6 || memcmp(data,"CWE1",4)) return 0;
     unsigned count=read16(data+4);
@@ -242,8 +262,8 @@ static void report(void) {
            ",\"bounded\":%"PRIu64",\"invalid\":%"PRIu64",\"control_bad\":%"PRIu64
            ",\"control_ok\":%"PRIu64",\"held\":%u,\"held_bytes\":%u,\"high_packets\":%"PRIu64
            ",\"high_bytes\":%"PRIu64",\"netlink_enobufs\":%"PRIu64",\"send_calls\":%"PRIu64",\"candidate_sent\":%"PRIu64",\"candidate_failed\":%"PRIu64
-           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64",\"probed\":%"PRIu64",\"control_expired\":%"PRIu64",\"probe_limited\":%"PRIu64",\"late_packets\":%"PRIu64"}\n",
-           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing,probed,control_expired,probe_limited,late_packets);
+           ",\"ct_rejected\":%"PRIu64",\"bound_packets\":%"PRIu64",\"bound_bytes\":%"PRIu64",\"bound_flows\":%"PRIu64",\"bound_perflow\":%"PRIu64",\"verdict_missing\":%"PRIu64",\"probed\":%"PRIu64",\"control_expired\":%"PRIu64",\"probe_limited\":%"PRIu64",\"late_packets\":%"PRIu64",\"refresh_requests\":%"PRIu64",\"refresh_sent\":%"PRIu64",\"refresh_expired\":%"PRIu64"}\n",
+           received,released,expired,bounded,invalid,control_bad,control_ok,held,held_bytes,high_packets,high_bytes,netlink_enobufs,send_calls,candidate_sent,candidate_failed,ct_rejected,bound_packets,bound_bytes,bound_flows,bound_perflow,verdict_missing,probed,control_expired,probe_limited,late_packets,refresh_requests,refresh_sent,refresh_expired);
     fflush(stdout);
 }
 static void signal_handler(int sig) { if (sig==SIGUSR1) reporting=1; else stopping=1; }
@@ -406,19 +426,19 @@ static void selftest(void) {
     hold(k,2,0,128,3); assert(released==2 && held==1);
     assert(control((unsigned char *)"CWE1\0\0",6,1,4));
     hold(k,3,0,128,5); assert(held==2);
-    expire(TTL_NS+6); assert(!held && expired==2 && head==tail);
-    for (unsigned i=0;i<PER_FLOW+1;i++) hold(k,i,0,1536,2*TTL_NS);
+    expire(HOLD_NS+6); assert(!held && expired==2 && head==tail);
+    for (unsigned i=0;i<PER_FLOW+1;i++) hold(k,i,0,128,2*TTL_NS);
     assert(held==PER_FLOW && bounded==1);
-    expire(3*TTL_NS); assert(!held && !held_bytes);
+    expire(2*TTL_NS+HOLD_NS); assert(!held && !held_bytes);
     for (unsigned i=0;i<FLOW_LIMIT;i++) { k.ct=i+1; hold(k,i,0,128,4*TTL_NS); }
     k.ct=FLOW_LIMIT+1; hold(k,99,0,128,4*TTL_NS); assert(held==FLOW_LIMIT && bounded==2);
-    expire(5*TTL_NS); assert(!held);
+    expire(4*TTL_NS+HOLD_NS); assert(!held);
     for (unsigned i=0;i<CAPACITY+1;i++) { k.ct=i%8+1; hold(k,i,0,128,6*TTL_NS); }
     assert(held==CAPACITY && bounded==3);
-    expire(7*TTL_NS); assert(!held && head==tail);
+    expire(6*TTL_NS+HOLD_NS); assert(!held && head==tail);
     for (unsigned i=0;i<BYTE_LIMIT/1536+100;i++) { k.ct=i%8+1; hold(k,i,0,1536,8*TTL_NS); }
     assert(held_bytes<=BYTE_LIMIT && bounded>3);
-    expire(9*TTL_NS); assert(!held && !held_bytes && free_count==FLOW_LIMIT);
+    expire(8*TTL_NS+HOLD_NS); assert(!held && !held_bytes && free_count==FLOW_LIMIT);
     for (unsigned i=0;i<BUCKETS;i++) assert(!buckets[i]);
     message[4]=0; message[5]=129; assert(!control(message,sizeof(message),1,2));
     struct key probe_key={.ip=123,.port=456,.ct=99999};
@@ -434,7 +454,7 @@ static void selftest(void) {
     hold(probe_key,2,0,128,10*TTL_NS);
     assert(held==1 && !authorized(probe_key,10*TTL_NS));
     assert(!control(request,sizeof(request),1,until));
-    expire(11*TTL_NS);assert(!held && !held_bytes);
+    expire(10*TTL_NS+HOLD_NS);assert(!held && !held_bytes);
     struct key newer=probe_key;newer.ct++;
     hold(probe_key,3,0,128,12*TTL_NS);hold(newer,4,0,128,12*TTL_NS);
     unsigned char snapshot[42]={ 'C','W','E','1',0,2 };
@@ -447,7 +467,7 @@ static void selftest(void) {
     }
     assert(control(snapshot,sizeof(snapshot),1,12*TTL_NS) && control_expired==1);
     assert(!authorized(probe_key,12*TTL_NS) && authorized(newer,12*TTL_NS) && held==1);
-    expire(13*TTL_NS);assert(!held && !held_bytes && free_count==FLOW_LIMIT);
+    expire(12*TTL_NS+HOLD_NS);assert(!held && !held_bytes && free_count==FLOW_LIMIT);
     // Independent Python netlink vector: confirmed, SNATed bridge packet with its original tuple.
     static const unsigned char late_fixture[]={
         0xcc,0x00,0x00,0x00,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
@@ -510,6 +530,33 @@ static void selftest(void) {
     assert(control(request,sizeof(request),1,20*TTL_NS+TTL_NS/64));
     assert(probed-old_probed==65 && !held);
     expire(UINT64_MAX);assert(!held && !held_bytes && free_count==FLOW_LIMIT);
+    hold(probe_key,90,0,128,29*TTL_NS);
+    hold(probe_key,91,0,128,29*TTL_NS+TTL_NS/4);
+    until=29*TTL_NS+TTL_NS/2;hi=htonl((uint32_t)(until>>32));lo=htonl((uint32_t)until);
+    memcpy(request+14,&hi,4);memcpy(request+18,&lo,4);
+    assert(control(request,sizeof(request),1,29*TTL_NS+TTL_NS/4));
+    assert(held==1 && packets[head%CAPACITY].id==90 && packets[head%CAPACITY].length);
+    expire(UINT64_MAX);assert(!held);
+    hold(probe_key,99,0,128,30*TTL_NS);
+    expire(31*TTL_NS+TTL_NS/2);
+    assert(held==1 && !authorized(probe_key,31*TTL_NS+TTL_NS/2));
+    expire(30*TTL_NS+HOLD_NS);
+    assert(!held && !held_bytes && free_count==FLOW_LIMIT);
+    hold(probe_key,100,0,128,40*TTL_NS);
+    unsigned old_grants=grant_count,flow_index=find_flow(probe_key);
+    assert(!control((unsigned char *)"CWR1",4,0,40*TTL_NS));
+    assert(!control((unsigned char *)"CWR1x",5,1,40*TTL_NS));
+    assert(control((unsigned char *)"CWR1",4,1,40*TTL_NS));
+    uint64_t refreshed=refresh_sent;
+    testing=0;refresh_candidates(40*TTL_NS);testing=1;
+    assert(refresh_next==flow_index && refresh_until && refresh_sent==refreshed);
+    refresh_candidates(40*TTL_NS+TTL_NS/2);
+    assert(!refresh_until && refresh_sent==refreshed+1 && held==1 && grant_count==old_grants && !authorized(probe_key,40*TTL_NS));
+    assert(control((unsigned char *)"CWR1",4,1,40*TTL_NS));
+    uint64_t timed_out=refresh_expired;
+    refresh_candidates(41*TTL_NS);
+    assert(!refresh_until && refresh_expired==timed_out+1 && held==1);
+    expire(UINT64_MAX);assert(!held && !held_bytes && free_count==FLOW_LIMIT);
     puts("PASS escrow identity, revocation, expiry, packet/flow/byte bounds and root-only snapshots");
 }
 int main(int argc, char **argv) {
@@ -537,7 +584,7 @@ int main(int argc, char **argv) {
     struct nfq_q_handle *q=nfq_create_queue(handle,QUEUE,NULL,NULL);
     if (!q || nfq_set_mode(q,NFQNL_COPY_PACKET,128) || nfq_set_queue_maxlen(q,CAPACITY) ||
         nfq_set_queue_flags(q,NFQA_CFG_F_CONNTRACK,NFQA_CFG_F_CONNTRACK)) fatal("NFQUEUE config");
-    queue_fd=nfq_fd(handle); int buffer_size=4*1024*1024;
+    queue_fd=nfq_fd(handle); int buffer_size=16*1024*1024;
     if (setsockopt(queue_fd,SOL_SOCKET,SO_RCVBUFFORCE,&buffer_size,sizeof(buffer_size))) fatal("netlink buffer");
     char buffers[BATCH][8192] __attribute__((aligned));
     struct iovec iov[BATCH]; struct mmsghdr incoming[BATCH]={0};
@@ -545,10 +592,10 @@ int main(int argc, char **argv) {
         iov[i]=(struct iovec){.iov_base=buffers[i],.iov_len=sizeof(buffers[i])};
         incoming[i].msg_hdr.msg_iov=&iov[i]; incoming[i].msg_hdr.msg_iovlen=1;
     }
-    printf("ready queue=%d copy=128 max=%u ttl_ms=1000 byte_limit=%u flow_limit=%u per_flow=%u\n",QUEUE,CAPACITY,BYTE_LIMIT,FLOW_LIMIT,PER_FLOW); fflush(stdout);
+    printf("ready queue=%d copy=128 max=%u ttl_ms=2600 byte_limit=%u flow_limit=%u per_flow=%u\n",QUEUE,CAPACITY,BYTE_LIMIT,FLOW_LIMIT,PER_FLOW); fflush(stdout);
     int status=0;
     while (!stopping) {
-        expire(clock_ns()); if (flush()) { status=1; break; }
+        expire(clock_ns()); refresh_candidates(clock_ns()); if (flush()) { status=1; break; }
         if (reporting) { report(); reporting=0; }
         struct pollfd fds[2]={{.fd=control_fd,.events=POLLIN},{.fd=queue_fd,.events=POLLIN}};
         if (poll(fds,2,10)<0) { if (errno==EINTR) continue; status=1; break; }

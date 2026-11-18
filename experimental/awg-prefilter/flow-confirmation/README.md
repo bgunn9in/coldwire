@@ -24,6 +24,12 @@ and [v18 measurements](../validation-v18.md).
 
 ## How admission works
 
+The [v38 crash-recovery study](../validation-v38.md) keeps TLS connection and handshake work nonblocking. A continues draining candidate notices and maintaining kernel leases while reconnecting; B keeps the current authenticated stream until a replacement is verified. TCP/TLS setup has a two-second deadline on A and a one-second deadline on B. A requests one bounded refresh of held-flow metadata after startup. This root-only `CWR1` request grants no traffic. C reannounces live identities in batches of at most 64 notices per pass for at most one second.
+
+A also limits cached untrusted observations to four per learned source IPv4. Live leases and authenticated hints retain priority. Rejected excess identities skip the conntrack lookup; accepted candidates, probes and grants still require exact-generation checks. Many clients behind one NAT share these untrusted slots.
+
+B uses a private receive replay filter with a 16,320-counter window, derived from the pinned upstream implementation. It adds 1 KiB per keypair. Duplicate and counter-limit rejection remain enforced; the upstream 8,128-counter filter and client-boundary tests are unchanged. These finite limits do not guarantee lossless recovery at arbitrary PPS or after longer outages.
+
 The [v36 control-recovery study](../validation-v36.md) fixes stale TLS
 sessions, B's restarted monotonic clock, and loss of still-live flow
 observations during an outage. The main header filter also tolerates a
@@ -137,7 +143,7 @@ A keeps at most 128 observed mappings. After ten seconds it rechecks up to
 sixteen old observations per pass with exact conntrack GETs. Only the same
 live generation stays in the cache; a missing or replaced mapping is removed.
 That cache check grants no trust. With escrow enabled, an acknowledged fresh
-nonce may request one held-packet probe even without an earlier authenticated
+nonce may request the newest held-packet probe even without an earlier authenticated
 port hint. C still checks the exact live generation, and probes share the
 existing 64/s, burst-64 budget and transport-only bridge classification.
 A lease still requires B's fresh cryptographic confirmation. Hints retain
@@ -251,8 +257,8 @@ unchanged, and a missing mapping or a full budget can still prevent recovery.
 
 The process keeps kernel packet IDs and metadata, with a 128-byte netlink
 copy. Linux retains the original encrypted skb and its conntrack reference.
-Bounds are one second, 32768 packets, 8192 pending flow identities, 8192
-packets per identity and 16 MiB of wire bytes. A salted hash table replaces
+Bounds are 2.6 seconds, 131072 packets, 8192 pending flow identities, 16384
+packets per identity and 32 MiB of wire bytes. A salted hash table replaces
 the linear flow search. Kernel skb overhead is additional;
 the byte limit is not a total-RAM limit. Expired or excess packets are dropped.
 
@@ -423,7 +429,8 @@ servers while evaluating these tradeoffs in the lab.
 | `escrow-bridge.nft.example` | Optional holding after confirmation and bridge probe classification |
 | `coldwire_proof_linux.go` | B's authenticated notification and counter-ordered endpoint selection |
 | `coldwire_return_linux.go` | Optional bounded ciphertext cache and authenticated-move retransmission |
-| `patch_awg.py` | Inserts the hook into one exact, clean AWG source revision |
+| `patch_awg.py` | Patches and formats the pinned Linux receiver, including its private replay filter |
+| `coldwire_replay_linux_test.go` | Server/client replay-window boundaries, duplicate rejection and reset |
 | `test_agent.py` | Freshness, replay, movement, bounds, streams and immediate kernel-update tests |
 | `coldwire_proof_linux_test.go` | Event format/rate, endpoint reorder, key rotation and snapshot-handoff tests |
 | `coldwire_return_linux_test.go` | Cache isolation, expiry/capacity, replay bounds and encrypted recovery/duplicate tests |
@@ -438,7 +445,7 @@ python3 test_agent.py
 python3 test_conntrack.py
 ```
 
-The patcher accepts only clean AWG commit
+The patcher requires Go's `gofmt` on `PATH` and accepts only clean AWG commit
 `1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1`. It refuses a second application.
 In a disposable Linux source checkout, run:
 
@@ -446,11 +453,11 @@ In a disposable Linux source checkout, run:
 python3 /path/to/flow-confirmation/patch_awg.py /path/to/clean/amneziawg-go
 cd /path/to/clean/amneziawg-go
 go mod verify
-sudo env GOMAXPROCS=1 go test -p 1 ./device ./replay -count=1
+sudo env GOMAXPROCS=1 go test -p 1 ./... -count=1
 env GOMAXPROCS=1 GOMEMLIMIT=384MiB GOGC=50 CGO_ENABLED=0 go build -p 1 -trimpath -ldflags='-s -w -buildid=' -o amneziawg-go-proof .
 ```
 
-The measured build used Go 1.25.12. The notification is inserted in the
+V37 used Go 1.25.12; the rebuilt v38 lab used Go 1.25.0. The notification is inserted in the
 [pinned receive path](https://github.com/amnezia-vpn/amneziawg-go/blob/1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1/device/receive.go)
 after transport authentication and source-policy validation. Do not use
 this patch with another source revision without reviewing those checks.
@@ -571,3 +578,5 @@ Restore B's original
 AWG service command and environment, restart it and reconnect the two lab
 clients. Stop B's helper and confirm ordinary DNAT probes. None of these
 steps belongs on an active server as part of this experiment.
+
+Removing the lab bridge can change A's MAC address. Expire its stale ARP entry on the other lab VMs before checking ordinary DNAT.

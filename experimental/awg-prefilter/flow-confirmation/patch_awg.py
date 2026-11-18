@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Add the lab notification hook to an exact, clean pinned AWG source tree."""
+"""Patch the pinned Linux AWG receiver for lab proof and recovery."""
 import argparse
+import re
 import subprocess
 from pathlib import Path
 
@@ -29,8 +30,22 @@ def patch(source):
     send=source/'device/send.go';outbound=send.read_text();marker_send='\t\t\t\tdataSent = true'
     assert outbound.count(marker_send)==1
     send.write_text(outbound.replace(marker_send,marker_send+'\n\t\t\t\tpeer.coldwireRememberReply(elem.packet, elem.keypair)'),encoding='utf-8',newline='\n')
-    for name in ('coldwire_proof_linux.go','coldwire_proof_linux_test.go','coldwire_return_linux.go','coldwire_return_linux_test.go','coldwire_return_boundary_linux_test.go','coldwire_return_deferred_linux.go','coldwire_return_deferred_linux_test.go'):
+    # Only B's receiver gets extra reordering headroom; client replay tests keep the upstream window.
+    replay=(source/'replay/replay.go').read_text()
+    assert replay.count('package replay')==replay.count('ringBlocks  = 1 << 7')==1
+    replay=replay.replace('package replay','package device').replace('ringBlocks  = 1 << 7','ringBlocks  = 1 << 8')
+    names=('Filter','block','blockBitLog','blockBits','ringBlocks','windowSize','blockMask','bitMask')
+    replay=re.sub(r'\b('+ '|'.join(names) +r')\b',lambda m:'coldwireReplay'+m[0][0].upper()+m[0][1:],replay)
+    (source/'device/coldwire_replay_linux.go').write_text(replay,encoding='utf-8',newline='\n')
+    keypair=source/'device/keypair.go';keys=keypair.read_text()
+    assert keys.count('replay.Filter')==1
+    keys=keys.replace('replay.Filter','coldwireReplayFilter')
+    keys=keys.replace('\t"github.com/amnezia-vpn/amneziawg-go/v3/replay"\n','')
+    keypair.write_text(keys,encoding='utf-8',newline='\n')
+    copied=('coldwire_proof_linux.go','coldwire_proof_linux_test.go','coldwire_return_linux.go','coldwire_return_linux_test.go','coldwire_return_boundary_linux_test.go','coldwire_return_deferred_linux.go','coldwire_return_deferred_linux_test.go','coldwire_replay_linux_test.go')
+    for name in copied:
         (source/'device'/name).write_bytes(Path(__file__).with_name(name).read_bytes())
+    subprocess.run(['gofmt','-w',*[str(source/'device'/name) for name in ('receive.go','peer.go','send.go','keypair.go','coldwire_replay_linux.go',*copied)]],check=True)
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('source',type=Path);args=parser.parse_args();patch(args.source.resolve(strict=True))

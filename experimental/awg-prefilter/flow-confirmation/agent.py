@@ -3,6 +3,7 @@
 """Disposable IPv4 lab: short conntrack leases after exit-authenticated data."""
 import argparse
 import dataclasses
+import errno
 import hashlib
 import ipaddress
 import json
@@ -107,11 +108,18 @@ class Entry:
         if len(data)!=CANDIDATE.size:return False
         magic,address,port,identity=CANDIDATE.unpack(data)
         if magic!=b'CWC1' or not port or not identity:return False
+        source=str(ipaddress.IPv4Address(address))
+        priority={f for f,(_,until) in self.leases.items() if until>now}|{f for f,until in self.auth_hints.items() if until>now}
+        same=[f for f in self.flows.values() if f.source==source]
+        if sum(f not in priority for f in same)>=4 and not any(f.port==port and f.identity==identity for f in same):
+            self.stats['candidate_source_limited']=self.stats.get('candidate_source_limited',0)+1;return False
         try:
-            value=conntrack.lookup(config['entry'],config['exit'],config['vpn_port'],None,original=(str(ipaddress.IPv4Address(address)),port),identity=identity)
+            value=conntrack.lookup(config['entry'],config['exit'],config['vpn_port'],None,original=(source,port),identity=identity)
         except (OSError,ValueError):return False
         if not value:return False
         flow=Flow(*value)
+        if flow not in priority and sum(f.source==flow.source and f not in priority for p,f in self.flows.items() if p!=flow.translated_port)>=4:
+            self.stats['candidate_source_limited']=self.stats.get('candidate_source_limited',0)+1;return False
         if not self._observe(flow.translated_port,now):return False
         # Preserve the original-tuple/generation check instead of resolving the reply port again.
         self._remember(flow,now,authenticated=False)
@@ -200,6 +208,40 @@ class Exit:
                 messages.append(proof);del self.pending[request];self.stats['proofs']+=1
         return messages
 
+class Handshake:
+    def __init__(self,connection,deadline,connecting=False):
+        self.socket=connection;self.deadline=deadline;self.connecting=connecting;self.write=connecting
+    @classmethod
+    def outgoing(cls,ctx,config,now):
+        connection=socket.socket()
+        try:
+            connection.setblocking(False);connection.bind((config['entry'],0))
+            connection=ctx.wrap_socket(connection,server_hostname=config['exit'],do_handshake_on_connect=False)
+            result=connection.connect_ex((config['exit'],39101))
+            if result not in (0,errno.EINPROGRESS,errno.EWOULDBLOCK,errno.EALREADY):raise OSError(result,'Control connect failed')
+            value=cls(connection,now+2,connecting=result!=0);value.write=True
+            return value
+        except BaseException:
+            connection.close();raise
+    @classmethod
+    def incoming(cls,ctx,connection,now):
+        try:
+            connection.setblocking(False)
+            connection=ctx.wrap_socket(connection,server_side=True,do_handshake_on_connect=False)
+            return cls(connection,now+1)
+        except BaseException:
+            connection.close();raise
+    def advance(self,now):
+        if now>=self.deadline:raise TimeoutError('Control handshake deadline expired')
+        if self.connecting:
+            error=self.socket.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR)
+            if error:raise OSError(error,'Control connect failed')
+            self.connecting=False
+        try:self.socket.do_handshake()
+        except ssl.SSLWantReadError:self.write=False;return False
+        except ssl.SSLWantWriteError:self.write=True;return False
+        return True
+
 class Stream:
     def __init__(self,connection):
         connection.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
@@ -264,16 +306,16 @@ def probe_escrow(state,flow,now):
             connection.setblocking(False);return connection.sendto(data,ESCROW_SOCKET)==len(data)
     except (OSError,ValueError,struct.error):return False
 
-def notify_escrow(state):
-    """A notification cannot grant more than the kernel set just installed."""
+def notify_escrow(state,refresh=False):
+    """Refreshes carry no grants; lease notifications stay within the kernel set."""
     try:
-        assert state.escrow_socket==ESCROW_SOCKET and len(state.leases)<=MAX_PENDING
+        assert state.escrow_socket==ESCROW_SOCKET and len(state.leases)<=MAX_PENDING and type(refresh) is bool
         path=Path(state.escrow_socket);parent=path.parent.lstat();info=path.lstat()
         assert stat.S_ISDIR(parent.st_mode) and parent.st_uid==0 and stat.S_IMODE(parent.st_mode)==0o700
         assert stat.S_ISSOCK(info.st_mode) and info.st_uid==0 and stat.S_IMODE(info.st_mode)==0o600
-        data=struct.pack('!4sH',b'CWE1',len(state.leases))
+        data=b'CWR1' if refresh else struct.pack('!4sH',b'CWE1',len(state.leases))
         # Stop cached C grants one poll early; the kernel gate remains authoritative.
-        data+=b''.join(ESCROW_RECORD.pack(ipaddress.IPv4Address(f.source).packed,f.port,f.identity,int((v[1]-POLL_SECONDS)*1e9)) for f,v in state.leases.items())
+        if not refresh:data+=b''.join(ESCROW_RECORD.pack(ipaddress.IPv4Address(f.source).packed,f.port,f.identity,int((v[1]-POLL_SECONDS)*1e9)) for f,v in state.leases.items())
         with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as connection:
             connection.setblocking(False)
             return connection.sendto(data,str(path))==len(data)
@@ -363,7 +405,7 @@ def serve(config,role):
         nonlocal alive
         alive=False
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
-    stream=None;last_status=0;next_tick=0;candidates=None;candidate_path=None
+    stream=None;handshake=None;last_status=0;next_tick=0;candidates=None;candidate_path=None
     if role=='exit':
         state=Exit(config['entry']);listener=socket.socket();listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);listener.bind((config['exit'],39101));listener.listen(4);listener.setblocking(False)
         path=Path(config['events']);assert path.parent.stat().st_uid==0 and stat.S_IMODE(path.parent.stat().st_mode)==0o700
@@ -383,20 +425,20 @@ def serve(config,role):
                     else:raise OSError('Candidate helper is already running')
             candidates.bind(str(candidate_path));candidate_path.chmod(0o600)
         restore_leases(state,config,boot)
+        refresh_pending=bool(candidates);refresh_deadline=time.monotonic()+2
     try:
         while alive:
             now=time.monotonic()
-            if role=='entry' and stream is None and now>=next_connect:
+            if role=='entry' and stream is None and handshake is None and now>=next_connect:
                 try:
-                    connection=socket.create_connection((config['exit'],39101),timeout=1,source_address=(config['entry'],0))
-                    stream=Stream(ctx.wrap_socket(connection,server_hostname=config['exit']))
-                    state.new_control_session()
+                    handshake=Handshake.outgoing(ctx,config,now)
                 except (OSError,ssl.SSLError):next_connect=now+1
             readers=([listener,events] if role=='exit' else [])+([stream.socket] if stream else [])
             if candidates:readers.append(candidates)
             writable=[stream.socket] if stream and stream.outgoing else []
+            if handshake:(writable if handshake.write else readers).append(handshake.socket)
             ready,writes,_=select.select(readers,writable,[],.05)
-            lease_changed=False
+            lease_changed=False;established=False
             try:
                 if candidates and candidates in ready:
                     for _ in range(64):
@@ -406,15 +448,21 @@ def serve(config,role):
                         if trusted and not flags and state.candidate(data,config,time.monotonic()):next_tick=0
                 if role=='exit' and listener in ready:
                     connection,address=listener.accept()
-                    if address[0]!=config['entry']:connection.close()
+                    if address[0]!=config['entry'] or handshake:connection.close()
                     else:
-                        connection.settimeout(1)
-                        previous=stream
-                        try:
-                            stream=Stream(ctx.wrap_socket(connection,server_side=True));state=Exit(config['entry'])
+                        try:handshake=Handshake.incoming(ctx,connection,time.monotonic())
+                        except (OSError,ssl.SSLError):pass
+                if handshake and (handshake.socket in ready or handshake.socket in writes or time.monotonic()>=handshake.deadline):
+                    try:
+                        if handshake.advance(time.monotonic()):
+                            previous=stream;stream=Stream(handshake.socket);handshake=None;established=True
+                            if role=='exit':state=Exit(config['entry'])
+                            else:state.new_control_session();next_tick=0
                             if previous:previous.socket.close()
-                        except (OSError,ssl.SSLError):connection.close()
-                if stream and stream.socket in ready:
+                    except (OSError,ssl.SSLError):
+                        handshake.socket.close();handshake=None
+                        if role=='entry':next_connect=time.monotonic()+.2
+                if stream and (established or stream.socket in ready or stream.socket.pending()):
                     for message in stream.read():
                         if role=='exit':
                             if state.query(message,time.monotonic(),time.monotonic_ns()):stream.queue({'ready':message['nonce']})
@@ -450,6 +498,8 @@ def serve(config,role):
             now=time.monotonic()
             if role=='entry' and (now>=next_tick or lease_changed):
                 if now>=next_tick:
+                    if refresh_pending and now<refresh_deadline and notify_escrow(state,refresh=True):
+                        refresh_pending=False;state.stats['candidate_refresh_sent']=state.stats.get('candidate_refresh_sent',0)+1
                     flows=state.current_flows(config,now)
                     if not stream:state.leases={f:v for f,v in state.leases.items() if f in flows and v[1]>now}
                     requests=state.queries(flows,now) if stream else []
@@ -469,6 +519,7 @@ def serve(config,role):
                     values.update(entry_values(state,config,boot,now))
                 snapshot(config['status'],state,**values);last_status=now
     finally:
+        if handshake:handshake.socket.close()
         if stream:stream.socket.close()
         if candidates:candidates.close();candidate_path.unlink(missing_ok=True)
         if role=='entry':

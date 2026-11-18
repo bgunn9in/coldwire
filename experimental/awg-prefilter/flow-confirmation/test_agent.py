@@ -92,6 +92,28 @@ class ConfirmationTests(unittest.TestCase):
         self.assertFalse(self.entry.control_timed_out(13))
         self.assertFalse(self.entry.leases)
 
+    def test_untrusted_observations_share_source_budget_before_TLS(self):
+        def notice(flow):
+            data=agent.CANDIDATE.pack(b'CWC1',bytes(map(int,flow.source.split('.'))),flow.port,flow.identity)
+            with mock.patch.object(agent.conntrack,'lookup',return_value=(flow.source,flow.port,flow.identity,flow.translated_port)) as lookup:
+                accepted=self.entry.candidate(data,self.config,10)
+                self.assertEqual(lookup.call_count,int(accepted))
+                return accepted
+        for source in range(40,56):
+            for n in range(5):
+                flow=agent.Flow('192.168.76.'+str(source),40000+n,source*100+n,source*100+n)
+                self.assertEqual(notice(flow),n<4)
+        moved=agent.Flow('192.168.76.31',42501,12345,42501)
+        self.assertTrue(notice(moved))
+        for source in range(40,56):
+            self.assertFalse(notice(agent.Flow('192.168.76.'+str(source),50000,source*100+99,source*100+99)))
+        self.assertIn(moved,self.entry.flows.values());self.assertEqual(len(self.entry.observed),65)
+        self.assertFalse(self.entry.pending or self.entry.leases)
+        trusted=agent.Flow('192.168.76.40',55000,99999,65000)
+        with mock.patch.object(agent,'read_flow',return_value=trusted):
+            self.assertTrue(self.entry.hint({'hint':65000},self.config,10))
+        self.assertTrue(notice(trusted));self.assertIn(trusted,self.entry.auth_hints)
+
     def test_new_control_session_rejects_old_proofs_and_accepts_restarted_B_clock(self):
         first=self.entry.queries({self.flow},10)[0]
         old={'nonce':first['nonce'],'peer':'ab'*16,'stamp':100000000000}
@@ -113,7 +135,8 @@ class ConfirmationTests(unittest.TestCase):
         self.assertLess(proof['stamp'],old['stamp'])
 
     def test_serve_reconnects_before_pruning_an_unacknowledged_query(self):
-        handlers={};clock=[10.0];steps=[0];connection=mock.Mock();queries=[]
+        handlers={};clock=[10.0];steps=[0];connection=mock.Mock();connection.pending.return_value=0;queries=[]
+        opening=mock.Mock(socket=connection,write=True,deadline=12);opening.advance.return_value=True
         class FakeStream:
             def __init__(self,sock):self.socket=sock;self.outgoing=bytearray()
             def queue(self,message):queries.append(message)
@@ -130,7 +153,7 @@ class ConfirmationTests(unittest.TestCase):
              mock.patch.object(agent.Path,'read_text',return_value='kit-entry'), \
              mock.patch.object(agent,'context',return_value=context), \
              mock.patch.object(agent.signal,'signal',side_effect=lambda sig,fn:handlers.__setitem__(sig,fn)), \
-             mock.patch.object(agent.socket,'create_connection',return_value=connection) as connects, \
+             mock.patch.object(agent.Handshake,'outgoing',return_value=opening) as connects, \
              mock.patch.object(agent,'Stream',FakeStream), \
              mock.patch.object(agent.select,'select',side_effect=select), \
              mock.patch.object(agent.time,'monotonic',side_effect=lambda:clock[0]), \
@@ -143,17 +166,22 @@ class ConfirmationTests(unittest.TestCase):
         self.assertFalse(self.entry.pending or self.entry.ready or self.entry.probed or self.entry.leases)
         self.assertTrue(connection.close.called)
 
-    def run_exit_replacement(self,bad_certificate,foreign_source=False):
+    def run_exit_replacement(self,bad_certificate,foreign_source=False,wrap_failure=False,pending_handshake=False):
         handlers={};step=[0];listener=mock.Mock();events=mock.Mock()
         first=mock.Mock();second=mock.Mock();observed={}
+        first.pending.return_value=second.pending.return_value=0
         listener.accept.side_effect=[(first,('192.168.76.10',41000)),(second,('192.168.76.55' if foreign_source else '192.168.76.10',41001))]
         context=mock.Mock()
-        context.wrap_socket.side_effect=[first,agent.ssl.SSLError('invalid certificate') if bad_certificate else second]
+        context.wrap_socket.side_effect=[first,agent.ssl.SSLError('invalid certificate') if wrap_failure else second]
+        if bad_certificate and not wrap_failure:second.do_handshake.side_effect=agent.ssl.SSLCertVerificationError('invalid certificate')
+        if pending_handshake:second.do_handshake.side_effect=agent.ssl.SSLWantReadError()
         class FakeStream:
             def __init__(self,sock):self.socket=sock;self.outgoing=bytearray()
+            def read(self):return []
         def select(readers,writers,errors,timeout):
             step[0]+=1
-            if step[0]<=2:return [listener],[],[]
+            if step[0] in (1,3):return [listener],[],[]
+            if step[0] in (2,4):return [first if step[0]==2 else second],[],[]
             observed.update(readers=readers,first_closed=first.close.call_count,second_closed=second.close.call_count)
             handlers[agent.signal.SIGTERM]()
             return [],[],[]
@@ -193,6 +221,86 @@ class ConfirmationTests(unittest.TestCase):
         self.assertIn(first,observed['readers']);self.assertNotIn(second,observed['readers'])
         self.assertEqual(observed['first_closed'],0)
         self.assertEqual(observed['second_closed'],1)
+
+    def test_failed_wrap_preserves_live_session(self):
+        first,second,observed=self.run_exit_replacement(True,wrap_failure=True)
+        self.assertIn(first,observed['readers']);self.assertNotIn(second,observed['readers'])
+        self.assertEqual(observed['first_closed'],0)
+        self.assertEqual(observed['second_closed'],1)
+
+    def test_pending_replacement_keeps_live_session_and_closes_on_stop(self):
+        first,second,observed=self.run_exit_replacement(False,pending_handshake=True)
+        self.assertIn(first,observed['readers']);self.assertIn(second,observed['readers'])
+        self.assertEqual(observed['first_closed'],0)
+        self.assertEqual(observed['second_closed'],0)
+        first.close.assert_called_once();second.close.assert_called_once()
+
+    def test_nonblocking_connect_handshake_and_deadline(self):
+        raw=mock.Mock();tls=mock.Mock();ctx=mock.Mock();ctx.wrap_socket.return_value=tls
+        tls.connect_ex.return_value=agent.errno.EINPROGRESS;tls.getsockopt.return_value=0
+        tls.do_handshake.side_effect=[agent.ssl.SSLWantReadError(),agent.ssl.SSLWantWriteError(),None]
+        with mock.patch.object(agent.socket,'socket',return_value=raw):
+            opening=agent.Handshake.outgoing(ctx,self.config,10)
+        raw.setblocking.assert_called_once_with(False);raw.bind.assert_called_once_with((self.config['entry'],0))
+        self.assertFalse(ctx.wrap_socket.call_args.kwargs['do_handshake_on_connect'])
+        tls.do_handshake.assert_not_called()
+        self.assertFalse(opening.advance(10.1));self.assertFalse(opening.write)
+        self.assertFalse(opening.advance(10.2));self.assertTrue(opening.write)
+        self.assertTrue(opening.advance(10.3));self.assertEqual(tls.getsockopt.call_count,1)
+        with self.assertRaises(TimeoutError):opening.advance(12)
+
+    def test_nonblocking_connect_and_tls_errors_do_not_authorize(self):
+        raw=mock.Mock();tls=mock.Mock();ctx=mock.Mock();ctx.wrap_socket.return_value=tls
+        with mock.patch.object(agent.socket,'socket',return_value=raw):
+            tls.connect_ex.return_value=agent.errno.ECONNREFUSED
+            with self.assertRaises(OSError):agent.Handshake.outgoing(ctx,self.config,10)
+        tls.close.assert_called_once()
+        incoming=agent.Handshake.incoming(ctx,raw,10)
+        self.assertFalse(incoming.write);self.assertEqual(incoming.deadline,11)
+        tls.do_handshake.side_effect=agent.ssl.SSLCertVerificationError('untrusted')
+        with self.assertRaises(agent.ssl.SSLCertVerificationError):incoming.advance(10.1)
+        opening=agent.Handshake(tls,12,True);tls.getsockopt.return_value=agent.errno.ECONNREFUSED
+        with self.assertRaises(OSError):opening.advance(10.2)
+
+    def test_entry_reads_candidates_while_control_handshake_is_pending(self):
+        handlers={};steps=[0];clock=[10];candidates=mock.Mock();tls=mock.Mock()
+        self.entry.escrow_socket=agent.ESCROW_SOCKET
+        opening=mock.Mock(socket=tls,write=True,deadline=100);opening.advance.return_value=False
+        data=b'CWC1'+bytes([192,168,76,31])+struct.pack('!HI',42503,123)
+        credentials=[(agent.socket.SOL_SOCKET,2,struct.pack('3i',100,0,0))]
+        candidates.recvmsg.side_effect=[(data,credentials,0,None),BlockingIOError()]
+        def ready(readers,writers,errors,timeout):
+            steps[0]+=1;clock[0]=10+.2*steps[0]
+            if steps[0]==1:return [candidates],[tls],[]
+            if steps[0]==2:return [],[tls],[]
+            handlers[agent.signal.SIGTERM]();return [],[],[]
+        def notify(state,refresh=False):
+            if refresh:
+                refresh_calls.append(refresh);return len(refresh_calls)>1
+            return True
+        refresh_calls=[]
+        directory=mock.Mock(st_uid=0,st_mode=stat.S_IFDIR|0o700)
+        config=self.config|{'status':'unused','escrow_socket':agent.ESCROW_SOCKET}
+        with mock.patch.object(agent.os,'geteuid',return_value=0,create=True), \
+             mock.patch.multiple(agent.Path,read_text=mock.Mock(return_value='kit-entry'),lstat=mock.Mock(return_value=directory),exists=mock.Mock(return_value=False),chmod=mock.Mock(),unlink=mock.Mock()), \
+             mock.patch.object(agent,'context'),mock.patch.object(agent,'restore_leases'), \
+             mock.patch.object(agent,'Handshake',create=True) as handshake, \
+             mock.patch.object(agent,'Entry',return_value=self.entry), \
+             mock.patch.object(self.entry,'candidate',return_value=True) as candidate, \
+             mock.patch.object(agent.socket,'socket',return_value=candidates), \
+             mock.patch.object(agent.socket,'create_connection',side_effect=AssertionError('Blocking connect in event loop')), \
+             mock.patch.multiple(agent.socket,SO_PASSCRED=16,SCM_CREDENTIALS=2,AF_UNIX=1,CMSG_SPACE=lambda n:32,create=True), \
+             mock.patch.object(agent.signal,'signal',side_effect=lambda sig,fn:handlers.__setitem__(sig,fn)), \
+             mock.patch.object(agent.select,'select',side_effect=ready), \
+             mock.patch.object(agent.time,'monotonic',side_effect=lambda:clock[0]), \
+             mock.patch.object(agent,'notify_escrow',side_effect=notify), \
+             mock.patch.object(agent,'Stream') as stream,mock.patch.object(agent,'snapshot'), \
+             mock.patch.object(agent,'install_leases') as install:
+            handshake.outgoing.return_value=opening
+            agent.serve(config,'entry')
+        candidate.assert_called_once();stream.assert_not_called();self.assertTrue(install.called)
+        self.assertFalse(self.entry.pending or self.entry.leases);tls.close.assert_called_once()
+        self.assertEqual(refresh_calls,[True,True]);self.assertEqual(self.entry.stats['candidate_refresh_sent'],1)
 
     def test_reordered_admission_proof_still_needs_post_query_authentication(self):
         request=self.entry.queries({self.flow},10)[0]
@@ -347,17 +455,21 @@ class ConfirmationTests(unittest.TestCase):
     def test_confirm_is_immediate_disconnect_keeps_bounded_lease(self):
         self.entry.peer_stamp['ab'*16]=100000000000
         clock=[10.0];steps=[0];handlers={};queries=[];installs=[]
-        connection=mock.Mock()
+        connection=mock.Mock();connection.pending.return_value=0
+        opening=mock.Mock(socket=connection,write=True,deadline=12);opening.advance.return_value=True
         class FakeStream:
             def __init__(self,sock):self.socket=sock;self.outgoing=bytearray()
             def queue(self,message):queries.append(message)
+            def write(self):pass
             def read(self):
                 if steps[0]==1:return [{'hint':32497}]
                 if steps[0]==3:raise EOFError
                 return [{'nonce':queries[0]['nonce'],'peer':'ab'*16,'stamp':100}]
         def select(readers,writers,errors,timeout):
             steps[0]+=1;clock[0]=10+(steps[0]-1)*.02
-            if steps[0] in (1,2,3):return [connection],[],[]
+            if steps[0]==1:return [],[connection],[]
+            if steps[0]==2:self.assertTrue(queries,'Buffered TLS hint was not read after handshake')
+            if steps[0] in (2,3):return [connection],[],[]
             if steps[0]==4:handlers[agent.signal.SIGTERM]()
             return [],[],[]
         def install(state,flows,now):installs.append((now,set(state.leases)))
@@ -368,7 +480,7 @@ class ConfirmationTests(unittest.TestCase):
              mock.patch.object(agent,'context',return_value=context), \
              mock.patch.object(agent,'Entry',return_value=self.entry), \
              mock.patch.object(agent.signal,'signal',side_effect=lambda sig,fn:handlers.__setitem__(sig,fn)), \
-             mock.patch.object(agent.socket,'create_connection',return_value=connection), \
+             mock.patch.object(agent.Handshake,'outgoing',return_value=opening), \
              mock.patch.object(agent,'Stream',FakeStream), \
              mock.patch.object(agent.select,'select',side_effect=select), \
              mock.patch.object(agent.time,'monotonic',side_effect=lambda:clock[0]), \
@@ -472,7 +584,7 @@ class ConfirmationTests(unittest.TestCase):
              mock.patch.object(agent,'context'),mock.patch.object(agent,'restore_leases'), \
              mock.patch.object(agent,'Entry',return_value=self.entry), \
              mock.patch.object(agent.signal,'signal'), \
-             mock.patch.object(agent.socket,'create_connection',side_effect=OSError), \
+             mock.patch.object(agent.Handshake,'outgoing',side_effect=OSError), \
              mock.patch.object(agent.select,'select',side_effect=RuntimeError('fatal')), \
              mock.patch.object(agent,'install_leases') as install,mock.patch.object(agent,'snapshot'):
             with self.assertRaisesRegex(RuntimeError,'fatal'):agent.serve(config,'entry')
@@ -520,11 +632,14 @@ class ConfirmationTests(unittest.TestCase):
             self.assertTrue(agent.notify_escrow(self.entry))
             self.assertEqual(sent[-1],struct.pack('!4sH',b'CWE1',1)+agent.ESCROW_RECORD.pack(bytes([192,168,76,30]),32497,123,19900000000))
             self.assertEqual(self.entry.leases[self.flow][1],20)
+            self.assertTrue(agent.notify_escrow(self.entry,refresh=True));self.assertEqual(sent[-1],b'CWR1')
+            self.assertEqual(self.entry.leases[self.flow][1],20)
             self.assertTrue(agent.probe_escrow(self.entry,self.flow,10))
             self.assertEqual(sent[-1],b'CWS1'+agent.ESCROW_RECORD.pack(bytes([192,168,76,30]),32497,123,11000000000))
             self.entry.leases.clear();self.assertTrue(agent.notify_escrow(self.entry));self.assertEqual(sent[-1],b'CWE1\0\0')
             endpoint.st_mode=stat.S_IFSOCK|0o666
             self.assertFalse(agent.notify_escrow(self.entry))
+            self.assertFalse(agent.notify_escrow(self.entry,refresh=True))
             self.assertFalse(agent.probe_escrow(self.entry,self.flow,10))
             endpoint.st_mode=stat.S_IFLNK|0o600
             self.assertFalse(agent.notify_escrow(self.entry))

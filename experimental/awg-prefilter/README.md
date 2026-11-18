@@ -17,6 +17,7 @@ server-side changes on A and B, while clients keep their profiles and may
 change IP or NAT port. [v18](validation-v18.md) records multi-flow noise,
 cold connections, movement and the limits of tuple admission.
 [V37](validation-v37.md) checks configurable wire parameters and helper restarts.
+[V38](validation-v38.md) investigates SIGKILL during roaming, nonblocking TLS recovery and finite holding/replay windows.
 
 ## What it checks
 
