@@ -167,6 +167,54 @@ python bql-report.py report $csv $log
 состоянием, а также совпадающие интервалы владения BQL.
 [Замеры и ограничения](../validation-v47.ru.md)
 
+## Обращения к устройствам и стеки ожидания ETW
+
+Примените [патч MMIO](qemu-win32-mmio-observer.patch) к тому же дереву
+QEMU 11.1.3, что и патч BQL. Строка `CW48 mmio` содержит регион, тип
+устройства, адрес, направление и размер медленного обращения с захватом
+BQL. Для x86 адрес может быть номером порта ввода-вывода. Адрес из одних
+единиц означает, что для обращения доступно только смещение в регионе.
+QEMU пишет эту строку после освобождения BQL.
+
+Для записи запуска откройте PowerShell с повышенными правами и используйте
+`xperf` из Windows Performance Toolkit. Выберите рабочий каталог за
+пределами репозитория. Если NT Kernel Logger уже принадлежит другому
+приложению, оставьте его работать. Запустите VM стенда после включения
+трассировки и завершите запись по окончании запуска.
+
+```powershell
+if ((xperf -loggers) -match '^\s*Logger Name\s*:\s*NT Kernel Logger\s*$') {
+    throw 'NT Kernel Logger is already running'
+}
+xperf -on PROC_THREAD+LOADER+CSWITCH+DISPATCHER+DISK_IO+DISK_IO_INIT+HARD_FAULTS -stackwalk CSwitch -ClockType PerfCounter -f "$scratch\startup.etl" -BufferSize 256 -MinBuffers 128 -MaxBuffers 384 -MaxFile 4096
+if ($LASTEXITCODE -ne 0) { throw 'Could not start the trace' }
+try { Read-Host 'Start the lab VMs in another terminal. Press Enter to stop the trace' }
+finally { xperf -stop }
+```
+
+Запишите в файл `$ids` TID главного потока и vCPU, по одному номеру на
+строку. TID главного потока указан в `CW47 main`. TID vCPU можно получить
+из `thread-id` ответа QMP `query-cpus-fast`, когда монитор станет доступен.
+Используйте декодер, собранный в предыдущем разделе.
+
+```powershell
+& "$scratch\scheduler-read.exe" "$scratch\startup.etl" $ids --details > "$scratch\startup.csv"
+if ($LASTEXITCODE -ne 0) { throw 'Incomplete ETW decode' }
+python mmio-report.py "$scratch\startup.csv" "$qemuLog" $vcpuTid > "$scratch\mmio.json"
+```
+
+Используйте PowerShell 7 для перенаправления в UTF-8. Без `--details`
+декодер сохраняет прежний формат CSV. С этим флагом он добавляет стеки,
+диапазоны образов, события HardFault и завершения дисковых операций.
+Отчёт берёт стек при следующем переключении на тот же TID и переводит
+адреса кадров стека в RVA. Для кадра QEMU прибавьте RVA к предпочтительному
+`ImageBase` из PE и передайте адрес в `addr2line -f -e` с диагностическим
+бинарником с отладочными символами. Параметр `-trace enable=pci_cfg_write`
+показывает адрес устройства и регистр PCI. Используйте его для определения
+устройства. Запись журнала PCI может сама продлить удержание BQL.
+
+Храните ETL, CSV и JSON замеров локально. См. [отчёт v48](../validation-v48.ru.md).
+
 ## QEMU на Windows: отправка кадра вместе с длиной
 
 [Исследование v11](../validation-v11.ru.md) связало нестабильный темп

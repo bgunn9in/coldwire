@@ -164,6 +164,53 @@ To label the vCPU, pass `--vcpu-tid` with the `thread-id` from
 time on each completed acquisition and shows overlapping holder intervals.
 [Measurements and limits](../validation-v47.md)
 
+## Device access and ETW wait stacks
+
+Apply [the MMIO observer](qemu-win32-mmio-observer.patch) to the same QEMU
+11.1.3 source tree as the BQL observer. `CW48 mmio` reports the region,
+device type, address, direction and width for slow accesses that acquire
+the BQL. The address belongs to the current address space, so it can be
+an I/O port on x86. An all-ones address marks a cached access for which
+only the region offset is available. The marker is written after unlock.
+
+For a startup capture, use an elevated PowerShell with `xperf` from the
+Windows Performance Toolkit. Use a scratch directory outside the
+repository. Check for an existing NT Kernel Logger and leave it running if
+another application owns it. Start the lab VMs after the trace is active
+and stop the trace once they have initialized.
+
+```powershell
+if ((xperf -loggers) -match '^\s*Logger Name\s*:\s*NT Kernel Logger\s*$') {
+    throw 'NT Kernel Logger is already running'
+}
+xperf -on PROC_THREAD+LOADER+CSWITCH+DISPATCHER+DISK_IO+DISK_IO_INIT+HARD_FAULTS -stackwalk CSwitch -ClockType PerfCounter -f "$scratch\startup.etl" -BufferSize 256 -MinBuffers 128 -MaxBuffers 384 -MaxFile 4096
+if ($LASTEXITCODE -ne 0) { throw 'Could not start the trace' }
+try { Read-Host 'Start the lab VMs in another terminal. Press Enter to stop the trace' }
+finally { xperf -stop }
+```
+
+Put the main and vCPU thread IDs in `$ids` on separate lines. Get the main
+TID from `CW47 main` and use the vCPU `thread-id` from QMP
+`query-cpus-fast` once the monitor responds. Use the decoder built above.
+
+```powershell
+& "$scratch\scheduler-read.exe" "$scratch\startup.etl" $ids --details > "$scratch\startup.csv"
+if ($LASTEXITCODE -ne 0) { throw 'Incomplete ETW decode' }
+python mmio-report.py "$scratch\startup.csv" "$qemuLog" $vcpuTid > "$scratch\mmio.json"
+```
+
+Use PowerShell 7 for UTF-8 redirection. The reader retains its original CSV
+format without `--details`. With the flag, it adds stack addresses, image
+ranges, hard faults and disk completions. The report pairs each wait with
+the next switch-in stack on the same TID and uses the image load address
+to express stack frames as RVAs. For a QEMU frame, add its RVA to the PE
+preferred `ImageBase` and pass that address to `addr2line -f -e` with the
+unstripped diagnostic binary. For PCI config writes, `-trace
+enable=pci_cfg_write` also gives the target and register. Use it only for
+identification. Writing the PCI log can itself extend a BQL hold.
+
+Keep the ETL, CSV and per-run JSON local. See the [v48 measurements](../validation-v48.md).
+
 ## QEMU on Windows: write each frame together
 
 The [v11 study](../validation-v11.md) traced intermittent rate shortfalls
