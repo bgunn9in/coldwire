@@ -87,6 +87,12 @@ traffic. Keep it local. Check `tap_errors` and verify that `tap_closed`
 matches `tap_sequence` before using it. The `noise_output_drops` counter
 counts the fixture's background frames among each port's discarded copies.
 
+For the v51 return-path measurement, append `--return-headers` after the
+capture directory. The tap also records A → client UDP and keeps at most
+96 bytes per captured frame. PCAP records retain the original frame length
+and host timestamp. Use the regular full-frame tap with decoders that
+require complete datagrams. [V51 measurements](../validation-v51.md)
+
 Standard error records long poll, forwarding and statistics-write
 intervals with QPC timestamps. A loss episode is printed when writes
 resume on that output. TCP backpressure samples need Winsock headers

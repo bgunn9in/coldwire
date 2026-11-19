@@ -19,6 +19,7 @@
 #define INPUT_CAP 262144u
 #define OUTPUT_CAP (4u * 1024u * 1024u)
 #define FRAME_CAP 65536u
+#define TAP_HEADER_BYTES 96u
 #define BINS 4096u
 
 typedef struct {
@@ -156,6 +157,7 @@ static int observe_noise(const unsigned char *f, uint32_t size) {
 
 /* The optional tap records only the fixture's tunnel and control tuples. */
 static const char *tap_dir;
+static int tap_return_headers;
 static FILE *tap_file;
 static unsigned char tap_buffer[1024 * 1024];
 static uint64_t tap_until, tap_sequence, tap_frames, tap_errors, tap_closed;
@@ -177,6 +179,8 @@ static unsigned tap_select(const unsigned char *p, uint32_t size) {
     if (p[23] != 17) return 0;
     if ((source == 30 || source == 31) && target == 10 && dport == 32497)
         return sport == 42501 ? 3 : 1;
+    if (tap_return_headers && source == 10 && (target == 30 || target == 31) &&
+        sport == 32497) return 1;
     return (source == 10 && target == 20 && dport == 32497) ||
            (source == 20 && target == 10 && sport == 32497);
 }
@@ -197,6 +201,7 @@ static void tap_frame(const unsigned char *p, uint32_t size) {
     uint64_t now = now_ns();
     tap_tick(now);
     unsigned selected = tap_select(p, size);
+    uint32_t snaplen = tap_return_headers ? TAP_HEADER_BYTES : FRAME_CAP;
     if (!tap_file && now >= tap_until && (selected & 2)) {
         char path[MAX_PATH];
         tap_until = now + UINT64_C(8000000000);
@@ -206,7 +211,7 @@ static void tap_frame(const unsigned char *p, uint32_t size) {
             tap_errors++;
             return;
         }
-        const struct tap_header header = {0xa1b2c3d4, 2, 4, 0, 0, FRAME_CAP, 1};
+        const struct tap_header header = {0xa1b2c3d4, 2, 4, 0, 0, snaplen, 1};
         if (setvbuf(tap_file, (char *)tap_buffer, _IOFBF, sizeof(tap_buffer)) ||
             fwrite(&header, sizeof(header), 1, tap_file) != 1) {
             tap_errors++;
@@ -219,10 +224,11 @@ static void tap_frame(const unsigned char *p, uint32_t size) {
     GetSystemTimePreciseAsFileTime(&ft);
     uint64_t ticks = (uint64_t)ft.dwHighDateTime << 32 | ft.dwLowDateTime;
     uint64_t micros = (ticks - UINT64_C(116444736000000000)) / 10;
+    uint32_t captured = size < snaplen ? size : snaplen;
     const struct tap_packet record = {(uint32_t)(micros / 1000000),
-                                      (uint32_t)(micros % 1000000), size, size};
+                                      (uint32_t)(micros % 1000000), captured, size};
     if (fwrite(&record, sizeof(record), 1, tap_file) != 1 ||
-        fwrite(p, size, 1, tap_file) != 1) {
+        fwrite(p, captured, 1, tap_file) != 1) {
         tap_errors++;
         tap_close();
         return;
@@ -406,6 +412,18 @@ static void self_test(void) {
     assert(peers[1].episode_drops == 2 && peers[1].episode_noise == 1);
     disconnect_peer(1);
     assert(!peers[1].dropped_noise && !peers[1].episode_drops);
+    fixture[33] = 10;
+    fixture[37] = 31;
+    fixture[38] = 32497 >> 8; fixture[39] = 32497 & 255;
+    fixture[40] = 42501 >> 8; fixture[41] = 42501 & 255;
+    assert(!tap_select(fixture + 4, 298));
+    tap_return_headers = 1;
+    assert(tap_select(fixture + 4, 298) == 1);
+    fixture[37] = 30;
+    assert(tap_select(fixture + 4, 298) == 1);
+    fixture[37] = 32;
+    assert(!tap_select(fixture + 4, 298));
+    tap_return_headers = 0;
     bin_count = noise_frames = noise_first_ns = noise_last_ns = 0;
     for (uint64_t i = 1; i <= BINS + 3; i++) record_noise(i * UINT64_C(100000000));
     assert(bin_count == BINS && bins[0].bucket == 4 && bins[BINS-1].bucket == BINS + 3);
@@ -424,11 +442,13 @@ static BOOL WINAPI control(DWORD event) {
 int main(int argc, char **argv) {
     initialize();
     if (argc == 2 && !strcmp(argv[1], "--self-test")) { self_test(); return 0; }
-    if (argc != 3 && argc != 4) {
-        fputs("Usage: native-switch PORT|unix:PATH STATS_JSON [TAP_DIRECTORY]\n", stderr);
+    if (argc < 3 || argc > 5 || (argc == 5 && strcmp(argv[4], "--return-headers"))) {
+        fputs("Usage: native-switch PORT|unix:PATH STATS_JSON "
+              "[TAP_DIRECTORY [--return-headers]]\n", stderr);
         return 2;
     }
-    if (argc == 4) {
+    tap_return_headers = argc == 5;
+    if (argc >= 4) {
         DWORD attributes = GetFileAttributesA(argv[3]);
         if (strlen(argv[3]) + 32 >= MAX_PATH || attributes == INVALID_FILE_ATTRIBUTES ||
             !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
