@@ -215,6 +215,29 @@ python mmio-report.py "$scratch\startup.csv" "$qemuLog" $vcpuTid > "$scratch\mmi
 
 Храните ETL, CSV и JSON замеров локально. См. [отчёт v48](../validation-v48.ru.md).
 
+## Буфер COM1 на хосте
+
+Чтобы последовательный порт не писал на диск во время теста, замените
+`-serial file:PATH` в параметрах запуска каждой VM стенда.
+
+```text
+-chardev ringbuf,id=lab-com1,size=1048576 -serial chardev:lab-com1
+```
+
+В скрипте запуска на Python ту же замену делает
+[`qemu_com1.with_ringbuf(argv)`](qemu_com1.py). Используйте QMP на
+loopback. После нагрузки и остановки ETW выгрузите буфер в новый файл
+до выключения VM. В примере 62622 — локальный порт QMP, а `$scratch` —
+каталог за пределами репозитория.
+
+```powershell
+python qemu_com1.py 62622 "$scratch\entry-com1.log"
+```
+
+При заполнении буфер объёмом 1 МиБ перезаписывает старые байты.
+Прочитанные данные удаляются из буфера. Храните журналы вместе с
+локальными ETL. Сравнение с файловым COM1 приведено в [отчёте v49](../validation-v49.ru.md).
+
 ## QEMU на Windows: отправка кадра вместе с длиной
 
 [Исследование v11](../validation-v11.ru.md) связало нестабильный темп

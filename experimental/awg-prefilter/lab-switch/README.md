@@ -211,6 +211,29 @@ identification. Writing the PCI log can itself extend a BQL hold.
 
 Keep the ETL, CSV and per-run JSON local. See the [v48 measurements](../validation-v48.md).
 
+## Buffer COM1 on the host
+
+Replace `-serial file:PATH` in each local lab VM's launch arguments with
+these options to keep serial output off the filesystem during the test.
+
+```text
+-chardev ringbuf,id=lab-com1,size=1048576 -serial chardev:lab-com1
+```
+
+Python launchers can make the same change with
+[`qemu_com1.with_ringbuf(argv)`](qemu_com1.py). Keep each VM's QMP
+monitor on loopback. After the load and ETW capture end, drain the
+buffer to a new file before shutting down the VM. In the example, 62622
+is that VM's local QMP port and `$scratch` is outside the repository.
+
+```powershell
+python qemu_com1.py 62622 "$scratch\entry-com1.log"
+```
+
+The 1 MiB buffer overwrites its oldest bytes when full. Reading it consumes
+the saved bytes. Keep the logs with the private ETW files. The [v49
+report](../validation-v49.md) compares this setup with file-backed COM1.
+
 ## QEMU on Windows: write each frame together
 
 The [v11 study](../validation-v11.md) traced intermittent rate shortfalls
