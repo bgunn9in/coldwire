@@ -233,6 +233,7 @@ python qemu_com1.py 62622 "$scratch\entry-com1.log"
 The 1 MiB buffer overwrites its oldest bytes when full. Reading it consumes
 the saved bytes. Keep the logs with the private ETW files. The [v49
 report](../validation-v49.md) compares this setup with file-backed COM1.
+The [v50 series](../validation-v50.md) repeats the comparison in three alternating pairs at 25,000 packets/s.
 
 ## QEMU on Windows: write each frame together
 
