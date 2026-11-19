@@ -376,6 +376,9 @@ The patched binary includes a separate lab option, disabled by default:
 `COLDWIRE_LAB_RETURN_REPLAY=1`. It also requires the existing
 `COLDWIRE_LAB_PROOF_SOCKET` setup. Installers do not enable either option.
 
+Recovery can produce bursts large enough to fill the client's UDP receive buffer.
+An optional lab queue on A smooths those bursts and adds queueing delay during recovery. [V53 setup and measurements](../validation-v53.md#return-path-pacing)
+
 B copies outbound encrypted transport packets into a shared ring. The ring
 holds at most 8192 packets and 8 MiB of ciphertext, plus fixed metadata.
 Only packets younger than 500 ms are eligible; an idle cleanup runs every
