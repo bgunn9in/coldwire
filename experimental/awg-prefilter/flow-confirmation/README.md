@@ -254,6 +254,9 @@ queue bypass or fail-open option. Only confirmed IPv4/UDP conntrack entries
 and individual IP packets up to 1536 bytes are eligible for holding.
 Conntrack confirmation is kernel tracking state; it grants no VPN identity.
 
+The lab can put discovery samples on their own NFQUEUE 103 so they can reach
+the classifier while queue 100 is stalled. [V52 patch setup and measurements](../validation-v52.md#the-lab-patch)
+
 Discovery also uses a learned per-source bucket: 32/s with burst 256,
 at most 4096 addresses and five seconds of idle time. This prevents a few
 sources repeatedly creating flows from taking the entire discovery budget.

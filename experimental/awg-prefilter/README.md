@@ -26,6 +26,7 @@ cold connections, movement and the limits of tuple admission.
 [V44](validation-v44.md) compares TCP and AF_UNIX on the same QEMU stream backend.
 [V45](validation-v45.md) observes reads on the receiving socket and records a shared lab interruption.
 [V46](validation-v46.md) measures switch queue pressure and compares where the lab writes its output.
+[V52](validation-v52.md) measures how a separate discovery queue on A affects delays after a NAT port change.
 [V51](validation-v51.md) traces the 8,278 missing UDP packets in v50 through a delayed NAT port change.
 [V50](validation-v50.md) repeats the COM1 comparison in six alternating ETW runs.
 [V49](validation-v49.md) buffers COM1 in memory and retests the 14.4-second pause.

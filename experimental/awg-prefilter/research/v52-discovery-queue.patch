@@ -1,0 +1,16 @@
+diff --git a/experimental/awg-prefilter/flow-confirmation/escrow-rules.nft.example b/experimental/awg-prefilter/flow-confirmation/escrow-rules.nft.example
+--- a/experimental/awg-prefilter/flow-confirmation/escrow-rules.nft.example
++++ b/experimental/awg-prefilter/flow-confirmation/escrow-rules.nft.example
+@@ -66,5 +66,5 @@
+         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 ip saddr . udp sport . ct id @trusted meta mark set meta mark | 0x10000000 goto trusted_flow
+         # Reused NAT tuples can retain conntrack; discovery must not require its first packet.
+-        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 update @discovery_sources { ip saddr limit rate 32/second burst 256 packets } limit rate 960/second burst 960 packets counter return comment "discovery_sample"
++        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 update @discovery_sources { ip saddr limit rate 32/second burst 256 packets } limit rate 960/second burst 960 packets counter queue num 103 comment "discovery_sample"
+         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 jump guard
+     }
+@@ -89,4 +89,5 @@
+         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark & 0x02000000 != 0 counter return comment "late_deferred"
+         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark & 0x10000000 != 0 return
++        iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 meta mark & 0x40000000 != 0 return
+         iifname "enp0s3" ip daddr 192.168.76.10 udp dport 32497 queue num 100
+     }
