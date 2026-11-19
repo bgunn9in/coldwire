@@ -645,3 +645,51 @@ func TestColdwireDeferredMaintenanceGuards(t *testing.T) {
 		}
 	}
 }
+
+func TestLabCoalescesChangedReturnEndpoint(t *testing.T) {
+	old := coldwireReturnSettle
+	coldwireReturnSettle = true
+	defer func() { coldwireReturnSettle = old }()
+	now := time.Now()
+	id := [32]byte{1}
+	cache := new(coldwireReturnCache)
+	cache.remember(coldwireReturnPacket{peer: id, birth: now, index: 1, sent: now, payload: []byte{1}})
+	cache.deferReplies(id, now, 1, "first", now, now.Add(coldwireSettleDelay))
+
+	move := now.Add(250 * time.Millisecond)
+	cache.remember(coldwireReturnPacket{peer: id, birth: now, index: 1, sent: move, payload: []byte{2}})
+	if !cache.retargetPending(id, now, 1, "second", move) {
+		t.Fatal("second move lost its pending recovery")
+	}
+	if got := cache.takePending(id, now, 1, "second", now.Add(500*time.Millisecond)); len(got) != 0 {
+		t.Fatal("second move did not postpone the replay")
+	}
+	latest := now.Add(800 * time.Millisecond)
+	if !cache.retargetPending(id, now, 1, "last", latest) || !cache.pending[id].due.Equal(now.Add(1000*time.Millisecond)) {
+		t.Fatal("last move exceeded the original expiry budget")
+	}
+	got := cache.takePending(id, now, 1, "last", now.Add(1000*time.Millisecond))
+	if len(got) != 2 || got[0][0] != 1 || got[1][0] != 2 {
+		t.Fatal("coalesced replay lost packet order")
+	}
+}
+
+func TestLabSettlingReservesReplayHeadroom(t *testing.T) {
+	old := coldwireReturnSettle
+	coldwireReturnSettle = true
+	defer func() { coldwireReturnSettle = old }()
+	now := time.Now()
+	id := [32]byte{2}
+	cache := new(coldwireReturnCache)
+	cache.remember(coldwireReturnPacket{peer: id, birth: now, index: 1, sent: now, payload: []byte{1}})
+	cache.deferReplies(id, now, 1, "first", now, now.Add(coldwireSettleDelay))
+	cache.serial = cache.pending[id].firstSerial + coldwireSettleMaxAdvance - 1
+	before := now.Add(50 * time.Millisecond)
+	if len(cache.takePending(id, now, 1, "first", before)) != 0 {
+		t.Fatal("replayed before the quiet period or the advance limit")
+	}
+	cache.serial++
+	if len(cache.takePending(id, now, 1, "first", before)) != 1 {
+		t.Fatal("did not replay early when the advance limit was reached")
+	}
+}

@@ -379,6 +379,12 @@ The patched binary includes a separate lab option, disabled by default:
 Recovery can produce bursts large enough to fill the client's UDP receive buffer.
 An optional lab queue on A smooths those bursts and adds queueing delay during recovery. [V53 setup and measurements](../validation-v53.md#return-path-pacing)
 
+On the disposable exit VM, `COLDWIRE_LAB_RETURN_SETTLE=1` enables the v55
+option alongside return replay. It coalesces successive authenticated moves
+and makes recovery eligible sooner when the ciphertext cache advances by
+7,400 entries. The experiment also enlarged the exit's `awg0` transmit
+queue to 2,048 packets. [V55 lab setup and measurements](../validation-v55.md#the-2048-packet-queue-on-b)
+
 B copies outbound encrypted transport packets into a shared ring. The ring
 holds at most 8192 packets and 8 MiB of ciphertext, plus fixed metadata.
 Only packets younger than 500 ms are eligible; an idle cleanup runs every

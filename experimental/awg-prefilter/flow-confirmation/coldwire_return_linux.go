@@ -23,6 +23,11 @@ const (
 )
 
 var coldwireReturnEnabled = os.Getenv("COLDWIRE_LAB_RETURN_REPLAY") == "1" && coldwireProofPath != ""
+
+const coldwireSettleDelay = 320 * time.Millisecond
+const coldwireSettleMaxAdvance = 7400
+
+var coldwireReturnSettle = os.Getenv("COLDWIRE_LAB_RETURN_SETTLE") == "1"
 var coldwireReturnOnce sync.Once
 var coldwireReturns *coldwireReturnCache
 var coldwireReplaySending sync.Mutex
@@ -153,7 +158,7 @@ func (peer *Peer) coldwireReplayReplies(identity [32]byte, keypair *Keypair, end
 		peer.coldwireRetryRepliesLocked(identity, keypair, endpoint)
 		return
 	}
-	if !peer.coldwireReturnLast.IsZero() && now.Sub(peer.coldwireReturnLast) < coldwirePeerReplayInterval {
+	if coldwireReturnSettle || (!peer.coldwireReturnLast.IsZero() && now.Sub(peer.coldwireReturnLast) < coldwirePeerReplayInterval) {
 		peer.coldwireDeferReplies(identity, keypair, endpoint, now)
 		return
 	}

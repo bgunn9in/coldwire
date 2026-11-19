@@ -16,15 +16,16 @@ const (
 
 // The bounded peer reference supplies the current key/endpoint without retaining a keypair.
 type coldwireReturnPending struct {
-	peer    *Peer
-	birth   time.Time
-	index   uint32
-	address string
-	due     time.Time
-	expires time.Time
-	buffers [][]byte
-	through uint64
-	armed   bool
+	peer        *Peer
+	birth       time.Time
+	index       uint32
+	address     string
+	due         time.Time
+	expires     time.Time
+	buffers     [][]byte
+	through     uint64
+	firstSerial uint64
+	armed       bool
 }
 
 // Reuse the selected ciphertext so a second move cannot erase the first recovery window.
@@ -89,6 +90,12 @@ func (cache *coldwireReturnCache) retargetPending(identity [32]byte, birth time.
 		return false
 	}
 	value.address = address
+	if coldwireReturnSettle && value.armed {
+		value.due = now.Add(coldwireSettleDelay)
+		if latest := value.expires.Add(-100 * time.Millisecond); value.due.After(latest) {
+			value.due = latest
+		}
+	}
 	value.armed = true
 	cache.prune(now)
 	for i := 0; i < cache.count && cache.pendingPackets < coldwirePendingPackets; i++ {
@@ -130,6 +137,7 @@ func (cache *coldwireReturnCache) deferReplies(identity [32]byte, birth time.Tim
 			break
 		}
 		value.buffers = append(value.buffers, append([]byte(nil), packet.payload...))
+		value.firstSerial = packet.serial
 		size += len(packet.payload)
 	}
 	if len(value.buffers) == 0 {
@@ -146,6 +154,12 @@ func (cache *coldwireReturnCache) deferReplies(identity [32]byte, birth time.Tim
 	cache.pendingPackets += len(value.buffers)
 }
 
+// The caller holds the cache lock. The serial also counts packets for other peers.
+func (cache *coldwireReturnCache) pendingDue(value coldwireReturnPending, now time.Time) bool {
+	return !now.Before(value.due) || (coldwireReturnSettle && value.firstSerial != 0 &&
+		cache.serial-value.firstSerial >= coldwireSettleMaxAdvance)
+}
+
 func (cache *coldwireReturnCache) takePending(identity [32]byte, birth time.Time, index uint32, address string, now time.Time) [][]byte {
 	cache.Lock()
 	defer cache.Unlock()
@@ -158,7 +172,7 @@ func (cache *coldwireReturnCache) takePending(identity [32]byte, birth time.Time
 		cache.dropPending(identity)
 		return nil
 	}
-	if !value.armed || now.Before(value.due) || (!cache.lastReplay.IsZero() && now.Sub(cache.lastReplay) < 250*time.Millisecond) {
+	if !value.armed || !cache.pendingDue(value, now) || (!cache.lastReplay.IsZero() && now.Sub(cache.lastReplay) < 250*time.Millisecond) {
 		return nil
 	}
 	// The authenticated destination can disappear before this attempt arrives.
@@ -174,7 +188,9 @@ func (peer *Peer) coldwireDeferReplies(identity [32]byte, keypair *Keypair, endp
 		return
 	}
 	due := peer.coldwireReturnLast.Add(coldwirePeerReplayInterval)
-	if due.Before(now) {
+	if coldwireReturnSettle {
+		due = now.Add(coldwireSettleDelay)
+	} else if due.Before(now) {
 		due = now
 	}
 	coldwireReturnStorage().deferReplies(identity, keypair.created, keypair.localIndex, endpoint.DstToString(), now, due)
@@ -238,7 +254,7 @@ func (cache *coldwireReturnCache) maintain(now time.Time) {
 	cache.prune(now)
 	cache.prunePending(now)
 	for identity, value := range cache.pending {
-		if value.peer != nil && value.armed && !now.Before(value.due) {
+		if value.peer != nil && value.armed && cache.pendingDue(value, now) {
 			ready[n].identity, ready[n].peer = identity, value.peer
 			n++
 		}
