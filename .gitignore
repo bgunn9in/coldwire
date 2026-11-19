@@ -8,6 +8,7 @@ __pycache__/
 *.pem
 *.reg
 *.log
+*.etl
 *.zip
 *.bundle
 *.tar

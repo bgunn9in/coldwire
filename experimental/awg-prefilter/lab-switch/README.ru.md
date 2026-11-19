@@ -113,6 +113,60 @@ Windows на время прогона. Он сохраняет замеры п�
 python host-clock.py "$scratch\host-clock.json" --seconds 180
 ```
 
+## BQL и планировщик Windows
+
+Для стенда на QEMU 11.1.3 сначала примените патч наблюдения за `stream`,
+затем [патч диагностики BQL](qemu-win32-bql-observer.patch). Проверьте и
+примените оба из каталога исходников QEMU. Патч BQL записывает
+идентификатор главного потока и интервалы захвата и владения блокировкой
+SRW длительностью от 5 мс. Запись о владении появляется при освобождении
+блокировки. Метки времени берутся из QPC.
+
+Соберите два помощника ETW из этого каталога с помощью MinGW-w64.
+Создайте новый рабочий каталог на локальном диске с местом для трассы.
+
+```powershell
+$scratch = 'C:\lab\bql-trace-01'
+New-Item -ItemType Directory -Path $scratch | Out-Null
+gcc -O2 -Wall -Wextra -Werror -municode scheduler-record.c -o "$scratch\scheduler-record.exe" -ladvapi32
+gcc -O2 -Wall -Wextra -Werror -municode scheduler-read.c -o "$scratch\scheduler-read.exe" -ladvapi32
+```
+
+После загрузки VM и до начала нагрузки запустите запись из PowerShell
+с правами администратора. Используйте тот же путь `$scratch`.
+
+```powershell
+& "$scratch\scheduler-record.exe" "$scratch\scheduler.etl" "$scratch\stop.request" 180
+```
+
+Помощник записывает события планировщика хоста Windows. Сырые ETL
+храните локально. Запись завершится по таймеру, при достижении 2 ГиБ
+или при появлении файла `stop.request`. Чтобы закончить раньше, создайте
+этот файл из другого терминала. Проверьте статус `STOP` и счётчики потерь.
+Используйте только интервалы, покрытые трассой. Для автоматизации после
+длительности можно передать путь к маркеру запуска и журналу статуса.
+
+Разбирайте по одной VM. Укажите журнал stderr QEMU с записями
+`CW47 main` и `CW47 bql`. Для перенаправления вывода в примере ниже
+используйте PowerShell 7.
+
+```powershell
+$log = Join-Path $scratch 'entry-qemu.log'
+$ids = Join-Path $scratch 'entry-threads.txt'
+$csv = Join-Path $scratch 'entry-scheduler.csv'
+python bql-report.py threads $log | Set-Content -Encoding ascii $ids
+& "$scratch\scheduler-read.exe" "$scratch\scheduler.etl" $ids > $csv
+python bql-report.py report $csv $log
+```
+
+Чтобы отметить vCPU, передайте `--vcpu-tid` со значением `thread-id`
+из `query-cpus-fast` для этой VM. Для окна нагрузки передайте
+`--start-ns` и `--end-ns` со значениями `noise_first_ns` и
+`noise_last_ns` коммутатора. В отчёте для завершённых захватов есть
+время исполнения, готовности, ожидания и интервалы с неизвестным
+состоянием, а также совпадающие интервалы владения BQL.
+[Замеры и ограничения](../validation-v47.ru.md)
+
 ## QEMU на Windows: отправка кадра вместе с длиной
 
 [Исследование v11](../validation-v11.ru.md) связало нестабильный темп

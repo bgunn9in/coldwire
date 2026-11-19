@@ -111,6 +111,59 @@ or you press Ctrl+C. Use a fresh output path.
 python host-clock.py "$scratch\host-clock.json" --seconds 180
 ```
 
+## BQL and Windows scheduler tracing
+
+For the QEMU 11.1.3 lab, apply the stream observer patch first and
+then the [BQL observer patch](qemu-win32-bql-observer.patch). Check
+and apply each patch in the QEMU source tree. The BQL patch records
+the main thread ID and elapsed acquisition and hold intervals of at
+least 5 ms for the Windows SRW lock. A hold record is written when the
+thread releases the lock. The measurements use QPC.
+
+Build the two ETW tools from this directory with MinGW-w64. Use a fresh
+scratch directory on a local disk with room for the trace.
+
+```powershell
+$scratch = 'C:\lab\bql-trace-01'
+New-Item -ItemType Directory -Path $scratch | Out-Null
+gcc -O2 -Wall -Wextra -Werror -municode scheduler-record.c -o "$scratch\scheduler-record.exe" -ladvapi32
+gcc -O2 -Wall -Wextra -Werror -municode scheduler-read.c -o "$scratch\scheduler-read.exe" -ladvapi32
+```
+
+Start the recorder from an elevated PowerShell with the same
+`$scratch` path after bringing up the VMs and before starting
+the load.
+
+```powershell
+& "$scratch\scheduler-record.exe" "$scratch\scheduler.etl" "$scratch\stop.request" 180
+```
+
+The recorder collects scheduler metadata for the Windows host. Keep the
+raw ETL local. It stops after the specified time, at 2 GiB, or when
+`stop.request` appears. Create that file from another terminal to stop
+the owned trace early. Check the `STOP` status and loss counts, and use
+only intervals covered by the trace. An orchestrator can pass a start
+marker and a status log as two extra arguments after the duration.
+
+Decode one VM at a time. Pass its QEMU stderr log containing `CW47 main`
+and `CW47 bql` records. Use PowerShell 7 for the redirection below.
+
+```powershell
+$log = Join-Path $scratch 'entry-qemu.log'
+$ids = Join-Path $scratch 'entry-threads.txt'
+$csv = Join-Path $scratch 'entry-scheduler.csv'
+python bql-report.py threads $log | Set-Content -Encoding ascii $ids
+& "$scratch\scheduler-read.exe" "$scratch\scheduler.etl" $ids > $csv
+python bql-report.py report $csv $log
+```
+
+To label the vCPU, pass `--vcpu-tid` with the `thread-id` from
+`query-cpus-fast` for that VM. To restrict the report to the workload, pass
+`--start-ns` and `--end-ns` with the switch's `noise_first_ns` and
+`noise_last_ns`. The report totals running, ready, waiting and unknown
+time on each completed acquisition and shows overlapping holder intervals.
+[Measurements and limits](../validation-v47.md)
+
 ## QEMU on Windows: write each frame together
 
 The [v11 study](../validation-v11.md) traced intermittent rate shortfalls
