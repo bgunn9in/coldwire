@@ -1,0 +1,405 @@
+{
+  "study": "v45",
+  "environment": {
+    "QEMU": "11.1.3",
+    "accelerator": "WHPX",
+    "VMs": 4,
+    "guest": "Debian 13",
+    "vCPU_per_VM": 1,
+    "RAM_MiB_per_VM": 1024,
+    "CPU_quota": null,
+    "noise_PPS": 25000,
+    "noise_sources": 16,
+    "useful_PPS": 6000,
+    "UDP_payload_bytes": 1200,
+    "nominal_RTT_ms": 300
+  },
+  "runs": [
+    {
+      "case": "rx-tcp-a",
+      "scenario_completed": true,
+      "qualified": false,
+      "noise_frames_switch": 1750000,
+      "noise_arrived": 1750000,
+      "switch_dropped_frames": 4287,
+      "max_queued_send_gap_ms": 1215.2345,
+      "useful_UDP_missing": 8772,
+      "ping_missing": 0,
+      "output_drops_by_role": {
+        "client": 4287,
+        "exit": 0,
+        "restore": 0,
+        "entry": 0
+      }
+    },
+    {
+      "case": "rx-tcp-b",
+      "scenario_completed": true,
+      "qualified": false,
+      "noise_frames_switch": 1750000,
+      "noise_arrived": 1731391,
+      "switch_dropped_frames": 23347,
+      "max_queued_send_gap_ms": 967.5458,
+      "useful_UDP_missing": 4737,
+      "ping_missing": 0,
+      "output_drops_by_role": {
+        "client": 0,
+        "exit": 0,
+        "restore": 0,
+        "entry": 23347
+      }
+    },
+    {
+      "case": "rx-tcp-c",
+      "scenario_completed": true,
+      "qualified": false,
+      "noise_frames_switch": 1750000,
+      "noise_arrived": 1747495,
+      "switch_dropped_frames": 2678,
+      "max_queued_send_gap_ms": 336.8907,
+      "useful_UDP_missing": 173,
+      "ping_missing": 0,
+      "output_drops_by_role": {
+        "client": 0,
+        "exit": 0,
+        "restore": 0,
+        "entry": 2678
+      }
+    },
+    {
+      "case": "rx-unix-control",
+      "scenario_completed": false,
+      "noise_frames_switch": 1019904,
+      "switch_dropped_frames": 202712,
+      "max_queued_send_gap_ms": 14373.5066,
+      "output_drops_by_role": {}
+    },
+    {
+      "case": "rx-unix-repeat",
+      "scenario_completed": true,
+      "qualified": false,
+      "noise_frames_switch": 1750000,
+      "noise_arrived": 1749016,
+      "switch_dropped_frames": 1040,
+      "max_queued_send_gap_ms": 73.1554,
+      "useful_UDP_missing": 1132,
+      "ping_missing": 21,
+      "output_drops_by_role": {
+        "client": 0,
+        "exit": 0,
+        "restore": 0,
+        "entry": 1040
+      }
+    }
+  ],
+  "open_window_at_A": {
+    "rx-tcp-b": {
+      "no_switch_send_at_least_ms": 869.6948,
+      "receiver_poll_progress_ms": 755.9441,
+      "sender": [
+        {
+          "offset_ms": 67.8211,
+          "gap": 67821100,
+          "pending": 1139020,
+          "drops": 0,
+          "error": 0,
+          "sent_window": 16776960,
+          "flight": 580682,
+          "retrans": 1491330,
+          "timeout_episodes": 1
+        },
+        {
+          "offset_ms": 168.2545,
+          "gap": 168254500,
+          "pending": 2606926,
+          "drops": 0,
+          "error": 0,
+          "sent_window": 16776960,
+          "flight": 580682,
+          "retrans": 1491330,
+          "timeout_episodes": 1
+        },
+        {
+          "offset_ms": 268.3556,
+          "gap": 268355600,
+          "pending": 4194292,
+          "drops": 1047,
+          "error": 0,
+          "sent_window": 16776960,
+          "flight": 580682,
+          "retrans": 1491330,
+          "timeout_episodes": 1
+        },
+        {
+          "offset_ms": 368.5951,
+          "gap": 368595100,
+          "pending": 4194292,
+          "drops": 1612,
+          "error": 0,
+          "sent_window": 16776960,
+          "flight": 580682,
+          "retrans": 1491330,
+          "timeout_episodes": 1
+        },
+        {
+          "offset_ms": 468.63,
+          "gap": 468630000,
+          "pending": 4194292,
+          "drops": 6340,
+          "error": 0,
+          "sent_window": 16776960,
+          "flight": 580682,
+          "retrans": 1491330,
+          "timeout_episodes": 1
+        },
+        {
+          "offset_ms": 568.6882,
+          "gap": 568688200,
+          "pending": 4194292,
+          "drops": 9024,
+          "error": 0,
+          "sent_window": 16776960,
+          "flight": 275013,
+          "retrans": 2150286,
+          "timeout_episodes": 2
+        },
+        {
+          "offset_ms": 669.0865,
+          "gap": 669086500,
+          "pending": 4194292,
+          "drops": 11648,
+          "error": 0,
+          "sent_window": 16776960,
+          "flight": 275013,
+          "retrans": 2150286,
+          "timeout_episodes": 2
+        },
+        {
+          "offset_ms": 769.3885,
+          "gap": 769388500,
+          "pending": 4194292,
+          "drops": 16334,
+          "error": 0,
+          "sent_window": 16776960,
+          "flight": 275013,
+          "retrans": 2150286,
+          "timeout_episodes": 2
+        },
+        {
+          "offset_ms": 869.6948,
+          "gap": 869694800,
+          "pending": 4194292,
+          "drops": 17576,
+          "error": 0,
+          "sent_window": 16776960,
+          "flight": 275013,
+          "retrans": 2150286,
+          "timeout_episodes": 2
+        }
+      ],
+      "receiver": [
+        {
+          "offset_ms": 86.2362,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 0.7585
+        },
+        {
+          "offset_ms": 137.0559,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 0.1203
+        },
+        {
+          "offset_ms": 187.8099,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 0.371
+        },
+        {
+          "offset_ms": 238.6229,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 1.9724
+        },
+        {
+          "offset_ms": 289.6567,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 4.9889
+        },
+        {
+          "offset_ms": 339.839,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 3.1136
+        },
+        {
+          "offset_ms": 390.1515,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 0.9711
+        },
+        {
+          "offset_ms": 440.4117,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 4.1707
+        },
+        {
+          "offset_ms": 541.0777,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 0.0441
+        },
+        {
+          "offset_ms": 591.5429,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 0.0305
+        },
+        {
+          "offset_ms": 641.6671,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 0.0032
+        },
+        {
+          "offset_ms": 692.019,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 0.584
+        },
+        {
+          "offset_ms": 742.5799,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 0.9683
+        },
+        {
+          "offset_ms": 792.6671,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 4.025
+        },
+        {
+          "offset_ms": 843.3926,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 1.9708
+        }
+      ]
+    },
+    "rx-tcp-c": {
+      "no_switch_send_at_least_ms": 273.1768,
+      "receiver_poll_progress_ms": 200.7698,
+      "sender": [
+        {
+          "offset_ms": 72.3674,
+          "gap": 72367400,
+          "pending": 1065526,
+          "drops": 0,
+          "error": 0,
+          "sent_window": 16776960,
+          "flight": 654470,
+          "retrans": 1434727,
+          "timeout_episodes": 1
+        },
+        {
+          "offset_ms": 172.4706,
+          "gap": 172470600,
+          "pending": 3085765,
+          "drops": 0,
+          "error": 0,
+          "sent_window": 16776960,
+          "flight": 654470,
+          "retrans": 1434727,
+          "timeout_episodes": 1
+        },
+        {
+          "offset_ms": 273.1768,
+          "gap": 273176800,
+          "pending": 3984927,
+          "drops": 0,
+          "error": 0,
+          "sent_window": 16776960,
+          "flight": 654470,
+          "retrans": 1434727,
+          "timeout_episodes": 1
+        }
+      ],
+      "receiver": [
+        {
+          "offset_ms": 69.3614,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 0.9899
+        },
+        {
+          "offset_ms": 119.4123,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 3.4811
+        },
+        {
+          "offset_ms": 169.9482,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 1.0208
+        },
+        {
+          "offset_ms": 220.2697,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 3.4778
+        },
+        {
+          "offset_ms": 270.6303,
+          "available_bytes": 0,
+          "read_watch_paused": false,
+          "ioctl_error": 0,
+          "main_loop_age_ms": 1.489
+        }
+      ]
+    }
+  },
+  "shared_interruption": {
+    "ms": 14374.1251,
+    "fully_overlapping_100ms_bins": 142,
+    "noise_ingress_frames": 0,
+    "QEMU_socket_read_gaps_ms": {
+      "entry": 14374.1251,
+      "exit": 14376.4936,
+      "client": 14376.0584,
+      "restore": 24909.1375
+    },
+    "receiver_observer_gaps_ms": {
+      "entry": 14339.3579,
+      "client": 14339.3551
+    },
+    "generator_SSH_banner_timeout": true
+  },
+  "AF_UNIX_repeat_host_clock": {
+    "samples": 1620,
+    "gaps_over_250_ms": 0
+  }
+}

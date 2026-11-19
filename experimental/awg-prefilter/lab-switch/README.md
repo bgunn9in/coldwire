@@ -3,9 +3,10 @@
 English | [Русский](README.ru.md)
 
 This helper replaces the Python switch in the isolated four-VM prefilter
-lab. It is a learning Ethernet relay over QEMU's length-prefixed TCP
-connections. It binds only to `127.0.0.1`. It creates no network adapters
-and changes no Windows routes, firewall settings or VPN profiles.
+lab. It learns MAC addresses and forwards QEMU's length-prefixed Ethernet
+frames through a local AF_UNIX socket or a TCP listener on `127.0.0.1`.
+It creates no network adapters and changes no Windows routes, firewall
+settings or VPN profiles.
 
 It runs on the Windows lab host. The VPS installers do not deploy it.
 It neither decrypts AWG nor authenticates clients.
@@ -29,37 +30,86 @@ opaque payloads, learned unicast, the peer limit, noise counting and expiry
 of the oldest timing bins. A rejected connection may close with EOF or reset.
 The test uses localhost port 62591 and leaves its statistics in `--workdir`.
 
-To run a lab switch on port 62590:
+## Connect the lab NICs
 
-```powershell
-& "$lab\native-switch.exe" 62590 "$lab\switch-stats.json"
-```
+Use AF_UNIX with QEMU's `stream` backend on Windows hosts that support
+AF_UNIX. In two runs at 25,000 background packets/s, the switch forwarded
+all frames over AF_UNIX. TCP on the same backend stalled for seconds
+and filled the output queue in one run.
 
-Point each QEMU lab NIC at `socket,id=lab,connect=127.0.0.1:62590`.
-The statistics path is an explicit output file: it is replaced once per
-second through a temporary file. Use a path that fits Windows `MAX_PATH` and the active Windows code page;
-the helper uses the ANSI path APIs.
-
-Each connection reports `output_drops` and `max_queued_send_gap_ns`. The
-first counts frames that could not fit in that connection's output ring.
-The second measures the longest interval with data waiting and no successful
-write to its socket. `max_pending_age_ns` measures how long the ring was
-continuously nonempty, including time when writes were succeeding.
-
-On a Windows host with AF_UNIX support, the lab data interfaces can connect
-over a local socket file. Choose a new path in a directory owned by the lab.
-The full path must fit in 107 bytes. For example, start the switch with:
+Start the switch before QEMU. Use a fresh socket path in a directory owned
+by the lab. The full path must fit in 107 bytes.
 
 ```powershell
 & "$lab\native-switch.exe" 'unix:C:\lab\cw.sock' "$lab\switch-stats.json"
 ```
 
-Point the QEMU data NIC at
-`-netdev stream,id=lab,addr.type=unix,addr.path=C:/lab/cw.sock`. Leave its
-Virtio `netdev=lab` device and the management NIC as configured. Start the
-switch before QEMU. After shutting down the lab, remove its socket file
-before reusing the path. The `tcp_nodelay` statistic is false in this mode.
-AF_UNIX was checked on Windows with QEMU 11.1.3/WHPX.
+Use `-netdev stream,id=lab,addr.type=unix,addr.path=C:/lab/cw.sock` for the
+data link. Keep the Virtio device with `netdev=lab` and the management NIC.
+After QEMU and the switch stop, remove the lab's socket file before
+reusing its path.
+
+For TCP loopback, run the switch with port 62590:
+
+```powershell
+& "$lab\native-switch.exe" 62590 "$lab\switch-stats.json"
+```
+
+Use `-netdev stream,id=lab,addr.type=inet,addr.host=127.0.0.1,addr.port=62590`.
+The switch reports `tcp_nodelay=true` for TCP and `false` for AF_UNIX.
+
+The switch replaces the statistics file once a second. Its path must fit
+Windows `MAX_PATH` and the active code page. On each connection, `output_drops`
+counts frames that did not fit in the output queue. `max_queued_send_gap_ns`
+records the longest gap between writes while data was queued.
+`max_pending_age_ns` measures how long the queue stayed nonempty.
+
+## Record switch and host timing
+
+For a load run, put the switch's statistics, optional pcap, and standard
+error on a fast local disk. The JSON snapshot and pcap writes run in the
+forwarding process. In the v46 control, moving these outputs away from the
+VM disk kept JSON writes below the 20 ms logging threshold. [V46 measurements](../validation-v46.md)
+
+```powershell
+$scratch = 'C:\lab\switch-output'
+$tap = Join-Path $scratch 'pcap'
+New-Item -ItemType Directory -Force $tap | Out-Null
+& "$lab\native-switch.exe" 'unix:C:\lab\cw.sock' "$scratch\switch-stats.json" $tap 2> "$scratch\switch.log"
+```
+
+The third argument enables the optional tap. Use a new capture directory
+for each run. The tap opens an eight-second window when the lab client
+uses the expected NAT port 42501. A later matching frame can open
+another window after the first closes. The tap records the lab tunnel and
+control tuples that match the fixture. The capture may contain VPN
+traffic. Keep it local. Check `tap_errors` and verify that `tap_closed`
+matches `tap_sequence` before using it. The `noise_output_drops` counter
+counts the fixture's background frames among each port's discarded copies.
+
+Standard error records long poll, forwarding and statistics-write
+intervals with QPC timestamps. A loss episode is printed when writes
+resume on that output. TCP backpressure samples need Winsock headers
+that expose `SIO_TCP_INFO`. Add `-DNTDDI_VERSION=0x0A000003` to the GCC
+command above to enable those samples with the tested MinGW-w64 headers.
+AF_UNIX forwarding and the queue counters also work without the flag.
+
+For QEMU 11.1.3, the [stream observer patch](qemu-win32-stream-observer.patch)
+logs receive gaps, Virtio read-watch pauses and main-loop waits. Apply it
+with `git apply --check` and `git apply` in a QEMU source tree, then build
+as shown below. To enable the independent receiver thread, set
+`CW45_STREAM_RX_LOG` to a fresh local log path in the environment of the
+QEMU process under observation. Use different paths for separate VM
+processes. The patch applies to the lab's `stream` backend for both
+socket families. [Receiver-side observations](../validation-v45.md)
+
+Run the [host clock observer](host-clock.py) in a separate Windows process
+for the whole trial. It writes the clock samples when the duration expires
+or you press Ctrl+C. Use a fresh output path.
+
+```powershell
+python host-clock.py "$scratch\host-clock.json" --seconds 180
+```
 
 ## QEMU on Windows: write each frame together
 
@@ -68,7 +118,8 @@ to QEMU's Windows socket send path. Its vectored-I/O fallback writes the
 four-byte length and Ethernet frame separately. The supplied
 [patch](qemu-win32-single-write.patch) combines them into one buffer and
 one `send()` attempt, retaining partial-write and error handling.
-It changes the lab's QEMU executable; the switch and VPS code are unchanged.
+The patch applies to the older `socket` backend. The `stream` setup above
+works without it.
 TCP remains a byte stream and can still split or combine reads.
 
 The patch was tested with QEMU 11.1.3. Use an already configured Windows
@@ -201,7 +252,7 @@ Each peer has a 256-KiB input buffer and a 4-MiB output ring. A full output
 ring drops that destination's copy and increments `dropped`. Lengths above
 65,536 bytes disconnect the sending peer; frames shorter than 14 bytes are
 ignored. Valid frame bytes and their order within each destination queue
-are preserved. `TCP_NODELAY` is enabled on accepted sockets.
+are preserved. Accepted TCP sockets use `TCP_NODELAY`.
 
 The noise counter recognizes the lab fixture only: IPv4 without options,
 UDP from `192.168.76.40` through `192.168.76.55` on any source port to `192.168.76.10:32497`,
@@ -221,8 +272,8 @@ switch during the [v19 series](../validation-v19.md).
 packet latency. Counters for partial/blocked sends describe this process's
 sockets; they do not measure every buffer inside QEMU or Windows.
 
-Port counters accumulate per connection slot until restart; the source MAC
-labels its current occupant. Global counters provide whole-run accounting.
+Port counters reset when a connection closes. The source MAC labels the
+current peer. Global counters retain the run totals.
 
 This remains a lab tool. Its tests do not establish production networking
 support or a maximum packet rate. Measure actual sender and arrival rates,

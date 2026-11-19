@@ -3,6 +3,7 @@
 #error "This lab helper requires assertions enabled"
 #endif
 #include <winsock2.h>
+#include <mstcpip.h>
 #include <ws2tcpip.h>
 #include <afunix.h>
 #include <windows.h>
@@ -27,7 +28,8 @@ typedef struct {
     int active, has_mac;
     uint64_t pending_since, frames_in, bytes_sent, peak_pending;
     uint64_t short_sends, blocked_sends, max_pending_age;
-    uint64_t output_drops, last_progress, max_progress_gap;
+    uint64_t output_drops, last_progress, max_progress_gap, tcp_sample_ns;
+    uint64_t drop_start, drop_end, episode_drops, episode_noise, dropped_noise;
 } Peer;
 
 typedef struct { unsigned char mac[6]; int used, peer; uint64_t age; } Mac;
@@ -141,25 +143,114 @@ static void record_noise(uint64_t stamp) {
     if (!noise_first_ns) noise_first_ns = stamp;
 }
 
-static void observe_noise(const unsigned char *f, uint32_t size) {
+static int observe_noise(const unsigned char *f, uint32_t size) {
     static const unsigned char prefix[] = {192, 168, 76}, destination[] = {192, 168, 76, 10};
     if (size < 46 || f[16] != 8 || f[17] || f[18] != 0x45 || f[27] != 17 ||
         memcmp(f + 30, prefix, 3) || f[33] < 40 || f[33] > 55 ||
         memcmp(f + 34, destination, 4) ||
-        be16(f + 40) != 32497 || be16(f + 42) != 264) return;
+        be16(f + 40) != 32497 || be16(f + 42) != 264) return 0;
     noise_source_frames[f[33] - 40]++;
     record_noise(now_ns());
+    return 1;
+}
+
+/* The optional tap records only the fixture's tunnel and control tuples. */
+static const char *tap_dir;
+static FILE *tap_file;
+static unsigned char tap_buffer[1024 * 1024];
+static uint64_t tap_until, tap_sequence, tap_frames, tap_errors, tap_closed;
+
+struct tap_header { uint32_t magic; uint16_t major, minor; uint32_t zone, accuracy, snaplen, link; };
+struct tap_packet { uint32_t seconds, micros, included, original; };
+_Static_assert(sizeof(struct tap_header) == 24 && sizeof(struct tap_packet) == 16, "PCAP layout");
+
+static unsigned tap_select(const unsigned char *p, uint32_t size) {
+    static const unsigned char lab[] = {192, 168, 76};
+    if (size < 42 || be16(p + 12) != 0x0800 || p[14] >> 4 != 4) return 0;
+    unsigned ihl = (p[14] & 15) * 4;
+    if (ihl < 20 || size < 14 + ihl + 8 || (be16(p + 20) & 0x3fff) ||
+        memcmp(p + 26, lab, 3) || memcmp(p + 30, lab, 3)) return 0;
+    unsigned source = p[29], target = p[33];
+    unsigned sport = be16(p + 14 + ihl), dport = be16(p + 16 + ihl);
+    if (p[23] == 6 && ((source == 10 && target == 20) || (source == 20 && target == 10)) &&
+        (sport == 39101 || dport == 39101)) return 1;
+    if (p[23] != 17) return 0;
+    if ((source == 30 || source == 31) && target == 10 && dport == 32497)
+        return sport == 42501 ? 3 : 1;
+    return (source == 10 && target == 20 && dport == 32497) ||
+           (source == 20 && target == 10 && sport == 32497);
+}
+
+static void tap_close(void) {
+    if (!tap_file) return;
+    if (fclose(tap_file)) tap_errors++;
+    tap_file = NULL;
+    tap_closed++;
+}
+
+static void tap_tick(uint64_t now) {
+    if (tap_file && now >= tap_until) tap_close();
+}
+
+static void tap_frame(const unsigned char *p, uint32_t size) {
+    if (!tap_dir) return;
+    uint64_t now = now_ns();
+    tap_tick(now);
+    unsigned selected = tap_select(p, size);
+    if (!tap_file && now >= tap_until && (selected & 2)) {
+        char path[MAX_PATH];
+        tap_until = now + UINT64_C(8000000000);
+        tap_sequence++;
+        int length = snprintf(path, sizeof(path), "%s/tap-%04" PRIu64 ".pcap", tap_dir, tap_sequence);
+        if (length < 0 || (size_t)length >= sizeof(path) || !(tap_file = fopen(path, "wbx"))) {
+            tap_errors++;
+            return;
+        }
+        const struct tap_header header = {0xa1b2c3d4, 2, 4, 0, 0, FRAME_CAP, 1};
+        if (setvbuf(tap_file, (char *)tap_buffer, _IOFBF, sizeof(tap_buffer)) ||
+            fwrite(&header, sizeof(header), 1, tap_file) != 1) {
+            tap_errors++;
+            tap_close();
+            return;
+        }
+    }
+    if (!tap_file || !selected) return;
+    FILETIME ft;
+    GetSystemTimePreciseAsFileTime(&ft);
+    uint64_t ticks = (uint64_t)ft.dwHighDateTime << 32 | ft.dwLowDateTime;
+    uint64_t micros = (ticks - UINT64_C(116444736000000000)) / 10;
+    const struct tap_packet record = {(uint32_t)(micros / 1000000),
+                                      (uint32_t)(micros % 1000000), size, size};
+    if (fwrite(&record, sizeof(record), 1, tap_file) != 1 ||
+        fwrite(p, size, 1, tap_file) != 1) {
+        tap_errors++;
+        tap_close();
+        return;
+    }
+    tap_frames++;
 }
 
 static void forward_frame(int source, const unsigned char *f, uint32_t size) {
     if (size < 14) return;
     frames++; peers[source].frames_in++;
     memcpy(peers[source].mac, f + 10, 6); peers[source].has_mac = 1;
-    learn(f + 10, source); observe_noise(f, size);
+    learn(f + 10, source);
+    int noise = observe_noise(f, size);
+    tap_frame(f + 4, size);
     int destination = f[4] & 1 ? -1 : lookup(f + 4);
-    for (int i = 0; i < PEERS; i++)
-        if (i != source && peers[i].active && (destination < 0 || destination == i))
-            if (enqueue(&peers[i], f, (size_t)size + 4)) copies++;
+    for (int i = 0; i < PEERS; i++) {
+        Peer *p = &peers[i];
+        if (i == source || !p->active || (destination >= 0 && destination != i)) continue;
+        if (enqueue(p, f, (size_t)size + 4)) {
+            copies++;
+            continue;
+        }
+        p->drop_end = now_ns();
+        if (!p->episode_drops) p->drop_start = p->drop_end;
+        p->episode_drops++;
+        p->episode_noise += noise;
+        p->dropped_noise += noise;
+    }
 }
 
 static void parse_input(int index) {
@@ -178,6 +269,42 @@ static void parse_input(int index) {
 
 static void nullable(FILE *f, uint64_t value) {
     if (value) fprintf(f, "%" PRIu64, value); else fputs("null", f);
+}
+
+#ifdef SIO_TCP_INFO
+static void sample_backpressure(uint64_t now) {
+    for (int i = 0; i < PEERS; i++) {
+        Peer *p = &peers[i];
+        if (!p->active || !p->pending || now - p->last_progress < 50000000 ||
+            now - p->tcp_sample_ns < 100000000) continue;
+        p->tcp_sample_ns = now;
+        ULONG version = 0;
+        TCP_INFO_v0 info = {0};
+        DWORD written = 0;
+        int status = WSAIoctl(p->fd, SIO_TCP_INFO, &version, sizeof(version),
+                              &info, sizeof(info), &written, NULL, NULL);
+        int error = status ? WSAGetLastError() : written < sizeof(info) ? WSAEINVAL : 0;
+        fprintf(stderr, "CW44 tcp now=%" PRIu64
+                " mac=%02x%02x%02x%02x%02x%02x pending=%zu gap=%" PRIu64
+                " drops=%" PRIu64 " error=%d sent_window=%lu flight=%lu"
+                " bytes_out=%" PRIu64 " retrans=%lu timeout_episodes=%lu\n",
+                now, p->mac[0], p->mac[1], p->mac[2], p->mac[3], p->mac[4], p->mac[5],
+                p->pending, now - p->last_progress, p->output_drops, error,
+                info.SndWnd, info.BytesInFlight, (uint64_t)info.BytesOut,
+                info.BytesRetrans, info.TimeoutEpisodes);
+    }
+}
+#endif
+
+static void log_loss_recovery(Peer *p, uint64_t stamp) {
+    if (!p->episode_drops) return;
+    fprintf(stderr, "CW46 loss mac=%02x%02x%02x%02x%02x%02x first=%" PRIu64
+            " last=%" PRIu64 " recovered=%" PRIu64 " gap=%" PRIu64
+            " age=%" PRIu64 " pending=%zu noise=%" PRIu64 " other=%" PRIu64 "\n",
+            p->mac[0], p->mac[1], p->mac[2], p->mac[3], p->mac[4], p->mac[5],
+            p->drop_start, p->drop_end, stamp, stamp - p->last_progress,
+            stamp - p->pending_since, p->pending, p->episode_noise, p->episode_drops - p->episode_noise);
+    p->episode_drops = p->episode_noise = 0;
 }
 
 static void write_stats(const char *path) {
@@ -215,13 +342,16 @@ static void write_stats(const char *path) {
         fprintf(f, "%s{\"source_mac\":", comma++ ? "," : "");
         if (p->has_mac) fprintf(f, "\"%02x%02x%02x%02x%02x%02x\"", p->mac[0], p->mac[1], p->mac[2], p->mac[3], p->mac[4], p->mac[5]);
         else fputs("null", f);
-        fprintf(f, ",\"output_drops\":%" PRIu64 ",\"max_queued_send_gap_ns\":%" PRIu64,
-                p->output_drops, queued_send_gap(p, now_ns()));
+        fprintf(f, ",\"output_drops\":%" PRIu64 ",\"noise_output_drops\":%" PRIu64
+                ",\"max_queued_send_gap_ns\":%" PRIu64,
+                p->output_drops, p->dropped_noise, queued_send_gap(p, now_ns()));
         fprintf(f, ",\"frames_in\":%" PRIu64 ",\"bytes_sent\":%" PRIu64 ",\"short_sends\":%" PRIu64
                 ",\"blocked_sends\":%" PRIu64 ",\"peak_pending_bytes\":%" PRIu64 ",\"max_pending_age_ns\":%" PRIu64 "}",
                 p->frames_in, p->bytes_sent, p->short_sends, p->blocked_sends, p->peak_pending, p->max_pending_age);
     }
-    fputs("]}\n", f);
+    fprintf(f, "],\"tap_sequence\":%" PRIu64 ",\"tap_frames\":%" PRIu64
+            ",\"tap_errors\":%" PRIu64 ",\"tap_closed\":%" PRIu64 "}\n",
+            tap_sequence, tap_frames, tap_errors, tap_closed);
     assert(!ferror(f)); assert(!fclose(f));
     for (int attempt = 0; !MoveFileExA(temporary, path, MOVEFILE_REPLACE_EXISTING); attempt++) {
         DWORD error = GetLastError();
@@ -260,6 +390,23 @@ static void self_test(void) {
     const unsigned char invalid[] = {0,1,0,1};
     memcpy(peers[0].input, invalid, 4); peers[0].input_len = 4; parse_input(0);
     assert(!peers[0].active && malformed_connections == 1);
+    unsigned char fixture[302] = {0};
+    fixture[4] = 2; fixture[10] = 4;
+    fixture[16] = 8; fixture[18] = 0x45; fixture[27] = 17;
+    memcpy(fixture + 30, "\xc0\xa8\x4c\x28\xc0\xa8\x4c\x0a", 8);
+    fixture[38] = 42501 >> 8; fixture[39] = 42501 & 255;
+    fixture[40] = 32497 >> 8; fixture[41] = 32497 & 255;
+    fixture[42] = 1; fixture[43] = 8;
+    peers[1].pending = OUTPUT_CAP;
+    forward_frame(0, fixture, 298);
+    fixture[33] = 31;
+    assert(tap_select(fixture + 4, 298) == 3 && !tap_select(fixture + 4, 33));
+    forward_frame(0, fixture, 298);
+    assert(peers[1].output_drops == 2 && peers[1].dropped_noise == 1);
+    assert(peers[1].episode_drops == 2 && peers[1].episode_noise == 1);
+    disconnect_peer(1);
+    assert(!peers[1].dropped_noise && !peers[1].episode_drops);
+    bin_count = noise_frames = noise_first_ns = noise_last_ns = 0;
     for (uint64_t i = 1; i <= BINS + 3; i++) record_noise(i * UINT64_C(100000000));
     assert(bin_count == BINS && bins[0].bucket == 4 && bins[BINS-1].bucket == BINS + 3);
     record_noise((BINS + 3) * UINT64_C(100000000) + 1);
@@ -277,7 +424,19 @@ static BOOL WINAPI control(DWORD event) {
 int main(int argc, char **argv) {
     initialize();
     if (argc == 2 && !strcmp(argv[1], "--self-test")) { self_test(); return 0; }
-    if (argc != 3) { fputs("Usage: native-switch PORT|unix:PATH STATS_JSON\n", stderr); return 2; }
+    if (argc != 3 && argc != 4) {
+        fputs("Usage: native-switch PORT|unix:PATH STATS_JSON [TAP_DIRECTORY]\n", stderr);
+        return 2;
+    }
+    if (argc == 4) {
+        DWORD attributes = GetFileAttributesA(argv[3]);
+        if (strlen(argv[3]) + 32 >= MAX_PATH || attributes == INVALID_FILE_ATTRIBUTES ||
+            !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            fputs("TAP_DIRECTORY must be an existing local directory with a short path\n", stderr);
+            return 2;
+        }
+        tap_dir = argv[3];
+    }
     char *end;
     use_unix = !strncmp(argv[1], "unix:", 5);
     const char *path = argv[1] + (use_unix ? 5 : 0);
@@ -318,8 +477,13 @@ int main(int argc, char **argv) {
             if (peers[i].pending) FD_SET(peers[i].fd, &writes);
         }
         struct timeval timeout = {0, 50000};
+        uint64_t poll_start = now_ns();
         int ready = select(0, &reads, &writes, NULL, &timeout);
         assert(ready != SOCKET_ERROR);
+        uint64_t work_start = now_ns();
+        if (work_start - poll_start >= 75000000)
+            fprintf(stderr, "CW46 select start=%" PRIu64 " end=%" PRIu64 " ready=%d\n",
+                    poll_start, work_start, ready);
         if (FD_ISSET(listener, &reads)) {
             SOCKET fd = accept(listener, NULL, NULL);
             if (fd != INVALID_SOCKET) {
@@ -354,6 +518,7 @@ int main(int argc, char **argv) {
                 if (count <= 0) { disconnect_peer(i); continue; }
                 if ((size_t)count < amount) { short_sends++; p->short_sends++; }
                 uint64_t stamp = now_ns();
+                log_loss_recovery(p, stamp);
                 p->max_progress_gap = queued_send_gap(p, stamp);
                 p->last_progress = stamp;
                 uint64_t age = stamp - p->pending_since;
@@ -364,8 +529,22 @@ int main(int argc, char **argv) {
             }
         }
         uint64_t stamp = now_ns();
-        if (stamp-last_stats >= UINT64_C(1000000000)) { write_stats(argv[2]); last_stats = stamp; }
+        tap_tick(stamp);
+#ifdef SIO_TCP_INFO
+        if (!use_unix) sample_backpressure(stamp);
+#endif
+        if (stamp - work_start >= 50000000)
+            fprintf(stderr, "CW46 forward start=%" PRIu64 " end=%" PRIu64 "\n", work_start, stamp);
+        if (stamp - last_stats >= UINT64_C(1000000000)) {
+            uint64_t started = now_ns();
+            write_stats(argv[2]);
+            uint64_t finished = now_ns();
+            if (finished - started >= 20000000)
+                fprintf(stderr, "CW46 stats start=%" PRIu64 " end=%" PRIu64 "\n", started, finished);
+            last_stats = stamp;
+        }
     }
+    tap_close();
     write_stats(argv[2]);
     for (int i = 0; i < PEERS; i++) { disconnect_peer(i); free(peers[i].input); free(peers[i].output); }
     closesocket(listener); WSACleanup();

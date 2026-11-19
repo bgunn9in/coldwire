@@ -23,6 +23,9 @@ cold connections, movement and the limits of tuple admission.
 [V41](validation-v41.md) fixes a maintenance timer at A and measures socket backpressure in the lab switch.
 [V42](validation-v42.md) compares UDP capture with delivery counts from the lab receiver.
 [V43](validation-v43.md) investigates QEMU receive stalls and validates the lab switch over AF_UNIX.
+[V44](validation-v44.md) compares TCP and AF_UNIX on the same QEMU stream backend.
+[V45](validation-v45.md) observes reads on the receiving socket and records a shared lab interruption.
+[V46](validation-v46.md) measures switch queue pressure and compares where the lab writes its output.
 
 ## What it checks
 
