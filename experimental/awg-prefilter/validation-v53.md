@@ -20,7 +20,9 @@ In the first control run, `Udp.RcvbufErrors` and the socket drop counter both in
 
 ## Return-path pacing
 
-The [lab script](research/v53-return-pacing.sh) puts matching return traffic in a FIFO `tc tbf` queue on A after NAT. The filter matches A's source address and the AWG UDP source port. The token bucket uses 260 Mbit/s with a 32 KiB burst and an 8 MiB queue limit. Traffic from A to B keeps its own `netem` band. The limiter preserves order within the return queue.
+The [lab script](research/v53-return-pacing.sh) puts matching return traffic in a FIFO `tc tbf` queue on A after NAT. The filter matches A's source address and the AWG UDP source port. The default used in v53 is 260 Mbit/s with a 32 KiB burst and an 8 MiB queue limit. Traffic from A to B keeps its own `netem` band. The limiter preserves order within the return queue.
+
+The script also accepts `360` as a positional argument for the faster v54 profile. [V54 measurements](validation-v54.md)
 
 From the repository root on the disposable entry VM, run `sudo sh experimental/awg-prefilter/research/v53-return-pacing.sh` in place of the usual A-side `netem` setup. The script checks for the lab hostname `kit-entry` and replaces the root qdisc on `enp0s3`. The lab teardown restores the default test qdisc, removes the experimental packet hooks and checks ordinary DNAT with both original client profiles.
 
