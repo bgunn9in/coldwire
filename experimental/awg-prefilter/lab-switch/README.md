@@ -93,6 +93,10 @@ capture directory. The tap also records A → client UDP and keeps at most
 and host timestamp. Use the regular full-frame tap with decoders that
 require complete datagrams. [V51 measurements](../validation-v51.md)
 
+For the v56 single-move test, use `--single-move` after the capture
+directory. This header-only tap opens one eight-second window on NAT port
+42503. Later frames from that port cannot reopen the tap. [V56 measurements](../validation-v56.md)
+
 Standard error records long poll, forwarding and statistics-write
 intervals with QPC timestamps. A loss episode is printed when writes
 resume on that output. TCP backpressure samples need Winsock headers
@@ -412,12 +416,14 @@ useful throughput, drops and whole-VM CPU together.
 ## Independent useful UDP
 
 `udp-load.c` is a Linux-only workload for the disposable `kit-client` and
-`kit-exit` VMs. It sends exactly 360,000 sequenced packets at 6000/s over
-60 seconds; the receiver runs for 67 seconds and counts unique, duplicate
-and invalid packets. It supports 128- and 1200-byte payloads, only the lab
-addresses `10.8.1.1` and `10.8.1.2`, and UDP port 5201. It has no TCP control
-channel, which makes it usable during deliberate VPN/control outages.
-It is a test application; the VPN binaries and profiles are unchanged.
+`kit-exit` VMs. By default it sends 360,000 sequenced packets at 6000/s over
+60 seconds. The receiver runs for seven extra seconds and counts unique,
+duplicate and invalid packets. To set the rate and duration, pass packets
+per second (1–6000) and seconds (1–900) after the payload size. Use the same
+values in `send` and `recv`. Supported payloads are
+128 and 1200 bytes. The lab uses `10.8.1.1` on B, `10.8.1.2` and
+`10.8.1.3` in the client namespaces, and UDP port 5201. The tool can
+measure deliberate outages without a TCP control connection.
 
 ```sh
 cc -O2 -std=c11 -Wall -Wextra -Werror udp-load.c -o udp-load
@@ -432,7 +438,8 @@ Keep assertions enabled. The receiver uses `SO_RCVBUFFORCE` for a private
 This avoids losing a recovery burst in the lab application's small default
 buffer. Real applications can still overflow their own buffers. Compare
 inner-interface captures with receiver counts. The receiver reports
-`missing_by_scheduled_second`, 60 counts derived from sequence numbers after
-the run. Index 0 covers sequences 1 through 6000. The bins follow the sender's
-schedule and carry no capture timestamps. Use them for delivery counts when
+`missing_by_scheduled_second`, one count per second derived from sequence
+numbers after the run. With the default rate, index 0 covers sequences 1
+through 6000. The bins follow the sender's schedule and carry no capture
+timestamps. Use them for delivery counts when
 running without a UDP capture. See [v36](../validation-v36.md).

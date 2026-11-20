@@ -26,6 +26,7 @@ cold connections, movement and the limits of tuple admission.
 [V44](validation-v44.md) compares TCP and AF_UNIX on the same QEMU stream backend.
 [V45](validation-v45.md) observes reads on the receiving socket and records a shared lab interruption.
 [V46](validation-v46.md) measures switch queue pressure and compares where the lab writes its output.
+[V56](validation-v56.md) repeats the access-rate tests and traces classifier and endpoint timing.
 [V55](validation-v55.md) tests coalescing return replays and a 2,048-packet tunnel queue on B.
 [V54](validation-v54.md) measures a faster return queue on A with 100 and 150 Mbit/s client access links.
 [V53](validation-v53.md) reproduces client UDP buffer overflow and tests pacing on the return path from A.

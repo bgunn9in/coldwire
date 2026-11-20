@@ -1,0 +1,6 @@
+[Match]
+Host=kit-exit
+OriginalName=awg0
+
+[Link]
+TransmitQueueLength=2048

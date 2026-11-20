@@ -384,6 +384,8 @@ option alongside return replay. It coalesces successive authenticated moves
 and makes recovery eligible sooner when the ciphertext cache advances by
 7,400 entries. The experiment also enlarged the exit's `awg0` transmit
 queue to 2,048 packets. [V55 lab setup and measurements](../validation-v55.md#the-2048-packet-queue-on-b)
+For an opt-in udev configuration that reapplies this queue length each time
+the lab recreates `awg0`, see the [v56 exit setup](../validation-v56.md#persistent-queue-on-the-lab-exit).
 
 B copies outbound encrypted transport packets into a shared ring. The ring
 holds at most 8192 packets and 8 MiB of ciphertext, plus fixed metadata.

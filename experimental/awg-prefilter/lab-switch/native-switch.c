@@ -158,6 +158,7 @@ static int observe_noise(const unsigned char *f, uint32_t size) {
 /* The optional tap records only the fixture's tunnel and control tuples. */
 static const char *tap_dir;
 static int tap_return_headers;
+static int tap_single_move;
 static FILE *tap_file;
 static unsigned char tap_buffer[1024 * 1024];
 static uint64_t tap_until, tap_sequence, tap_frames, tap_errors, tap_closed;
@@ -178,7 +179,7 @@ static unsigned tap_select(const unsigned char *p, uint32_t size) {
         (sport == 39101 || dport == 39101)) return 1;
     if (p[23] != 17) return 0;
     if ((source == 30 || source == 31) && target == 10 && dport == 32497)
-        return sport == 42501 ? 3 : 1;
+        return sport == (tap_single_move ? 42503 : 42501) ? 3 : 1;
     if (tap_return_headers && source == 10 && (target == 30 || target == 31) &&
         sport == 32497) return 1;
     return (source == 10 && target == 20 && dport == 32497) ||
@@ -202,7 +203,8 @@ static void tap_frame(const unsigned char *p, uint32_t size) {
     tap_tick(now);
     unsigned selected = tap_select(p, size);
     uint32_t snaplen = tap_return_headers ? TAP_HEADER_BYTES : FRAME_CAP;
-    if (!tap_file && now >= tap_until && (selected & 2)) {
+    if (!tap_file && now >= tap_until && (selected & 2) &&
+        (!tap_single_move || !tap_sequence)) {
         char path[MAX_PATH];
         tap_until = now + UINT64_C(8000000000);
         tap_sequence++;
@@ -407,6 +409,13 @@ static void self_test(void) {
     forward_frame(0, fixture, 298);
     fixture[33] = 31;
     assert(tap_select(fixture + 4, 298) == 3 && !tap_select(fixture + 4, 33));
+    tap_single_move = 1;
+    assert(tap_select(fixture + 4, 298) == 1);
+    fixture[39] = 42503 & 255;
+    assert(tap_select(fixture + 4, 298) == 3);
+    tap_single_move = 0;
+    assert(tap_select(fixture + 4, 298) == 1);
+    fixture[39] = 42501 & 255;
     forward_frame(0, fixture, 298);
     assert(peers[1].output_drops == 2 && peers[1].dropped_noise == 1);
     assert(peers[1].episode_drops == 2 && peers[1].episode_noise == 1);
@@ -442,9 +451,11 @@ static BOOL WINAPI control(DWORD event) {
 int main(int argc, char **argv) {
     initialize();
     if (argc == 2 && !strcmp(argv[1], "--self-test")) { self_test(); return 0; }
-    if (argc < 3 || argc > 5 || (argc == 5 && strcmp(argv[4], "--return-headers"))) {
+    tap_single_move = argc == 5 && !strcmp(argv[4], "--single-move");
+    if (argc < 3 || argc > 5 ||
+        (argc == 5 && !tap_single_move && strcmp(argv[4], "--return-headers"))) {
         fputs("Usage: native-switch PORT|unix:PATH STATS_JSON "
-              "[TAP_DIRECTORY [--return-headers]]\n", stderr);
+              "[TAP_DIRECTORY [--return-headers|--single-move]]\n", stderr);
         return 2;
     }
     tap_return_headers = argc == 5;
