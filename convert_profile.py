@@ -81,7 +81,7 @@ def change_endpoint(native, old_host, old_port, entry, port):
     return pattern.sub(lambda m: f"{m[1]}{entry}:{port}{m[3]}{m[4]}", native)
 
 
-def convert(profile, entry, port, donor=None):
+def convert(profile, entry, port, donor=None, spa_key=None, spa_port=62201):
     ipaddress.IPv4Address(entry)
     if not 1 <= port <= 65535:
         raise ValueError("Port must be between 1 and 65535")
@@ -113,6 +113,12 @@ def convert(profile, entry, port, donor=None):
         k: v for k, v in old_client.items() if k not in {"hostName", "port", "config"}
     }:
         raise ValueError("Unexpected client mutation")
+    if spa_key is not None:
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", spa_key) or not 1 <= spa_port <= 65535 or spa_port == port:
+            raise ValueError("Invalid SPA key or port")
+        client["coldwireSpa"] = {"version": 1, "port": spa_port, "key": spa_key.lower()}
+    elif "coldwireSpa" in client:
+        raise ValueError("Specify an SPA key when converting an SPA profile")
     awg["last_config"] = json.dumps(client, ensure_ascii=False, separators=(",", ":"))
     if not admin:
         result["hostName"] = entry
@@ -132,11 +138,14 @@ def main():
     parser.add_argument("--entry", required=True, help="Your entry server IPv4 address")
     parser.add_argument("--port", type=int, default=32497)
     parser.add_argument("--client-profile", type=Path, help="Working direct client export for an admin export without last_config")
+    parser.add_argument("--spa-key-file", type=Path, help="Hexadecimal device key for a COLDWIRE SPA client")
+    parser.add_argument("--spa-port", type=int, default=62201)
     args = parser.parse_args()
     try:
         profile = decode(args.input.read_bytes())
         donor = decode(args.client_profile.read_bytes()) if args.client_profile else None
-        payload = encode(convert(profile, args.entry, args.port, donor))
+        spa_key = args.spa_key_file.read_text().strip() if args.spa_key_file else None
+        payload = encode(convert(profile, args.entry, args.port, donor, spa_key, args.spa_port))
         # O_EXCL prevents overwriting the original, including through a symlink.
         descriptor = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as stream:

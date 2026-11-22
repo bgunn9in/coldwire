@@ -272,6 +272,27 @@ def add_client(args):
     print(f'Peer added without restarting AWG; private exports: {CLIENTS / args.name}')
 
 
+def remove_client(args):
+    import fcntl
+    with (STATE / 'lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = load_owned()
+        if args.name not in state['clients']:
+            return
+        if run(str(BIN / 'awg'), 'show', 'awg0', 'public-key') != state['public_key']:
+            raise ValueError('Runtime server key differs from saved state')
+        peer = state['clients'].pop(args.name)
+        try:
+            save_state(STATE, state)
+            run(str(BIN / 'awg'), 'set', 'awg0', 'peer', peer['public_key'], 'remove')
+        except BaseException:
+            state['clients'][args.name] = peer
+            save_state(STATE, state)
+            raise
+        shutil.rmtree(CLIENTS / args.name, ignore_errors=True)
+    print('Peer revoked without restarting AWG')
+
+
 def backup(args):
     import fcntl
     if not STATE.is_dir():
@@ -325,6 +346,9 @@ def main():
     sub = commands.add_parser('add-client')
     sub.add_argument('--name', required=True)
     sub.set_defaults(action=add_client)
+    sub = commands.add_parser('remove-client')
+    sub.add_argument('--name', required=True)
+    sub.set_defaults(action=remove_client)
     sub = commands.add_parser('backup')
     sub.add_argument('--output', type=Path, required=True)
     sub.set_defaults(action=backup)

@@ -1,191 +1,27 @@
-# COLDWIRE
+![COLDWIRE. AmneziaWG 3.1 relay with SPA](assets/coldwire-header.svg)
 
-![COLDWIRE: VPN RELAY DEPLOYMENT SYSTEM](assets/coldwire-header.svg)
+[Русский](README.ru.md)
 
-English | [Русский](README.ru.md)
+COLDWIRE sets up an AmneziaWG 3.1 VPN across two servers. The client asks the entry node for access using Single Packet Authorization (SPA). The entry node forwards AmneziaWG packets to the exit node, where the tunnel ends. Sites reached through the tunnel see the exit node’s IPv4.
 
-COLDWIRE sets up a VPN across two Debian or Ubuntu servers. Your devices
-connect to entry A, and websites see exit B's IP address. You can install AmneziaWG 3.1,
-VLESS with REALITY and XTLS Vision, or both.
+[Download the access panel](https://github.com/bgunn9in/coldwire/releases/latest) · [Set up the servers](docs/access-panel.md) · [Install the VPN client](https://github.com/bgunn9in/COLDWIRE-amnezia-client/blob/feature/spa-admission/docs/spa.md)
 
-The entry server forwards encrypted traffic with nftables. The VPN services
-run on the exit server under systemd, using prebuilt binaries. The installer
-adds no Docker, Go SDK or control panel. AWG and Xray have separate services,
-keys and configuration files.
+## How it works
 
-![COLDWIRE routing: client to entry A, encrypted relay to exit B and the Internet; selected Russian destinations go directly through the ISP.](assets/coldwire-topology.svg)
+![The client requests access at A. A forwards encrypted VPN traffic to B. Optional split routes go directly to the ISP.](assets/coldwire-topology.svg)
+
+The client proves that it holds a device key and can receive a reply at its public IPv4. A then lets that address reach the relay for two minutes. The app renews access while connected. A forwards the encrypted tunnel packets using DNAT and SNAT. B runs AmneziaWG and handles internet traffic. Traffic on the client’s split-tunneling exclusion list goes directly through its usual connection.
+
+The panel uses a separate SPA key for SSH. It connects to A with an SSH key and reaches B through A. B’s WAN firewall accepts VPN and SSH traffic from A’s IPv4.
 
 ## Installation
 
-You need two clean **Debian 12/13 or Ubuntu 22.04/24.04/26.04 LTS amd64**
-VPS instances with public IPv4 addresses assigned to their network interfaces. Each must
-allow SSH access as root or with sudo. AWG also needs TUN on the exit server.
-Other OS releases and VPS instances behind additional provider NAT are
-unsupported. For a 26.04 cloud image built for amd64v3, the VPS must expose
-the required CPU features. [Platform checks](docs/validation-lts.md).
+Use two amd64 servers running Ubuntu 22.04, 24.04 or 26.04 LTS, or Debian 12 or 13. The installer also serves as the administration panel. Run it on Windows or one of the supported Linux releases with CPython 3.10 or newer and the OpenSSH client.
 
-Install standard CPython 3.10+ with venv/pip on your computer, then run one of these
-commands from the repository folder.
+1. Download and extract `COLDWIRE-Access-Panel.zip` from the [latest release](https://github.com/bgunn9in/coldwire/releases/latest).
+2. Run `.\setup.ps1` on Windows or `bash setup.sh` on Linux. Enter each VPS’s IPv4 address, SSH username and password. Append `:port` if SSH uses a port other than 22.
+3. Import the generated `client1.vpn` in [COLDWIRE Amnezia VPN](https://github.com/bgunn9in/COLDWIRE-amnezia-client/releases/latest). Connect and check that a site reached through the VPN sees B’s IPv4.
 
-Windows PowerShell:
+The [tutorial](docs/access-panel.md) covers provider firewall rules, rollback, profile import and device management. The panel also converts existing AmneziaVPN exports when their peer is registered on B.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
-```
-
-Linux/macOS:
-
-```bash
-bash setup.sh
-```
-
-The wizard asks which protocol to install and requests each server's IPv4,
-SSH port, username and password. Password input is hidden. It installs missing
-server packages, generates keys and REALITY settings, and saves client profiles.
-For password-protected sudo, it uses the SSH password unless you provide a
-separate one. The wizard detects the server OS automatically.
-
-| Mode | Default entry ports | Services on the exit |
-|---|---|---|
-| AWG | 32497/UDP | AmneziaWG 3.1 |
-| REALITY | 443/TCP | VLESS + REALITY + XTLS Vision |
-| Both | Both ports | AWG and Xray |
-
-Allow SSH and the selected VPN ports in your provider firewall before running
-the installer. It cannot change that firewall through SSH alone. If SSH uses
-TCP443, the wizard can select a free TCP8443; other port conflicts stop the
-installation. You can also set VPN ports explicitly.
-
-The installer requires clean servers and refuses an existing toolkit
-installation, active UFW or nftables tables from other software. The wizard
-trusts the first SSH key it receives and rejects later changes before sending
-a password. To verify first contact independently, provide known SSH fingerprints.
-[Installation options and SSH verification](docs/deploy.md).
-
-## Client profiles
-
-Results are saved in a new `private/deployment-<time>-<suffix>/` folder,
-including direct and via-entry profiles, the two RU lists and a deployment
-report. The report and profiles do not contain SSH passwords.
-
-Import `client-via-entry.vpn` for AWG or `xray-client-via-entry.json` for
-REALITY. Xray also has a TXT export containing a `vless://` URI. Keep the
-direct profile as a fallback. Give each device its own client identity.
-The direct and via-entry files for one protocol share that identity. When
-you install both protocols, import them as separate connections and choose
-one in your client.
-
-A five-minute timer rolls back the entry if setup is not confirmed. The
-wizard confirms it after all selected protocol checks pass. If Xray setup
-fails after AWG has been installed, the AWG profiles already downloaded remain
-available. The installer does not switch your computer's VPN or change its routes.
-
-Server administration uses SSH and the supplied CLI tools. Generated profiles
-have a client role in AmneziaVPN. See [profile formats and import](docs/profiles.md).
-
-## Add a device
-
-On an exit installed by the wizard, run the command for the protocol you need:
-
-```bash
-sudo python3 /opt/awg-relay-kit/install_exit.py add-client --name phone
-sudo python3 /opt/awg-relay-kit/install_xray.py add-client --name phone
-```
-
-AWG adds a peer without restarting the server process. Adding an Xray client
-restarts Xray briefly; AWG keeps running. See [AWG maintenance](docs/native-server.md)
-and [Xray maintenance](docs/xray.md) for backups and restore.
-
-## Convert an existing profile
-
-For an AWG export issued by the Amnezia application on another exit:
-
-```powershell
-python .\convert_profile.py "C:\secure\client.vpn" "C:\secure\client-via-entry.vpn" --entry ENTRY_IPV4
-```
-
-For a native Xray client JSON:
-
-```powershell
-python .\convert_xray.py "C:\secure\client.json" "C:\secure\client-via-entry.json" --entry ENTRY_IPV4
-```
-
-Replace `ENTRY_IPV4` with the entry address. Both converters preserve client
-credentials and write a new file. They do not install servers. The AWG
-converter also preserves the management address of an administrator export.
-[Conversion details](docs/profiles.md).
-
-## Send Russian traffic directly
-
-In AmneziaVPN, select the website-list mode that bypasses the VPN and import
-one of these files using **Replace list**. Do not merge them.
-
-| File | Prefixes | Calculated Android <13 routes | Coverage |
-|---|---:|---:|---|
-| `ru-direct.amnezia.json` | 1097 | 2004 | All source RU/local networks, plus 111,284,160 addresses outside that set |
-| `ru-services.amnezia.json` | 77 | 751 | RU allocations for selected services, plus local networks |
-
-The compact `ru-direct` list deliberately sends some foreign addresses
-through the ISP. A user confirmed that the list worked on a phone; the
-imported file's hash was not checked. The supplied files contain no
-preconfigured VPN-node addresses.
-
-To fetch current data or reproduce the supplied lists offline:
-
-```powershell
-python .\update_lists.py --output .\generated\fresh-lists
-python .\update_lists.py --offline --output .\generated\snapshot
-```
-
-Each command creates exactly two JSON files in a new folder. Optional
-`--entry ENTRY_IPV4 --exit EXIT_IPV4` protects those addresses from bypass.
-[Coverage, route limits and checksums](docs/lists.md).
-
-## Tests and limits
-
-Linux/macOS:
-
-```bash
-.venv/bin/python -m unittest discover -s tests -v
-```
-
-Windows PowerShell:
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-```
-
-All three modes were tested on **Debian 12/13 and Ubuntu 22.04/24.04/26.04
-LTS** VMs with 1 vCPU and 1 GiB RAM. The [Debian report](docs/validation-debian.md)
-records six fresh installations, 24 ordinary A/B reboots, restore and full
-rollback-timer expiry. The [24.04/26.04 report](docs/validation-lts.md)
-covers SSH installation, traffic, service independence, cold boots, ordinary
-A/B reboots, restore and memory use. The [22.04 report](docs/validation-protocols.md)
-also covers guest reboots and full five-minute rollback expiry. The
-[earlier AWG report](docs/validation-native.md) includes a separate load test.
-These short runs do not establish the maximum speed or number of clients
-a VPS can handle.
-
-A lab-only [Header Protection + MAC1 prefilter](experimental/awg-prefilter/README.md)
-has separate interoperability and performance measurements. The installers do
-not enable it.
-
-The relay separates entry and exit IPs and keeps the protocol's encryption.
-It adds no second tunnel layer and does not prevent traffic correlation.
-REALITY does not guarantee evasion of every DPI system. AWG remains a UDP
-protocol on any port; 32497 is the default following an
-[AdGuard compatibility test](docs/windows-admin-port-diagnosis.md).
-
-The server provides IPv4 egress. Check IPv6, DNS/DoH and KillSwitch behavior
-on your devices. Split routing happens on the client, which can send excluded
-traffic through its ISP. [Troubleshooting](docs/troubleshooting.md) and
-[technical sources](docs/sources.md).
-
-Profiles and backups contain secrets. Keep them outside Git and restrict
-folder access with NTFS ACLs on Windows. A `.vpn` file is compressed JSON;
-an administrator export may include SSH credentials. Review source and
-history before sharing a modified copy. [Publication guide](docs/publication.md).
-
-Original scripts, tests, documentation and artwork use the [MIT license](LICENSE).
-Bundled software and address data retain their own terms; see
-[third-party notices](THIRD_PARTY_NOTICES.md).
+Use [the split-tunneling lists](docs/lists.md) to send selected destinations directly. See [sources](docs/sources.md) for address data and upstream software and [third-party notices](THIRD_PARTY_NOTICES.md) for licenses.

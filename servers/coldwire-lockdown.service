@@ -1,0 +1,13 @@
+[Unit]
+Description=COLDWIRE WAN firewall and rollback on boot
+After=nftables.service
+Wants=network-pre.target
+Before=network-pre.target docker.service coldwire-spa.service coldwire-spa-pilot.service coldwire-lockdown-ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/coldwire-lockdown/stage-lockdown.sh load
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

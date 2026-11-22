@@ -1,0 +1,14 @@
+[Unit]
+Description=COLDWIRE management SSH listener
+After=network.target coldwire-lockdown.service
+ConditionPathExists=/etc/coldwire-lockdown/ssh-ready
+
+[Service]
+ExecStartPre=/usr/bin/install -d -m 0755 /run/sshd
+ExecStartPre=/usr/sbin/sshd -t -f /etc/coldwire-lockdown/sshd.conf
+ExecStart=/usr/sbin/sshd -D -e -f /etc/coldwire-lockdown/sshd.conf
+KillMode=process
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,97 +1,17 @@
-# Sources and verification boundaries
+# Data and upstream software
 
-English | [Русский](ru/sources.md)
+[Русский](ru/sources.md) · [Project home](../README.md)
 
-Documentation was checked against the toolkit code and AmneziaVPN 5.1.0.6.
-Supported server releases are **Debian 12/13 and Ubuntu 22.04/24.04/26.04 LTS amd64**.
-Other releases and architectures are not supported. The `amnezia-awg2`
-identifier in `.vpn` belongs to the client file format. It does not require
-Docker or mean protocol version 2.
+## Address data
 
-## Primary sources
+- Russian IPv4 allocations came from [RIPEstat](https://stat.ripe.net/data/country-resource-list/data.json?resource=RU&v4_format=prefix) on 7 November 2026.
+- The provider snapshots came from [Google](https://www.gstatic.com/ipranges/goog.json), [Cloudflare](https://www.cloudflare.com/ips-v4) and [Telegram](https://core.telegram.org/resources/cidr.txt) on 8 and 9 November 2026.
+- The service catalog uses `amnezia.json` from [lib4u/amnezia-tunneling-ru](https://github.com/lib4u/amnezia-tunneling-ru/tree/64e090efba761ba11dd618e70dc7da1c8a345235). The snapshot also uses A records queried through [Google Public DNS](https://developers.google.com/speed/public-dns/docs/doh/json) on 9 November 2026.
 
-- [AmneziaWG](https://docs.amnezia.org/documentation/amnezia-wg/).
-- [Split tunneling](https://docs.amnezia.org/ru/documentation/instructions/vpn-split-tunneling/).
-- [Client 5.1.0.6 source](https://github.com/amnezia-vpn/amnezia-client/tree/5.1.0.6).
-- [Import and decoding](https://github.com/amnezia-vpn/amnezia-client/blob/5.1.0.6/client/core/controllers/selfhosted/importController.cpp).
-- [AWG/last_config fields](https://github.com/amnezia-vpn/amnezia-client/blob/5.1.0.6/client/core/models/protocols/awgProtocolConfig.cpp).
-- [Cache reuse](https://github.com/amnezia-vpn/amnezia-client/blob/5.1.0.6/client/core/controllers/selfhosted/installController.cpp).
-- [Endpoint and server-address exclusion](https://github.com/amnezia-vpn/amnezia-client/blob/5.1.0.6/client/mozilla/localsocketcontroller.cpp).
-- [CIDR-mask loss in hostname report](https://github.com/amnezia-vpn/amnezia-client/issues/2939).
-- [Android ProtocolConfig](https://github.com/amnezia-vpn/amnezia-client/blob/dev/client/android/protocolApi/src/main/kotlin/ProtocolConfig.kt): a mutable branch; behavior depends on version.
-- [Android Binder and TransactionTooLargeException](https://developer.android.com/reference/android/os/TransactionTooLargeException).
-- [AdGuard application routing and filtering](https://adguard.com/kb/adguard-for-windows/app-management/).
+The source snapshots are in [`data/`](../data/). The generator collapses overlapping ranges and keeps all Russian and local prefixes in `ru-direct`. To reduce the complement route table, it includes some other IP ranges in the bypass list. The supplied snapshot adds 111,284,160 IPv4 addresses and yields 2,004 routes in the older Android route model. `ru-services` yields 751 routes in the same model. These counts describe the generated configurations. [List options and update commands](lists.md)
 
-## Address snapshots
+## AmneziaWG 3.1 and SPA
 
-- RU IPv4: [RIPEstat](https://stat.ripe.net/data/country-resource-list/data.json?resource=RU&v4_format=prefix), query_time **2026-11-07**.
-- Protected providers: [Google](https://www.gstatic.com/ipranges/goog.json), [Cloudflare](https://www.cloudflare.com/ips-v4), [Telegram](https://core.telegram.org/resources/cidr.txt); snapshots from 8–9 November 2026, 154 collapsed IPv4 prefixes.
-- Services catalog: [lib4u/amnezia-tunneling-ru](https://github.com/lib4u/amnezia-tunneling-ru), commit `64e090efba761ba11dd618e70dc7da1c8a345235`, file `amnezia.json`, SHA256 `16e78eeac83c64e34311d165ed7f50f5b93f2c64651479af3c5653f6705213ec`.
-- DNS supplement: [Google Public DNS JSON API](https://developers.google.com/speed/public-dns/docs/doh/json), snapshot **2026-11-09T02:07:47Z**. A records were found for 15 of 22 missing families.
+The native bundle includes [amneziawg-go at `1b86b2a`](https://github.com/amnezia-vpn/amneziawg-go/tree/1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1) and [amneziawg-tools at `ee0f0a9`](https://github.com/amnezia-vpn/amneziawg-tools/tree/ee0f0a9aa34ff0a0da4b3433b9512781cfe02843). The version manifest, licenses and corresponding source for amneziawg-tools are inside the bundle under `dist/`. [Build script](../servers/build-native.sh) · [Third-party notices](../THIRD_PARTY_NOTICES.md)
 
-`data/ru-networks.txt` has 8678 collapsed RU/local prefixes;
-`data/protected-vpn-networks.txt` has provider ranges;
-`data/service-addresses.txt` contains service addresses;
-`data/service-roots.txt` lists 86 selected families. These are generic data,
-not configured VPN nodes. Offline generation without extra protected IPs
-reproduces the supplied JSON. Online generation fetches fresh data and prints
-the catalog identifier. [Coverage policy, added bypass and hashes](lists.md).
-
-## AWG 3.1 binary bundle
-
-`servers/build-native.sh` builds on separate Ubuntu 22.04 amd64:
-
-- [amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go/tree/1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1), commit `1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1`;
-- [amneziawg-tools](https://github.com/amnezia-vpn/amneziawg-tools/tree/ee0f0a9aa34ff0a0da4b3433b9512781cfe02843), commit `ee0f0a9aa34ff0a0da4b3433b9512781cfe02843`;
-- Go 1.25.12 from go.dev, verified using a pinned SDK SHA256.
-
-The bundle manifest records provenance/hashes. Licenses and corresponding
-GPL tool source are included; keep them when redistributing the bundle.
-No compiler is installed on the VPS.
-
-Parameter generation follows [AwgInstaller](https://github.com/amnezia-vpn/amnezia-client/blob/5.1.0.6/client/core/installers/awgInstaller.cpp)
-and [protocolConstants.h](https://github.com/amnezia-vpn/amnezia-client/blob/5.1.0.6/client/core/utils/constants/protocolConstants.h).
-The export schema follows [SelfHostedUserServerConfig](https://github.com/amnezia-vpn/amnezia-client/blob/5.1.0.6/client/core/models/selfhosted/selfHostedUserServerConfig.cpp),
-format_version=1, without SSH access. Official `awg` generates keys.
-
-## Xray REALITY
-
-- [Xray-core 26.10.21](https://github.com/XTLS/Xray-core/releases/tag/v26.10.21): pinned official linux-amd64 ZIP.
-- [This version's source](https://github.com/XTLS/Xray-core/tree/v26.10.21), including REALITY and freedom configuration.
-- [Original REALITY description](https://github.com/XTLS/REALITY).
-- [Official REALITY documentation](https://xtls.github.io/en/config/transports/reality.html).
-- [Third-party Xray import in Amnezia 5.1.0.6](https://github.com/amnezia-vpn/amnezia-client/blob/5.1.0.6/client/core/controllers/selfhosted/importController.cpp).
-
-Upstream and minimal toolkit bundle hashes are in [xray.md](xray.md) and its
-`dist/xray-native-linux-amd64.tar.gz` manifest. MPL 2.0 and the exact source
-tag URL are included. This configuration needs no geoip/geosite databases,
-so they are omitted. `servers/fetch-xray.py` verifies the upstream ZIP; the
-installer checks the toolkit bundle against a pin in code.
-
-## Verification
-
-Automated tests cover synthetic profile conversion, preservation of keys and
-administrator SSH host, refusal to overwrite, list coverage/protection,
-route calculations, archives, installer checks, SSH host keys and deploy
-failure order. They do not substitute for real client network tests.
-
-Installation, traffic, peer addition, reboot and restore were exercised on
-Ubuntu 22.04 VMs with 1 vCPU / 1 GiB each; a separate two-server lab checked
-deploy and authenticated traffic through the relay. [Earlier exit report](validation-native.md),
-[Ubuntu 22.04 three-mode report](validation-protocols.md).
-The later [LTS cycle](validation-lts.md) tested all three modes on fresh
-Ubuntu 24.04 and 26.04 VMs with the same 1 vCPU / 1 GiB allocation, including
-sudo-rs, Python 3.12/3.14, cold boots and restore. The [ordinary-reboot
-follow-up](validation-lts.md#ordinary-reboots) adds 24 guest reboots on
-10 November using a locally patched QEMU/WHPX test build.
-
-Native AWG and Xray carried real traffic. AmneziaVPN 5.1.0.6 Linux in a
-separate VM imported AWG `.vpn`, Xray JSON and VLESS URI, storing appropriate
-containers/credentials without a GUI VPN connection. These exports were not
-imported on every physical Windows/macOS/Android/iOS device. The AdGuard note
-is one manual observation, not a compatibility guarantee for all versions.
-IPv6 egress is absent; all DNS/DoH/KillSwitch combinations were not tested.
-Short memory measurements do not establish maximum throughput, multi-day
-stability or evasion of a particular DPI implementation.
-
-The [Debian 12/13 report](validation-debian.md) covers all three modes on those releases, including ordinary reboots, restore and full timer expiry.
+The native installer follows the AmneziaWG parameters and export format in [AmneziaVPN 5.1.0.6](https://github.com/amnezia-vpn/amnezia-client/tree/5.1.0.6). In `.vpn` files, `amnezia-awg2` is the client’s configuration identifier. The installer runs AmneziaWG under systemd. The COLDWIRE fork adds the SPA client code. [SPA server source](../servers/spa/) · [VPN client source](https://github.com/bgunn9in/COLDWIRE-amnezia-client)

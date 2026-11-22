@@ -1,4 +1,4 @@
-param([Parameter(ValueFromRemainingArguments = $true)][string[]]$InstallerArgs)
+param([switch]$Spa, [Parameter(ValueFromRemainingArguments = $true)][string[]]$InstallerArgs)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $pythonPath = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
@@ -19,5 +19,5 @@ if (-not (Test-Path -LiteralPath $pythonPath)) {
 if ($LASTEXITCODE -ne 0) { throw 'Standard CPython 3.10+ with the GIL is required. An existing .venv is not replaced automatically.' }
 & $pythonPath -m pip install --disable-pip-version-check -r requirements-deploy.txt
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& $pythonPath deploy.py @InstallerArgs
+& $pythonPath coldwire_access.py @InstallerArgs
 exit $LASTEXITCODE

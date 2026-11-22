@@ -18,7 +18,4 @@ cache/
 generated/
 *.tmp
 !dist/awg-native-linux-amd64.tar.gz
-!dist/xray-native-linux-amd64.tar.gz
-
-experimental/awg-prefilter/test-netlink
-experimental/awg-prefilter/lab-switch/udp-load
+dist/coldwire-spa-linux-amd64

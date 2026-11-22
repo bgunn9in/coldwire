@@ -44,6 +44,18 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(client[key], old[key])
         self.assertEqual(profiles.decode(profiles.encode(result)), result)
 
+    def test_spa_export_keeps_normal_export_and_requires_distinct_port(self):
+        original = fixture()
+        entry = '203.0.113.10'
+        normal = profiles.convert(original, entry, 32497)
+        self.assertNotIn('coldwireSpa', profiles.client_config(profiles.awg_section(normal)))
+        protected = profiles.convert(original, entry, 32497, spa_key='A' * 64)
+        client = profiles.client_config(profiles.awg_section(protected))
+        self.assertEqual(client.pop('coldwireSpa'), {'version': 1, 'port': 62201, 'key': 'a' * 64})
+        self.assertEqual(client, profiles.client_config(profiles.awg_section(normal)))
+        with self.assertRaises(ValueError):
+            profiles.convert(original, entry, 32497, spa_key='A' * 64, spa_port=32497)
+
     def test_admin_management_and_server_port_preserved(self):
         original = fixture(admin=True)
         result = profiles.convert(original, "203.0.113.10", 443)
