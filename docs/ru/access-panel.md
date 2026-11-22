@@ -19,15 +19,17 @@
 
 На компьютере администратора нужны стандартный CPython 3.10 или новее и клиент OpenSSH. В Ubuntu и Debian установите пакеты `python3`, `python3-venv` и `openssh-client`.
 
-Скачайте и распакуйте `COLDWIRE-Access-Panel.zip`. В архив уже входит исполняемый файл SPA-сервера для Linux. Откройте терминал в распакованной папке. [Последний релиз панели](https://github.com/bgunn9in/coldwire/releases/latest)
+Скачайте и распакуйте `COLDWIRE-Access-Panel.zip`. В архиве есть скрипты запуска и исполняемый файл SPA-сервера для Linux. [Последний релиз панели](https://github.com/bgunn9in/coldwire/releases/latest)
 
-В Windows PowerShell выполните команду
+В Windows дважды щёлкните по `COLDWIRE-Admin.cmd` в распакованной папке. Скрипт сначала ищет сохранённую установку в этой папке, затем в `%LOCALAPPDATA%\COLDWIRE\access-panel`. Если ни одной установки нет, открывается мастер настройки.
+
+Чтобы открыть конкретную установку, запустите из распакованной папки в PowerShell
 
 ```powershell
-.\setup.ps1
+.\COLDWIRE-Admin.cmd --folder "C:\папка с данными\оператора"
 ```
 
-В Linux выполните команду
+В Linux откройте терминал в распакованной папке и выполните
 
 ```bash
 bash setup.sh

@@ -1,6 +1,13 @@
 param([switch]$Spa, [Parameter(ValueFromRemainingArguments = $true)][string[]]$InstallerArgs)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
+$projectState = Join-Path $PSScriptRoot 'private\coldwire-installation\operator.json'
+if (-not $InstallerArgs -and $env:LOCALAPPDATA -and -not (Test-Path -LiteralPath $projectState -PathType Leaf)) {
+    $installedFolder = Join-Path $env:LOCALAPPDATA 'COLDWIRE\access-panel'
+    if (Test-Path -LiteralPath (Join-Path $installedFolder 'operator.json') -PathType Leaf) {
+        $InstallerArgs = @('--folder', $installedFolder)
+    }
+}
 $pythonPath = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $pythonPath)) {
     $launcher = Get-Command py -ErrorAction SilentlyContinue

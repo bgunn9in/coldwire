@@ -19,7 +19,7 @@ COLDWIRE разворачивает VPN AmneziaWG 3.1 на двух сервер
 Понадобятся два VPS на amd64 с Ubuntu 22.04, 24.04 или 26.04 LTS либо Debian 12 или 13. Установщик также служит панелью администрирования. Запустите его на Windows или одной из поддерживаемых версий Linux с CPython 3.10 или новее и клиентом OpenSSH.
 
 1. Скачайте и распакуйте `COLDWIRE-Access-Panel.zip` из [последнего релиза](https://github.com/bgunn9in/coldwire/releases/latest).
-2. Запустите `.\setup.ps1` в Windows или `bash setup.sh` в Linux. Введите IPv4, логин и пароль SSH для каждого VPS. Если SSH работает на порту, отличном от 22, добавьте к адресу `:порт`.
+2. Откройте `COLDWIRE-Admin.cmd` в Windows или выполните `bash setup.sh` в Linux. При новой установке введите IPv4, логин и пароль SSH для каждого VPS. Если SSH работает на порту, отличном от 22, добавьте к адресу `:порт`.
 3. Импортируйте созданный `client1.vpn` в [COLDWIRE Amnezia VPN](https://github.com/bgunn9in/COLDWIRE-amnezia-client/releases/latest). Подключитесь и проверьте, что сайт, открытый через VPN, видит IPv4 узла B.
 
 В [инструкции](docs/ru/access-panel.md) описаны правила межсетевого экрана провайдера, откат, импорт профилей и управление устройствами. Панель может конвертировать готовый профиль AmneziaVPN, если устройство уже зарегистрировано на B.

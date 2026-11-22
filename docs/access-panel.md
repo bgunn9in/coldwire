@@ -19,15 +19,17 @@ The installer picks an available SSH port in that TCP range on each node. It clo
 
 On the computer you use for administration, install standard CPython 3.10 or newer and the OpenSSH client. On Ubuntu and Debian the packages are `python3`, `python3-venv` and `openssh-client`.
 
-Download and extract `COLDWIRE-Access-Panel.zip`. It includes the Linux SPA server binary. Open a terminal in that directory. [Latest panel release](https://github.com/bgunn9in/coldwire/releases/latest)
+Download and extract `COLDWIRE-Access-Panel.zip`. It includes the launchers and the Linux SPA server binary. [Latest panel release](https://github.com/bgunn9in/coldwire/releases/latest)
 
-In Windows PowerShell, run
+On Windows, double-click `COLDWIRE-Admin.cmd` in the extracted folder. The launcher opens the installation saved in that folder first. If the folder is new, it checks for an existing installation in `%LOCALAPPDATA%\COLDWIRE\access-panel`. When it finds neither, it starts setup.
+
+To open a specific installation, run this from the extracted folder in PowerShell.
 
 ```powershell
-.\setup.ps1
+.\COLDWIRE-Admin.cmd --folder "C:\path to\operator files"
 ```
 
-On Linux, run
+On Linux, open a terminal in the extracted folder and run
 
 ```bash
 bash setup.sh
