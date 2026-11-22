@@ -32,8 +32,10 @@ To open a specific installation, run this from the extracted folder in PowerShel
 On Linux, open a terminal in the extracted folder and run
 
 ```bash
-bash setup.sh
+bash COLDWIRE-Admin.sh
 ```
+
+The Linux launcher checks the extracted folder first, then `${XDG_DATA_HOME:-$HOME/.local/share}/coldwire/access-panel`. It starts setup if neither location has an installation. To open a different one, pass `--folder "/path to/operator files"`.
 
 Enter A’s IPv4, SSH username and password, then do the same for B. Append `:port` when a server’s SSH service uses a port other than 22. The launchers install their Python dependencies into `.venv`. The installer saves the SSH host keys on first contact and rejects later changes. If you run from a source checkout, install Go on your administration computer to build the SPA binary.
 
