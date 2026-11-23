@@ -7,6 +7,9 @@ pending=$state/pending.nft
 active=$state/active.nft
 timer=coldwire-lockdown-rollback
 ticket=$state/pending.timer
+pilot_upgrade=$state/pilot-upgrade
+pilot_rollback=$state/pending.pilot-rollback
+pilot_dropin=/etc/systemd/system/coldwire-spa-pilot.service.d/50-lockdown.conf
 exec 9>/run/coldwire-lockdown.lock
 flock -x 9
 
@@ -33,9 +36,16 @@ case "${1:-}" in
         timer="$timer-$(cat /proc/sys/kernel/random/uuid)"
         install -m 600 -- "$2" "$pending"
         printf '%s\n' "$timer" > "$ticket"
+        # Record eligibility before the first pilot upgrade creates its SSH override.
+        if [[ -f /var/lib/coldwire-spa-pilot/confirmed && ! -e $active &&
+              ! -e $pilot_upgrade && ! -e $pilot_dropin && ! -L $pilot_dropin ]] &&
+            ! printf '%s\n' "$timer" > "$pilot_rollback"; then
+            rm -f -- "$pending" "$ticket" "$pilot_rollback"
+            exit 1
+        fi
         if ! systemd-run --quiet --unit="$timer" --on-active="${CW_ROLLBACK_AFTER:-3min}" \
             --timer-property=AccuracySec=1s /bin/bash "$(realpath -- "$0")" rollback "$timer"; then
-            rm -f -- "$pending" "$ticket"
+            rm -f -- "$pending" "$ticket" "$pilot_rollback"
             exit 1
         fi
         rules "$pending" | nft -f -
@@ -46,7 +56,7 @@ case "${1:-}" in
         timer=$(cat "$ticket")
         systemctl is-active --quiet "$timer.timer"
         mv -T -- "$pending" "$active"
-        rm -f -- "$ticket"
+        rm -f -- "$ticket" "$pilot_rollback" "$pilot_upgrade"
         systemctl --no-block stop "$timer.timer"
         ;;
     rollback|load)
@@ -56,8 +66,12 @@ case "${1:-}" in
             [[ $# == 1 ]]
         fi
         if [[ -f $pending || $1 == load ]]; then
+            restore_pilot=
+            if [[ ! -e $active && -f $pending && -f $pilot_upgrade && -s $ticket ]] && cmp -s "$ticket" "$pilot_rollback"; then
+                restore_pilot=yes
+            fi
             rules "$active" | nft -f -
-            rm -f -- "$pending"
+            rm -f -- "$pending" "$pilot_rollback"
             if [[ -f $ticket ]]; then
                 timer=$(cat "$ticket")
                 rm -f -- "$ticket"
@@ -66,12 +80,18 @@ case "${1:-}" in
             if [[ ! -f $active ]]; then
                 rm -f -- "$state/ssh-ready"
                 systemctl --no-block stop coldwire-lockdown-ssh.service
-                if [[ -f $state/pilot-upgrade ]]; then
-                    rm -f -- /etc/systemd/system/coldwire-spa-pilot.service.d/50-lockdown.conf "$state/pilot-upgrade"
+                if [[ $restore_pilot ]]; then
+                    rm -f -- "$pilot_dropin" "$pilot_upgrade"
                     systemctl daemon-reload
                     systemctl --no-block try-restart coldwire-spa-pilot.service
                 fi
             fi
+        fi
+        if [[ $1 == load ]]; then
+            [[ -s $active ]] || { echo KIT_ERROR=NO_CONFIRMED_LOCKDOWN >&2; exit 1; }
+            nft list chain inet coldwire_lockdown wan >/dev/null
+            nft list chain inet coldwire_lockdown forward_wan >/dev/null
+            touch "$state/ssh-ready"
         fi
         ;;
     *) echo 'Usage: stage-lockdown.sh stage FILE | confirm | rollback | load' >&2; exit 2 ;;

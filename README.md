@@ -16,7 +16,9 @@ The panel uses a separate SPA key for SSH. It connects to A with an SSH key and 
 
 ## Installation
 
-Use two amd64 servers running Ubuntu 22.04, 24.04 or 26.04 LTS, or Debian 12 or 13. The installer also serves as the administration panel. Run it on Windows or one of the supported Linux releases with CPython 3.10 or newer and the OpenSSH client.
+Use two amd64 servers running Ubuntu 22.04, 24.04 or 26.04 LTS, or Debian 12 or 13. COLDWIRE runs directly under systemd on both servers, without Docker.
+
+The installer also serves as the administration panel. Run it on Windows or one of the supported Linux releases with CPython 3.10 or newer and the OpenSSH client.
 
 1. Download and extract `COLDWIRE-Access-Panel.zip` from the [latest release](https://github.com/bgunn9in/coldwire/releases/latest).
 2. Open `COLDWIRE-Admin.cmd` on Windows or run `bash COLDWIRE-Admin.sh` on Linux. For a new installation, enter each VPS’s IPv4 address, SSH username and password. Append `:port` if SSH uses a port other than 22.

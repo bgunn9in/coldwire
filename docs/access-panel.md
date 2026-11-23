@@ -6,6 +6,8 @@
 
 Use two clean amd64 servers with systemd. The supported releases are Ubuntu 22.04, 24.04 and 26.04 LTS and Debian 12 and 13. Each server needs its own public IPv4 and a working SSH login with root or sudo access. The relay uses IPv4 for administration and VPN egress. Check that you can reach both rescue consoles from the provider’s dashboard.
 
+The installer deploys COLDWIRE directly to both hosts without Docker. On B, AmneziaWG 3.1 runs as a systemd service.
+
 If your provider has a separate cloud firewall, allow these connections before you start. The installer manages the firewall inside each VPS.
 
 | Destination | Allow at the provider |
@@ -41,6 +43,8 @@ Enter A’s IPv4, SSH username and password, then do the same for B. Append `:po
 
 The installer checks both nodes, starts AmneziaWG on B and verifies the relay through A. It then stages the firewall rules and checks a fresh SSH connection through SPA plus an AmneziaWG handshake before confirming the final rules. Each lockdown stage has a three-minute rollback timer. A reboot also discards an unconfirmed stage.
 
+After the installer confirms the rules, systemd loads the saved WAN policy before starting SSH or the VPN. On A, management SSH, the SPA service and the relay also wait for the SPA admission policy.
+
 ## 3. Connect your first device
 
 1. Install COLDWIRE Amnezia VPN on the device. [VPN client guide](https://github.com/bgunn9in/COLDWIRE-amnezia-client/blob/feature/spa-admission/docs/spa.md)
@@ -72,6 +76,8 @@ The panel writes `<device>-coldwire.vpn` and preserves the source file and the p
 ## Troubleshooting
 
 - If setup stops during a firewall change, give the pending stage up to three minutes to roll back. Check the messages and the provider’s console before retrying. The installer tests the new route before closing the old one. A confirmed stage stays in effect, so use the console if you lose the keys.
+- If the WAN firewall fails to load on reboot, use the provider’s console to restore a working copy of `/etc/coldwire-lockdown/active.nft`. Reboot and check access through the panel.
+- If A fails to load its SPA admission policy, restore `/etc/coldwire-access/active.nft` for a new installation or `/var/lib/coldwire-spa-pilot/pilot.nft` for a pilot installation. Reboot and check access.
 - If SSH through the panel fails, check that the provider allows A’s SPA UDP port and the chosen SSH port. Check B’s rule from A’s IPv4. A reported SSH host key change should be checked against the provider console.
 - If VPN access fails, confirm that the app and imported profile are from COLDWIRE. In the panel, check the two nodes and the device’s registration. The client guide explains how to export a log.
 - To move the panel, copy the private folder and pass its path with `--folder PATH`. On Linux, give the directory mode `700` and the SSH private key `ssh` mode `600`.
@@ -79,3 +85,5 @@ The panel writes `<device>-coldwire.vpn` and preserves the source file and the p
 ## Tested configurations
 
 Clean amd64 tests ran on all five supported server releases with one vCPU and 1 GiB of RAM per guest. They covered the installer, blocked bootstrap SSH, device issue and revocation, timer and reboot rollback, and a normal restart of A. The launcher also ran on Windows 11 and all five Linux releases. On a Debian 13 relay, converted client and administrator exports passed tunnel traffic and the original files kept their checksums.
+
+On a Debian 13 node running the SPA pilot, losing the WAN policy left the administrative SPA override and key file intact, even with an old `pilot-upgrade` marker present. Restoring the policy through the console was enough to reopen access after reboot. A confirmed firewall stage clears the marker. [Pilot recovery test](pilot-upgrade-recovery.md)

@@ -1,8 +1,11 @@
 [Unit]
 Description=COLDWIRE WAN firewall and rollback on boot
-After=nftables.service
+DefaultDependencies=no
+RequiresMountsFor=/etc/coldwire-lockdown /opt/coldwire-lockdown /usr
+After=local-fs.target nftables.service
 Wants=network-pre.target
-Before=network-pre.target docker.service coldwire-spa.service coldwire-spa-pilot.service coldwire-lockdown-ssh.service
+Before=network-pre.target shutdown.target
+Conflicts=shutdown.target
 
 [Service]
 Type=oneshot

@@ -125,6 +125,27 @@ def setup_firewall(remote, preparation, final):
     remote.run('systemctl daemon-reload')
 
 
+def protect_startup(remote):
+    lockdown = 'coldwire-lockdown.service'
+    ssh = ('ssh.service', 'ssh.socket')
+    if remote.server.role == 'entry':
+        groups = (
+            (lockdown, ssh),
+            (lockdown + ' coldwire-access-firewall.service',
+             ('coldwire-lockdown-ssh.service', 'coldwire-spa.service', 'blackice-relay.service')),
+        )
+    else:
+        groups = ((lockdown, ssh + ('coldwire-lockdown-ssh.service', 'awg-relay-kit-exit.service')),)
+    remote.run(f'systemctl start {lockdown}')
+    for dependencies, units in groups:
+        dropin = f'[Unit]\nRequires={dependencies}\nAfter={dependencies}\n'
+        for unit in units:
+            directory = f'/etc/systemd/system/{unit}.d'
+            remote.run(f'install -d -m 755 {directory}')
+            put(remote, f'{directory}/40-coldwire-firewall.conf', dropin, 0o644)
+    remote.run('systemctl daemon-reload')
+
+
 def choose_ssh(remote):
     for port in range(22222, 22254):
         if not remote.run(f'ss -H -ltn "sport = :{port}"'):
@@ -216,6 +237,8 @@ def finish_install(manifest, folder, bootstrap=None):
         new_b.run(f'rm -f {CONFIG}/probe.key')
         for node in (new_a, new_b):
             node.run(f'{STAGE} confirm')
+        for node in (new_a, new_b):
+            protect_startup(node)
 
 
 def install(args):
