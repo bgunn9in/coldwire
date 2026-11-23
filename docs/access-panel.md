@@ -154,6 +154,8 @@ Restore and boot B first, then A. Check SSH through SPA and test an existing pro
 
 Clean amd64 tests ran on all five supported server releases with one vCPU and 1 GiB of RAM per guest. They covered the installer, blocked bootstrap SSH, device issue and revocation, timer and reboot rollback, and a normal restart of A. The launcher also ran on Windows 11 and all five Linux releases. On a Debian 13 relay, converted client and administrator exports passed tunnel traffic and the original files kept their checksums.
 
+Both exclusion lists were generated from menu 12 and the standalone launcher on Ubuntu 22.04, 24.04 and 26.04 and on Debian 12 and 13. [Linux test results](lists.md#linux-test-results)
+
 On a Debian 13 node running the SPA pilot, losing the WAN policy left the administrative SPA override and key file intact, even with an old `pilot-upgrade` marker present. Restoring the policy through the console was enough to reopen access after reboot. A confirmed firewall stage clears the marker. [Pilot recovery test](pilot-upgrade-recovery.md)
 
 Backup tests used an isolated Ubuntu 22.04 lab with one vCPU and 1 GiB of RAM per server. The panel created copies from Windows and Linux, opened a portable Linux backup on Windows, and restored the operator folder and both server file sets to offline roots. The lab covered fresh native installations and pilot SPA with a migrated native exit.
