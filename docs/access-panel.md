@@ -71,7 +71,7 @@ Run the same launcher again to open the panel.
 | `11 Create backup` | Reads both nodes over administrative SSH and saves an encrypted copy with the operator folder. |
 | `12 Update split-tunneling lists` | Writes two AmneziaVPN exclusion lists locally. Available before installation, with no SSH credentials required. |
 
-After running **12**, use the path printed by the panel to find the JSON files. Import the one you want in AmneziaVPN. [Split-tunneling guide](lists.md)
+In **12**, choose a data source and optionally give the panel a folder of earlier lists for comparison. The panel prints the path to both new JSON files. Import the list you want in AmneziaVPN. [Split-tunneling guide](lists.md)
 
 Give each device a unique name. Use the same user name for several devices when you want to manage them together. To rotate a device key, add a replacement, test its profile, then revoke the old device. Send users only their own device profiles. The operator folder also holds administrative keys and pinned SSH host keys.
 
@@ -159,3 +159,14 @@ Both exclusion lists were generated from menu 12 and the standalone launcher on 
 On a Debian 13 node running the SPA pilot, losing the WAN policy left the administrative SPA override and key file intact, even with an old `pilot-upgrade` marker present. Restoring the policy through the console was enough to reopen access after reboot. A confirmed firewall stage clears the marker. [Pilot recovery test](pilot-upgrade-recovery.md)
 
 Backup tests used an isolated Ubuntu 22.04 lab with one vCPU and 1 GiB of RAM per server. The panel created copies from Windows and Linux, opened a portable Linux backup on Windows, and restored the operator folder and both server file sets to offline roots. The lab covered fresh native installations and pilot SPA with a migrated native exit.
+
+## Build and check release archives
+
+Run these commands from a Git checkout with Python 3.10 or newer and Go on `PATH`. The packager reads the checked-out commit and builds both ZIPs and `SHA256SUMS.txt`.
+
+```sh
+python scripts/package_release.py generated/release
+python scripts/check_release.py generated/release
+```
+
+Run **COLDWIRE release** from GitHub Actions to preview the archives. A pushed `spa-panel-*` tag triggers publishing after the Windows and Linux checks pass.

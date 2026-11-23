@@ -1,0 +1,70 @@
+name: COLDWIRE release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'spa-panel-*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - run: python scripts/package_release.py generated/release
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: archives
+          path: generated/release
+          if-no-files-found: error
+          compression-level: 0
+
+  verify:
+    needs: build
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: archives
+          path: generated/release
+      - run: python -m pip install -r requirements-deploy.txt
+      - run: python -m unittest discover -s tests
+      - run: python scripts/check_release.py generated/release
+
+  publish:
+    needs: verify
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: archives
+          path: release
+      - name: Publish verified archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd release
+          sha256sum -c SHA256SUMS.txt
+          gh release create "$RELEASE_TAG" COLDWIRE-Access-Panel.zip COLDWIRE-RU-Lists.zip SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "COLDWIRE Access Panel and RU Lists" --generate-notes --latest

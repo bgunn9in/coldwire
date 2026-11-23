@@ -3,8 +3,10 @@
 import argparse
 import bisect
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+from http.client import HTTPException
 import ipaddress as ip
 import json
 from pathlib import Path
@@ -17,12 +19,27 @@ import urllib.request
 ROOT = Path(__file__).resolve().parent
 LOCAL = tuple(map(ip.IPv4Network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10")))
 RIPE = "https://stat.ripe.net/data/country-resource-list/data.json?resource=RU&v4_format=prefix"
+BUNDLED_RIPE_DATE = "2026-11-07"
+ONLINE_SOURCE_FAILED = 2
+LIST_NAMES = ("ru-direct", "ru-services")
 CATALOG_REPO = "https://api.github.com/repos/lib4u/amnezia-tunneling-ru/commits/main"
 SOURCES = {
     "telegram": "https://core.telegram.org/resources/cidr.txt",
     "cloudflare": "https://www.cloudflare.com/ips-v4",
     "google": "https://www.gstatic.com/ipranges/goog.json",
 }
+
+
+class SourceError(ValueError):
+    pass
+
+
+@contextmanager
+def source(name):
+    try:
+        yield
+    except (OSError, HTTPException, ValueError, KeyError, TypeError, AttributeError) as error:
+        raise SourceError(f"{name}: {error}") from error
 
 
 def fetch(url):
@@ -110,64 +127,83 @@ def read_networks(path):
 
 
 def dns_lookup(domain):
-    data = json.loads(fetch("https://dns.google/resolve?" + urllib.parse.urlencode({"name": domain, "type": "A"})))
-    if data.get("Status") not in (0, 3):
-        raise ValueError("DNS resolver failed for " + domain)
-    return [str(ip.IPv4Address(a["data"])) for a in data.get("Answer", []) if a["type"] == 1]
+    with source(f"Google Public DNS ({domain})"):
+        data = json.loads(fetch("https://dns.google/resolve?" + urllib.parse.urlencode({"name": domain, "type": "A"})))
+        if data.get("Status") not in (0, 3):
+            raise ValueError(f"DNS status {data.get('Status')}")
+        return [str(ip.IPv4Address(a["data"])) for a in data.get("Answer", []) if a["type"] == 1]
 
 
 def live_sources():
-    country = json.loads(fetch(RIPE))
-    if country.get("status") != "ok" or country.get("data_call_name") != "country-resource-list":
-        raise ValueError("Unexpected RIPE response")
-    ru = [ip.IPv4Network(n) for n in country["data"]["resources"]["ipv4"]]
-    if len(ru) < 1000 or any(not n.is_global or n.prefixlen < 8 for n in ru):
-        raise ValueError("Unexpected RU allocation count or prefix")
+    with source("RIPEstat"):
+        country = json.loads(fetch(RIPE))
+        if country.get("status") != "ok" or country.get("data_call_name") != "country-resource-list":
+            raise ValueError("Unexpected response")
+        ru = [ip.IPv4Network(n) for n in country["data"]["resources"]["ipv4"]]
+        if len(ru) < 1000 or any(not n.is_global or n.prefixlen < 8 for n in ru):
+            raise ValueError("Unexpected RU allocation count or prefix")
+        snapshot = country["data"]["query_time"]
     exact = collapse(ru + list(LOCAL))
     protected = []
     for name, url in SOURCES.items():
-        raw = fetch(url)
-        if name == "google":
-            values = [p["ipv4Prefix"] for p in json.loads(raw)["prefixes"] if "ipv4Prefix" in p]
-        else:
-            values = [line for line in raw.decode().splitlines() if line and ":" not in line and not line.startswith("#")]
-        networks = [ip.IPv4Network(n) for n in values]
-        if not networks or any(not n.is_global or n.prefixlen < 8 for n in networks):
-            raise ValueError("Invalid protected provider prefixes: " + name)
-        protected.extend(networks)
-    commit = json.loads(fetch(CATALOG_REPO))["sha"]
-    if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
-        raise ValueError("Invalid catalog commit")
-    catalog_url = f"https://raw.githubusercontent.com/lib4u/amnezia-tunneling-ru/{commit}/amnezia.json"
-    catalog = json.loads(fetch(catalog_url))
-    if not isinstance(catalog, list) or len(catalog) < 100:
-        raise ValueError("Invalid service catalog")
+        with source(f"{name} IPv4 ranges"):
+            raw = fetch(url)
+            if name == "google":
+                values = [p["ipv4Prefix"] for p in json.loads(raw)["prefixes"] if "ipv4Prefix" in p]
+            else:
+                values = [line for line in raw.decode().splitlines() if line and ":" not in line and not line.startswith("#")]
+            networks = [ip.IPv4Network(n) for n in values]
+            if not networks or any(not n.is_global or n.prefixlen < 8 for n in networks):
+                raise ValueError("Invalid protected provider prefixes")
+            protected.extend(networks)
     roots = (ROOT / "data/service-roots.txt").read_text().split()
     addresses, represented = set(), set()
     selected = 0
-    for record in catalog:
-        hostname = record["hostname"].lower().rstrip(".")
-        matched = {r for r in roots if hostname == r or hostname.endswith("." + r)}
-        if matched:
-            selected += 1
-            values = record.get("ips", []) or [record.get("ip", "")]
-            values = [str(ip.ip_address(a)) for a in values if a]
-            addresses.update(values)
-            if values:
-                represented.update(matched)
-    if selected < 30:
-        raise ValueError("Service catalog unexpectedly lost most selected domains")
+    with source("GitHub service catalog"):
+        commit = json.loads(fetch(CATALOG_REPO))["sha"]
+        if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
+            raise ValueError("Invalid catalog commit")
+        catalog_url = f"https://raw.githubusercontent.com/lib4u/amnezia-tunneling-ru/{commit}/amnezia.json"
+        catalog = json.loads(fetch(catalog_url))
+        if not isinstance(catalog, list) or len(catalog) < 100:
+            raise ValueError("Invalid service catalog")
+        for record in catalog:
+            hostname = record["hostname"].lower().rstrip(".")
+            matched = {r for r in roots if hostname == r or hostname.endswith("." + r)}
+            if matched:
+                selected += 1
+                values = record.get("ips", []) or [record.get("ip", "")]
+                values = [str(ip.ip_address(a)) for a in values if a]
+                addresses.update(values)
+                if values:
+                    represented.update(matched)
+        if selected < 30:
+            raise ValueError("Service catalog unexpectedly lost most selected domains")
     missing = sorted(set(roots) - represented)
     with ThreadPoolExecutor(max_workers=4) as pool:
         for values in pool.map(dns_lookup, missing):
             addresses.update(values)
     if len(addresses) < 30:
-        raise ValueError("Too few service addresses")
-    print(f"RIPE snapshot: {country['data'].get('query_time')}; catalog commit: {commit}; {selected} catalog domains; {len(missing)} DNS fallbacks")
+        raise SourceError("Service catalog and DNS returned too few service addresses")
+    print(f"RIPE snapshot: {snapshot}; catalog commit: {commit}; {selected} catalog domains; {len(missing)} DNS fallbacks")
     return exact, collapse(protected), sorted(addresses)
 
 
-def publish(output, full, services):
+def previous_prefixes(folder):
+    previous = {}
+    for name in LIST_NAMES:
+        path = folder.expanduser() / f"{name}.amnezia.json"
+        try:
+            entries = json.loads(path.read_bytes())
+            if not isinstance(entries, list):
+                raise ValueError("Expected a JSON list")
+            previous[name] = {ip.IPv4Network(entry["ip"]) for entry in entries}
+        except (ValueError, KeyError, TypeError) as error:
+            raise ValueError(f"Invalid comparison file {path}: {error}") from error
+    return previous
+
+
+def publish(output, full, services, previous=None):
     # Publish into a NEW directory: failure never replaces either known working list.
     output = output.resolve()
     if output.exists():
@@ -175,10 +211,13 @@ def publish(output, full, services):
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".awg-lists-", dir=output.parent))
     try:
-        for name, networks in (("ru-direct", full), ("ru-services", services)):
+        for name, networks in zip(LIST_NAMES, (full, services)):
             raw = encode(networks)
             (staging / f"{name}.amnezia.json").write_bytes(raw)
             print(f"{name}: {len(networks)} entries, {legacy_routes(networks)} legacy routes, SHA256 {hashlib.sha256(raw).hexdigest()}")
+            if previous is not None:
+                current = set(networks)
+                print(f"{name}: {len(current - previous[name])} added, {len(previous[name] - current)} removed IPv4 prefixes")
         staging.rename(output)
     finally:
         if staging.exists():
@@ -189,6 +228,8 @@ def parser_options(parser):
     parser.add_argument("--output", type=Path,
                         help="New output directory (default: generated/ru-lists-<UTC timestamp>)")
     parser.add_argument("--offline", action="store_true", help="Use the bundled source snapshots without network access")
+    parser.add_argument("--compare-with", type=Path, metavar="DIRECTORY",
+                        help="Compare IPv4 prefixes with the two previous JSON files in this directory")
     parser.add_argument("--entry", help="Optional entry IPv4 to keep outside the bypass list")
     parser.add_argument("--exit", help="Optional exit IPv4 to keep outside the bypass list")
     parser.add_argument("--vpn-only", action="append", default=[], metavar="IPV4",
@@ -200,12 +241,14 @@ def generate(args):
     try:
         if output.exists():
             raise FileExistsError("Output directory already exists")
+        previous = previous_prefixes(args.compare_with) if args.compare_with is not None else None
         required = tuple(ip.IPv4Address(a) for a in (args.entry, args.exit, *args.vpn_only,
                                                     "1.1.1.1", "1.0.0.1", "8.8.8.8") if a is not None)
         if args.offline:
             exact = read_networks(ROOT / "data/ru-networks.txt")
             protected = read_networks(ROOT / "data/protected-vpn-networks.txt")
             addresses = (ROOT / "data/service-addresses.txt").read_text().split()
+            print(f"RIPE snapshot: {BUNDLED_RIPE_DATE} (bundled)")
         else:
             exact, protected, addresses = live_sources()
         if exact != collapse(exact) or not exact or not protected or not addresses:
@@ -219,11 +262,11 @@ def generate(args):
         if any(contains(services, ip.IPv4Network(f"{a}/32")) for a in required):
             raise ValueError("Protected address in compact list")
         print(f"All {len(exact)} RU/local prefixes preserved; additionally {added:,} foreign addresses ({100 * added / 2**32:.3f}% of IPv4) bypass VPN in ru-direct")
-        publish(output, full, services)
+        publish(output, full, services, previous)
         print(f"Lists saved to {output.resolve()}")
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"Update failed: {error}. Existing lists were not replaced.", file=sys.stderr)
-        return 1
+        return ONLINE_SOURCE_FAILED if isinstance(error, SourceError) else 1
     return 0
 
 

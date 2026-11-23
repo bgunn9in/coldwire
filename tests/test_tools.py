@@ -1,5 +1,7 @@
 import copy
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
+from io import StringIO
 import ipaddress as ip
 import json
 from pathlib import Path
@@ -8,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -161,6 +164,28 @@ class ListTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(ROOT / "update_lists.py"), "--offline", "--output", str(output)], capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(before, {p.name: p.read_bytes() for p in output.iterdir()})
+
+    def test_comparison_and_source_failure_preserve_previous_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            previous = Path(directory) / "Previous lists"
+            previous.mkdir()
+            output = Path(directory) / "output"
+            baseline = lists.encode([ip.IPv4Network("192.0.2.0/24")])
+            for name in lists.LIST_NAMES:
+                (previous / f"{name}.amnezia.json").write_bytes(baseline)
+            args = ["--compare-with", str(previous), "--output", str(output)]
+            errors, report = StringIO(), StringIO()
+            with patch.object(lists, "fetch", side_effect=TimeoutError("timed out")), redirect_stderr(errors):
+                self.assertEqual(lists.main(args), lists.ONLINE_SOURCE_FAILED)
+            self.assertIn("RIPEstat: timed out", errors.getvalue())
+            self.assertFalse(output.exists())
+            with redirect_stdout(report):
+                self.assertEqual(lists.main([*args, "--offline"]), 0)
+            self.assertIn("RIPE snapshot: 2026-11-07 (bundled)", report.getvalue())
+            self.assertIn("ru-direct: 1097 added, 1 removed IPv4 prefixes", report.getvalue())
+            self.assertIn("ru-services: 77 added, 1 removed IPv4 prefixes", report.getvalue())
+            self.assertTrue(all(path.read_bytes() == baseline for path in previous.iterdir()))
+            self.assertEqual({p.name for p in output.iterdir()}, {p.name for p in previous.iterdir()})
 
     def test_default_output_creates_a_new_folder_on_each_run(self):
         with tempfile.TemporaryDirectory() as directory:

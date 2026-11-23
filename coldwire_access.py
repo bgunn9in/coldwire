@@ -636,6 +636,25 @@ def recovery_menu():
             print(f'COLDWIRE: {error}', file=sys.stderr)
 
 
+def lists_menu():
+    try:
+        choice = input('1 Fetch current data (default)\n2 Use bundled snapshots\n0 Back\n> ').strip()
+        if choice == '0':
+            return
+        if choice not in ('', '1', '2'):
+            print('Choose 1, 2 or 0.')
+            return
+        previous = input('Folder with previous lists (Enter to skip comparison): ').strip().strip('"')
+        arguments = ['--compare-with', previous] if previous else []
+        if choice == '2':
+            arguments.append('--offline')
+        if update_lists.main(arguments) == update_lists.ONLINE_SOURCE_FAILED and choice != '2':
+            if input('Use bundled snapshots instead? [y/N] ').strip().lower() in ('y', 'yes'):
+                update_lists.main([*arguments, '--offline'])
+    except (EOFError, KeyboardInterrupt):
+        return
+
+
 def panel(args):
     operator = args.folder / 'operator.json'
     while not operator.is_file():
@@ -653,7 +672,7 @@ def panel(args):
         elif choice == '10':
             recovery_menu()
         elif choice == '12':
-            update_lists.main([])
+            lists_menu()
 
     while True:
         existing, _, unit, _ = panel_backends(json.loads(operator.read_text()))
@@ -692,7 +711,7 @@ def panel(args):
                 backup_action(argparse.Namespace(folder=args.folder, to=Path(path) if path else None,
                                                   portable_key=portable))
             elif choice == '12':
-                update_lists.main([])
+                lists_menu()
         except (EOFError, KeyboardInterrupt):
             return
         except (*PANEL_ERRORS, *RECOVERY_ERRORS) as error:

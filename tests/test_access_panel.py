@@ -191,12 +191,24 @@ class AccessPanelTests(unittest.TestCase):
             with self.subTest(installed=installed):
                 if not installed:
                     (self.folder / 'operator.json').unlink()
-                with (patch('builtins.input', side_effect=['12', '0']),
-                      patch.object(panel.update_lists, 'main') as update,
+                with (patch('builtins.input', side_effect=['12', '2', '', '0']),
+                      patch.object(panel.update_lists, 'main', return_value=0) as update,
                       patch.object(panel, 'authorized') as ssh, patch('builtins.print')):
                     panel.panel(Namespace(folder=self.folder))
-                update.assert_called_once_with([])
+                update.assert_called_once_with(['--offline'])
                 ssh.assert_not_called()
+
+    def test_list_menu_retries_offline_only_with_consent(self):
+        for answer in ('y', ''):
+            with self.subTest(answer=answer):
+                with (patch('builtins.input', side_effect=['', '"Previous lists"', answer]),
+                      patch.object(panel.update_lists, 'main',
+                                   side_effect=[panel.update_lists.ONLINE_SOURCE_FAILED, 0]) as update):
+                    panel.lists_menu()
+                arguments = [['--compare-with', 'Previous lists']]
+                if answer == 'y':
+                    arguments.append(['--compare-with', 'Previous lists', '--offline'])
+                self.assertEqual([call.args[0] for call in update.call_args_list], arguments)
 
     def test_migration_menu_requires_confirmation_for_changes(self):
         (self.folder / 'operator.json').write_text(json.dumps(self.manifest | {'legacy_exit': True}))

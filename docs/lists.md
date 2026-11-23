@@ -17,11 +17,13 @@ In the app’s website split-tunneling settings, choose the mode that sends list
 
 ## Refresh both files
 
-Install Python 3.10 or newer. For the interactive panel on Ubuntu or Debian, install `python3-venv` too. Open the panel and choose **12 Update split-tunneling lists**. This works before you set up your servers.
+Install Python 3.10 or newer. For the interactive panel on Ubuntu or Debian, install `python3-venv` too. Open the panel and choose **12 Update split-tunneling lists**. Use **1** for current data or **2** for the bundled snapshots. You can do this before you set up your servers.
 
 To run the generator on its own, download `COLDWIRE-RU-Lists.zip` and extract it. On Windows, open `COLDWIRE-Lists.cmd`. On Linux, open a terminal in the extracted folder and run `bash COLDWIRE-Lists.sh`. [GitHub Releases](https://github.com/bgunn9in/coldwire/releases/latest)
 
 The generator fetches current data, writes both JSON files to a new timestamped folder under `generated/` and prints the path. Add `--output` to choose a new folder. With `--offline`, the generator uses the snapshots in `data/` and reproduces the bundled files.
+
+If an online source fails, the panel names it and offers to try again with the bundled snapshots. At the command line, rerun with `--offline`. Earlier output folders are kept for reuse.
 
 | Run with offline snapshots | Command |
 | --- | --- |
@@ -29,6 +31,10 @@ The generator fetches current data, writes both JSON files to a new timestamped 
 | Linux panel | `bash COLDWIRE-Admin.sh update-lists --offline` |
 | Windows standalone | `COLDWIRE-Lists.cmd --offline` |
 | Linux standalone | `bash COLDWIRE-Lists.sh --offline` |
+
+### Compare with earlier lists
+
+When the panel asks for a comparison folder, enter the folder containing both previous JSON files. Press Enter to skip. At the command line, pass `--compare-with DIRECTORY`. The generator prints the RIPE snapshot date and, for each list, the number of IPv4 prefixes added and removed and the total route count for older versions of Android. Check the summary before importing the JSON you want.
 
 Use `--vpn-only IPV4` for an individual address you need to keep in the tunnel. Repeat the option for additional addresses. `--entry IPV4` and `--exit IPV4` protect the relay addresses in the same way. The generator stops if an address conflicts with the exact Russian or local source ranges. [Data sources and route counts](sources.md)
 
