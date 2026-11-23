@@ -223,7 +223,7 @@ class AccessPanelTests(unittest.TestCase):
         (self.folder / 'ssh_config').write_text('IdentityFile X:/other/computer')
         with patch.object(panel, 'admit'), patch.object(panel.shutil, 'which', return_value='ssh'):
             def invoke(args, cwd):
-                self.assertEqual(cwd, self.folder)
+                self.assertTrue(cwd.samefile(self.folder))
                 self.assertNotIn(' ', args[2])
                 self.assertIn('IdentityFile ssh', (cwd / args[2]).read_text())
                 self.assertIn('UserKnownHostsFile known_hosts', (cwd / args[2]).read_text())
