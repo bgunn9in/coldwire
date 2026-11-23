@@ -162,6 +162,18 @@ class ListTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(before, {p.name: p.read_bytes() for p in output.iterdir()})
 
+    def test_default_output_creates_a_new_folder_on_each_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for _ in range(2):
+                result = subprocess.run([sys.executable, str(ROOT / "update_lists.py"), "--offline"],
+                                        cwd=directory, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            outputs = list((Path(directory) / "generated").iterdir())
+            self.assertEqual(len(outputs), 2)
+            for output in outputs:
+                self.assertEqual({f.name for f in output.iterdir()},
+                                 {"ru-direct.amnezia.json", "ru-services.amnezia.json"})
+
     def test_checked_lists_avoid_sensitive_destinations(self):
         for name in ("ru-direct", "ru-services"):
             values = json.loads((ROOT / f"{name}.amnezia.json").read_bytes())

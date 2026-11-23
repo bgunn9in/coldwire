@@ -3,6 +3,7 @@
 import argparse
 import bisect
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import hashlib
 import ipaddress as ip
 import json
@@ -184,17 +185,20 @@ def publish(output, full, services):
             shutil.rmtree(staging)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, required=True, help="New output directory containing exactly two JSON files")
+def parser_options(parser):
+    parser.add_argument("--output", type=Path,
+                        help="New output directory (default: generated/ru-lists-<UTC timestamp>)")
     parser.add_argument("--offline", action="store_true", help="Use the bundled source snapshots without network access")
     parser.add_argument("--entry", help="Optional entry IPv4 to keep outside the bypass list")
     parser.add_argument("--exit", help="Optional exit IPv4 to keep outside the bypass list")
     parser.add_argument("--vpn-only", action="append", default=[], metavar="IPV4",
                         help="Keep an additional destination IPv4 outside both bypass lists; repeat for more addresses")
-    args = parser.parse_args()
+
+
+def generate(args):
+    output = args.output or Path("generated") / datetime.now(timezone.utc).strftime("ru-lists-%Y%m%d-%H%M%S-%f")
     try:
-        if args.output.exists():
+        if output.exists():
             raise FileExistsError("Output directory already exists")
         required = tuple(ip.IPv4Address(a) for a in (args.entry, args.exit, *args.vpn_only,
                                                     "1.1.1.1", "1.0.0.1", "8.8.8.8") if a is not None)
@@ -215,11 +219,18 @@ def main():
         if any(contains(services, ip.IPv4Network(f"{a}/32")) for a in required):
             raise ValueError("Protected address in compact list")
         print(f"All {len(exact)} RU/local prefixes preserved; additionally {added:,} foreign addresses ({100 * added / 2**32:.3f}% of IPv4) bypass VPN in ru-direct")
-        publish(args.output, full, services)
+        publish(output, full, services)
+        print(f"Lists saved to {output.resolve()}")
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"Update failed: {error}. Existing lists were not replaced.", file=sys.stderr)
         return 1
     return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser_options(parser)
+    return generate(parser.parse_args(argv))
 
 
 if __name__ == "__main__":

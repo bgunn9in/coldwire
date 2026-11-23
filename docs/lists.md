@@ -17,13 +17,17 @@ In the app’s website split-tunneling settings, choose the mode that sends list
 
 ## Refresh both files
 
-Run the generator with Python 3.10 or newer. The output directory must be new.
+Install Python 3.10 or newer. In the COLDWIRE panel, choose **12 Update split-tunneling lists**. You can use this option before setting up any servers.
 
-```bash
-python3 update_lists.py --output generated/fresh-lists
-python3 update_lists.py --offline --output generated/snapshot-lists
-```
+To run the generator on its own, download `COLDWIRE-RU-Lists.zip` and extract it. On Windows, open `COLDWIRE-Lists.cmd`. On Linux, open a terminal in the extracted folder and run `bash COLDWIRE-Lists.sh`. [GitHub Releases](https://github.com/bgunn9in/coldwire/releases/latest)
 
-The first command fetches current data. The second uses the snapshots in `data/` and reproduces the two bundled JSON files. Each command writes both lists. On Windows, substitute `python` for `python3` if that is the name of your interpreter.
+By default, the generator fetches current data and prints the path to a new timestamped folder under `generated/`. It writes both `ru-direct.amnezia.json` and `ru-services.amnezia.json`. Add `--output` to choose a new folder or `--offline` to regenerate the bundled lists from the snapshots in `data/`.
+
+| Run with offline snapshots | Command |
+| --- | --- |
+| Windows panel | `COLDWIRE-Admin.cmd update-lists --offline` |
+| Linux panel | `bash COLDWIRE-Admin.sh update-lists --offline` |
+| Windows standalone | `COLDWIRE-Lists.cmd --offline` |
+| Linux standalone | `bash COLDWIRE-Lists.sh --offline` |
 
 Use `--vpn-only IPV4` for an individual address you need to keep in the tunnel. Repeat the option for additional addresses. `--entry IPV4` and `--exit IPV4` protect the relay addresses in the same way. The generator stops if an address conflicts with the exact Russian or local source ranges. [Data sources and route counts](sources.md)

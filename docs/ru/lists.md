@@ -17,13 +17,17 @@
 
 ## Обновление списков
 
-Запустите генератор с Python 3.10 или новее. Укажите новую папку для результата.
+Установите Python 3.10 или новее. В панели COLDWIRE выберите **12 Update split-tunneling lists**. Этот пункт доступен до настройки серверов.
 
-```bash
-python3 update_lists.py --output generated/fresh-lists
-python3 update_lists.py --offline --output generated/snapshot-lists
-```
+Для отдельного запуска скачайте и распакуйте `COLDWIRE-RU-Lists.zip`. На Windows откройте `COLDWIRE-Lists.cmd`. На Linux откройте терминал в папке с файлами и выполните `bash COLDWIRE-Lists.sh`. [Релизы на GitHub](https://github.com/bgunn9in/coldwire/releases/latest)
 
-Первая команда загружает свежие данные. Вторая берёт снимки из `data/` и воспроизводит оба JSON из репозитория. Каждая команда создаёт два списка. В Windows используйте `python`, если интерпретатор установлен под этим именем.
+По умолчанию генератор загружает свежие данные, сохраняет `ru-direct.amnezia.json` и `ru-services.amnezia.json` в новую папку с датой и временем внутри `generated/` и печатает её путь. Чтобы указать свою папку, добавьте `--output`. Для работы без интернета используйте `--offline`: генератор соберёт списки из снимков в `data/`.
+
+| Запуск со снимками | Команда |
+| --- | --- |
+| Панель, Windows | `COLDWIRE-Admin.cmd update-lists --offline` |
+| Панель, Linux | `bash COLDWIRE-Admin.sh update-lists --offline` |
+| Отдельный запуск, Windows | `COLDWIRE-Lists.cmd --offline` |
+| Отдельный запуск, Linux | `bash COLDWIRE-Lists.sh --offline` |
 
 Параметр `--vpn-only IPV4` оставляет указанный адрес в туннеле. Его можно повторить для нескольких адресов. `--entry IPV4` и `--exit IPV4` так же исключают адреса узлов из прямых маршрутов. Если адрес уже входит в исходные российские или локальные диапазоны, генератор остановится. [Источники и число маршрутов](sources.md)

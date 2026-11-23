@@ -1,6 +1,17 @@
 param([switch]$Spa, [Parameter(ValueFromRemainingArguments = $true)][string[]]$InstallerArgs)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
+if ($InstallerArgs.Count -gt 0 -and $InstallerArgs[0] -eq 'update-lists') {
+    $ListArgs = @($InstallerArgs | Select-Object -Skip 1)
+    $PreviousNoPause = $env:COLDWIRE_LISTS_NO_PAUSE
+    try {
+        $env:COLDWIRE_LISTS_NO_PAUSE = '1'
+        & (Join-Path $PSScriptRoot 'COLDWIRE-Lists.cmd') @ListArgs
+    } finally {
+        $env:COLDWIRE_LISTS_NO_PAUSE = $PreviousNoPause
+    }
+    exit $LASTEXITCODE
+}
 $projectState = Join-Path $PSScriptRoot 'private\coldwire-installation\operator.json'
 if (-not $InstallerArgs -and $env:LOCALAPPDATA -and -not (Test-Path -LiteralPath $projectState -PathType Leaf)) {
     $installedFolder = Join-Path $env:LOCALAPPDATA 'COLDWIRE\access-panel'

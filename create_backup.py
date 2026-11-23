@@ -40,9 +40,12 @@ COMMON_REQUIRED = (LOCK + 'active.nft', LOCK + 'sshd.conf',
                    UNIT + 'coldwire-lockdown.service', UNIT + 'coldwire-lockdown-ssh.service')
 PANEL_FILES = set(ENTRY_FILES + EXIT_FILES) | set('''
     COLDWIRE-Admin.cmd COLDWIRE-Admin.sh setup.sh setup.ps1 requirements-deploy.txt
+    COLDWIRE-Lists.cmd COLDWIRE-Lists.sh update_lists.py
     LICENSE THIRD_PARTY_NOTICES.md README.md README.ru.md
     coldwire_access.py deploy.py create_backup.py restore_backup.py exit_migration.py legacy_profiles.py
     docs/access-panel.md docs/ru/access-panel.md docs/lists.md docs/ru/lists.md
+    docs/sources.md docs/ru/sources.md
+    data/ru-networks.txt data/protected-vpn-networks.txt data/service-roots.txt data/service-addresses.txt
     ru-direct.amnezia.json ru-services.amnezia.json
     assets/coldwire-header.svg assets/coldwire-header.ru.svg
     assets/coldwire-topology.svg assets/coldwire-topology.ru.svg

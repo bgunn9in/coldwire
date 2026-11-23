@@ -28,6 +28,7 @@ import create_backup
 import exit_migration
 import legacy_profiles
 import restore_backup
+import update_lists
 from servers.lockdown_rules import admission_gate, firewall
 from servers.spa_access import key_bytes, request
 
@@ -638,7 +639,7 @@ def recovery_menu():
 def panel(args):
     operator = args.folder / 'operator.json'
     while not operator.is_file():
-        print('\nCOLDWIRE\n1 Install COLDWIRE\n10 Restore from backup\n0 Exit')
+        print('\nCOLDWIRE\n1 Install COLDWIRE\n10 Restore from backup\n12 Update split-tunneling lists\n0 Exit')
         try:
             choice = input('> ').strip()
         except EOFError:
@@ -651,6 +652,8 @@ def panel(args):
             install(args)
         elif choice == '10':
             recovery_menu()
+        elif choice == '12':
+            update_lists.main([])
 
     while True:
         existing, _, unit, _ = panel_backends(json.loads(operator.read_text()))
@@ -658,7 +661,7 @@ def panel(args):
         print('\nCOLDWIRE\n1 Status\n2 List users and devices\n3 Add device and export profile\n'
               '4 Revoke device\n5 SSH to entry\n6 SSH to exit\n7 Revoke user and all their devices\n'
               '8 Import an AmneziaVPN profile' + ('\n9 Exit migration' if migration else '') +
-              '\n10 Restore from backup\n11 Create backup\n0 Exit')
+              '\n10 Restore from backup\n11 Create backup\n12 Update split-tunneling lists\n0 Exit')
         try:
             choice = input('> ').strip()
         except EOFError:
@@ -688,6 +691,8 @@ def panel(args):
                 portable = os.name == 'nt' and input('Use a portable recovery key? [y/N] ').strip().lower() in ('y', 'yes')
                 backup_action(argparse.Namespace(folder=args.folder, to=Path(path) if path else None,
                                                   portable_key=portable))
+            elif choice == '12':
+                update_lists.main([])
         except (EOFError, KeyboardInterrupt):
             return
         except (*PANEL_ERRORS, *RECOVERY_ERRORS) as error:
@@ -731,11 +736,12 @@ def main():
     backup = commands.add_parser('backup', help='Back up A, B and the operator folder')
     backup.add_argument('--to', type=Path, help='Destination folder for the encrypted archive')
     backup.add_argument('--portable-key', action='store_true', help='Protect the recovery key with a passphrase instead of Windows DPAPI')
+    update_lists.parser_options(commands.add_parser('update-lists', help='Generate the two AmneziaVPN split-tunneling lists'))
     args = parser.parse_args()
     try:
         return {None: panel, 'install': install, 'manage': manage, 'ssh': ssh, 'status': status,
                 'import-profile': import_profile, 'migrate-exit': migrate_exit,
-                'restore': restore_action, 'backup': backup_action}[args.command](args)
+                'restore': restore_action, 'backup': backup_action, 'update-lists': update_lists.generate}[args.command](args)
     except (*PANEL_ERRORS, *RECOVERY_ERRORS, subprocess.CalledProcessError) as error:
         parser.exit(1, f'COLDWIRE: {type(error).__name__}: {error}\n')
 

@@ -2,7 +2,7 @@
 
 [Русский](ru/access-panel.md) · [Project home](../README.md)
 
-This guide follows the panel in `main`. If your release has no **Exit migration**, **Restore from backup** or **Create backup** menu item, use the current source for that operation.
+This guide follows the panel in `main`. If a menu item is missing, download the latest release or use the current source.
 
 ## 1. Prepare both servers
 
@@ -69,6 +69,9 @@ Run the same launcher again to open the panel.
 | `9 Exit migration` | Starts, checks, confirms or rolls back a move from Docker to systemd. Shown for installations with pilot SPA and a Docker or migrated exit. |
 | `10 Restore from backup` | Checks a `.cwbackup`, restores an operator folder or exports the files needed to recover A and B. Available before installation too. |
 | `11 Create backup` | Reads both nodes over administrative SSH and saves an encrypted copy with the operator folder. |
+| `12 Update split-tunneling lists` | Writes two AmneziaVPN exclusion lists locally. Available before installation, with no SSH credentials required. |
+
+After running **12**, use the path printed by the panel to find the JSON files. Import the one you want in AmneziaVPN. [Split-tunneling guide](lists.md)
 
 Give each device a unique name. Use the same user name for several devices when you want to manage them together. To rotate a device key, add a replacement, test its profile, then revoke the old device. Send users only their own device profiles. The operator folder also holds administrative keys and pinned SSH host keys.
 

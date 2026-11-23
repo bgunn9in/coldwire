@@ -186,6 +186,18 @@ class AccessPanelTests(unittest.TestCase):
             panel.panel(Namespace(folder=self.folder))
         recover.assert_called_once()
 
+    def test_list_update_available_before_and_after_installing(self):
+        for installed in (True, False):
+            with self.subTest(installed=installed):
+                if not installed:
+                    (self.folder / 'operator.json').unlink()
+                with (patch('builtins.input', side_effect=['12', '0']),
+                      patch.object(panel.update_lists, 'main') as update,
+                      patch.object(panel, 'authorized') as ssh, patch('builtins.print')):
+                    panel.panel(Namespace(folder=self.folder))
+                update.assert_called_once_with([])
+                ssh.assert_not_called()
+
     def test_migration_menu_requires_confirmation_for_changes(self):
         (self.folder / 'operator.json').write_text(json.dumps(self.manifest | {'legacy_exit': True}))
         choices = ['9', '2', 'n', '1', '4', 'y', '0', '0']
