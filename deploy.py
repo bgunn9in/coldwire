@@ -111,7 +111,7 @@ class Remote:
             self.close()
             raise
 
-    def run(self, script, *, privileged=True, check=True, timeout=900):
+    def run(self, script, *, privileged=True, check=True, timeout=900, output_limit=16_000_000):
         # sudo alone consumes its password; child programs never inherit that input.
         command = 'bash -e -o pipefail -c ' + shlex.quote('exec </dev/null\n' + script)
         payload = b''
@@ -132,11 +132,15 @@ class Remote:
             while True:
                 while channel.recv_ready():
                     output.extend(channel.recv(65536))
+                    if len(output) > output_limit:
+                        raise DeployError(self.server.role + ': remote output exceeded limit')
                 while channel.recv_stderr_ready():
                     errors.extend(channel.recv_stderr(65536))
-                if len(output) + len(errors) > 16_000_000:
-                    raise DeployError(self.server.role + ': remote output exceeded limit')
-                if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                    if len(output) + len(errors) > output_limit:
+                        raise DeployError(self.server.role + ': remote output exceeded limit')
+                if (channel.closed or channel.eof_received) and channel.exit_status_ready() and not (
+                    channel.recv_ready() or channel.recv_stderr_ready()
+                ):
                     break
                 if time.monotonic() > deadline:
                     raise DeployError(self.server.role + ': remote command timed out')

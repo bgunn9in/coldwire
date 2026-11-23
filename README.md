@@ -21,9 +21,9 @@ Use two amd64 servers running Ubuntu 22.04, 24.04 or 26.04 LTS, or Debian 12 or 
 The installer also serves as the administration panel. Run it on Windows or one of the supported Linux releases with CPython 3.10 or newer and the OpenSSH client.
 
 1. Download and extract `COLDWIRE-Access-Panel.zip` from the [latest release](https://github.com/bgunn9in/coldwire/releases/latest).
-2. Open `COLDWIRE-Admin.cmd` on Windows or run `bash COLDWIRE-Admin.sh` on Linux. For a new installation, enter each VPS’s IPv4 address, SSH username and password. Append `:port` if SSH uses a port other than 22.
+2. Open `COLDWIRE-Admin.cmd` on Windows or run `bash COLDWIRE-Admin.sh` on Linux. For a new installation, choose **Install COLDWIRE** and enter each VPS’s IPv4 address, SSH username and password. Append `:port` if SSH uses a port other than 22.
 3. Import the generated `client1.vpn` in [COLDWIRE Amnezia VPN](https://github.com/bgunn9in/COLDWIRE-amnezia-client/releases/latest). Connect and check that a site reached through the VPN sees B’s IPv4.
 
-The [tutorial](docs/access-panel.md) covers provider firewall rules, rollback, profile import and device management. The panel also converts existing AmneziaVPN exports when their peer is registered on B.
+The [tutorial](docs/access-panel.md) covers setup, profile import, device management and moving a Docker-based exit to systemd from the same panel.
 
 Use [the split-tunneling lists](docs/lists.md) to send selected destinations directly. See [sources](docs/sources.md) for address data and upstream software and [third-party notices](THIRD_PARTY_NOTICES.md) for licenses.

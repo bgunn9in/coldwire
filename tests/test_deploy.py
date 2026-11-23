@@ -14,6 +14,40 @@ except ImportError:
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_ssh_stdout_remains_open_after_exit_status(self):
+        from unittest.mock import patch
+
+        class Channel:
+            closed = False
+            eof_received = False
+            buffered = False
+
+            def recv_ready(self):
+                return self.buffered
+
+            def recv(self, _):
+                self.buffered, self.eof_received = False, True
+                return b'last bytes'
+
+            def recv_stderr_ready(self):
+                return False
+
+            def exit_status_ready(self):
+                return True
+
+            def recv_exit_status(self):
+                return 0
+
+            def __getattr__(self, name):
+                return lambda *args: None
+
+        channel = Channel()
+        remote = deploy.Remote.__new__(deploy.Remote)
+        remote.root = True
+        remote.transport = SimpleNamespace(open_session=lambda **kwargs: channel)
+        with patch.object(deploy.time, 'sleep', side_effect=lambda _: setattr(channel, 'buffered', True)):
+            self.assertEqual(remote.run('true'), b'last bytes')
+
     def test_private_and_multicast_addresses_are_explicitly_restricted(self):
         self.assertEqual(deploy.validate_address('10.0.0.2', True), '10.0.0.2')
         for address, lab in (('10.0.0.2', False), ('239.0.0.1', True), ('127.0.0.1', True)):

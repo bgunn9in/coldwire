@@ -36,18 +36,23 @@ class AccessPanelTests(unittest.TestCase):
         self.source = self.folder / 'Amnezia export.vpn'
         self.source.write_bytes(encode(self.guest))
         self.spa = {'cookie_key': 'aa' * 32, 'devices': [], 'admins': ['ff' * 32]}
+        self.commands = []
         fixture = self
 
         class Entry:
             def run(self, command):
+                fixture.commands.append(('entry', command))
                 return json.dumps(fixture.spa).encode()
 
         class Exit:
             def run(self, command):
+                fixture.commands.append(('exit', command))
                 if command.endswith('public-key'):
                     return key(6).encode()
                 if command.endswith('allowed-ips'):
                     return f'{key(3)}\t10.8.1.2/32\n'.encode()
+                if 'cat -- /etc/native/awg0.conf' in command:
+                    return f'[Interface]\n[Peer]\nPublicKey = {key(3)}\n'.encode()
                 return json.dumps({key(3): 'native-peer-name'}).encode()
 
         @contextmanager
@@ -102,6 +107,93 @@ class AccessPanelTests(unittest.TestCase):
         export = decode((self.folder / 'migrated-coldwire.vpn').read_bytes())
         self.assertEqual(client_config(awg_section(export))['coldwireSpa']['key'], assigned)
         self.register.assert_not_called()
+
+    def use_pilot_and_migrated_exit(self):
+        native = {'awg': '/opt/native/awg', 'config': '/etc/native/awg0.conf'}
+        self.manifest.update(legacy_exit=False, pilot_spa=True, native_exit=native)
+        (self.folder / 'operator.json').write_text(json.dumps(self.manifest))
+        return native
+
+    def test_manage_pairs_the_pilot_spa_with_the_migrated_config(self):
+        native = self.use_pilot_and_migrated_exit()
+        template = self.source.read_bytes()
+        (self.folder / 'legacy-template.vpn').write_bytes(template)
+        args = Namespace(folder=self.folder, action='add', name='guest', user=None)
+        with patch.object(panel.legacy_profiles, 'add', return_value=(self.guest, key(3))) as add:
+            panel.manage(args)
+        self.assertEqual(add.call_args.args[2], template)
+        self.assertEqual(add.call_args.kwargs['native'], native)
+        self.assertEqual(self.register.call_args.args[-2:], (panel.PILOT_SPA, panel.PILOT_KEYS))
+        profile = self.folder / 'guest.vpn'
+        self.assertTrue(profile.is_file())
+        with patch.object(panel.legacy_profiles, 'revoke') as revoke:
+            args.action = 'revoke'
+            panel.manage(args)
+        self.assertEqual(revoke.call_args.args[2], key(3))
+        self.assertEqual(revoke.call_args.kwargs['native'], native)
+        self.assertEqual(self.register.call_args.args[-2:], (panel.PILOT_SPA, panel.PILOT_KEYS))
+        self.assertFalse(profile.exists())
+        self.assertEqual(self.spa['devices'], [])
+
+    def test_import_checks_the_persistent_migrated_peer_and_updates_pilot_spa(self):
+        self.use_pilot_and_migrated_exit()
+        panel.import_profile(self.arguments())
+        self.assertIn(('exit', '/opt/native/awg show awg0 public-key'), self.commands)
+        self.assertIn(('entry', f'cat {panel.PILOT_KEYS}'), self.commands)
+        self.assertEqual(self.register.call_args.args[-2:], (panel.PILOT_SPA, panel.PILOT_KEYS))
+        self.assertNotIn('native_name', json.loads((self.folder/'devices.json').read_bytes())['migrated'])
+
+    def test_failed_registry_write_revokes_the_new_native_peer_and_spa_key(self):
+        native = self.use_pilot_and_migrated_exit()
+        (self.folder / 'legacy-template.vpn').write_bytes(self.source.read_bytes())
+        args = Namespace(folder=self.folder, action='add', name='guest', user=None)
+        with (patch.object(panel.legacy_profiles, 'add', return_value=(self.guest, key(3))),
+              patch.object(panel.legacy_profiles, 'revoke') as revoke,
+              patch.object(panel, 'replace_private', side_effect=OSError('registry could not be saved'))):
+            with self.assertRaisesRegex(OSError, 'registry could not be saved'):
+                panel.manage(args)
+        self.assertEqual(revoke.call_args.args[2], key(3))
+        self.assertEqual(revoke.call_args.kwargs['native'], native)
+        self.assertEqual(self.spa['devices'], [])
+        self.assertFalse((self.folder / 'guest.vpn').exists())
+
+    def test_pilot_spa_can_also_use_a_standard_managed_native_exit(self):
+        self.assertEqual(panel.panel_backends({'pilot_spa': True}),
+                         (False, None, panel.PILOT_SPA, panel.PILOT_KEYS))
+        self.assertEqual(panel.panel_backends({'legacy_exit': True}),
+                         (True, None, panel.PILOT_SPA, panel.PILOT_KEYS))
+
+    def test_install_menu_transitions_to_device_management(self):
+        manifest = self.folder / 'operator.json'
+        manifest.unlink()
+
+        def install(args):
+            self.assertTrue(args.allow_private_endpoint)
+            manifest.write_text(json.dumps(self.manifest))
+
+        with (patch('builtins.input', side_effect=['1', '2', '0']),
+              patch.object(panel, 'install', side_effect=install) as wizard,
+              patch.object(panel, 'manage') as manage,
+              patch('builtins.print')):
+            panel.panel(Namespace(folder=self.folder, allow_private_endpoint=True))
+        wizard.assert_called_once()
+        self.assertEqual(manage.call_args.args[0].action, 'list')
+
+    def test_recovery_menu_available_before_installing(self):
+        (self.folder / 'operator.json').unlink()
+        with (patch('builtins.input', side_effect=['10', '0']),
+              patch.object(panel, 'recovery_menu') as recover, patch('builtins.print')):
+            panel.panel(Namespace(folder=self.folder))
+        recover.assert_called_once()
+
+    def test_migration_menu_requires_confirmation_for_changes(self):
+        (self.folder / 'operator.json').write_text(json.dumps(self.manifest | {'legacy_exit': True}))
+        choices = ['9', '2', 'n', '1', '4', 'y', '0', '0']
+        with (patch('builtins.input', side_effect=choices), patch('builtins.print'),
+              patch.object(panel, 'migrate_exit') as migrate):
+            panel.panel(Namespace(folder=self.folder))
+        self.assertEqual([call.args[0].action for call in migrate.call_args_list], ['status', 'rollback'])
+        self.assertTrue(all(call.args[0].timeout == 600 for call in migrate.call_args_list))
 
     def test_ssh_ignores_paths_from_another_operator_computer(self):
         (self.folder / 'ssh_config').write_text('IdentityFile X:/other/computer')

@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import zlib
@@ -23,7 +24,10 @@ import paramiko
 from convert_profile import awg_section, client_config, convert, decode, encode
 from deploy import ROOT, DeployError, Remote, Server, deploy, probe_relay, validate_address
 from exit_config import replace_private, valid_key, write_private
+import create_backup
+import exit_migration
 import legacy_profiles
+import restore_backup
 from servers.lockdown_rules import admission_gate, firewall
 from servers.spa_access import key_bytes, request
 
@@ -34,11 +38,15 @@ STAGE = f'bash {TOOLS}/stage-lockdown.sh'
 LIVE_TABLE = (f'if command -v nft >/dev/null; then nft list table inet coldwire_lockdown; '
               f'else {TOOLS}/nft list table inet coldwire_lockdown; fi')
 SPA = '/etc/coldwire-access/spa-keys.json'
+PILOT_SPA = 'coldwire-spa-pilot.service'
+PILOT_KEYS = CONFIG + '/pilot-keys.json'
 NATIVE = 'python3 /opt/awg-relay-kit/install_exit.py'
 NATIVE_AWG = '/usr/local/libexec/awg-relay-kit/awg'
 DEFAULT_PORT = 32497
 SPA_PORT = 62201
 NAME = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,47}')
+PANEL_ERRORS = (OSError, ValueError, DeployError, KeyError, paramiko.SSHException, zlib.error)
+RECOVERY_ERRORS = (OSError, ValueError, KeyError, EOFError, tarfile.TarError)
 
 
 def read_server(role, args):
@@ -173,6 +181,8 @@ def register_file(entry, config, unit='coldwire-spa.service', destination=SPA):
     if not 1 <= len(keys) <= 4096 or len(set(keys)) != len(keys):
         raise ValueError('Invalid number or duplicate SPA keys')
     restart = f'systemctl restart {unit}; systemctl is-active --quiet {unit}'
+    if unit == PILOT_SPA:
+        restart += '; systemctl start coldwire-lockdown-ssh.service'
     put(entry, destination, json.dumps(config, indent=2) + '\n')
     try:
         entry.run(restart)
@@ -304,6 +314,22 @@ def load_devices(path):
             for name, value in json.loads(path.read_text()).items()}
 
 
+def panel_backends(manifest):
+    legacy = manifest.get('legacy_exit', False)
+    pilot = manifest.get('pilot_spa', legacy)
+    if type(pilot) is not bool:
+        raise ValueError('pilot_spa must be a boolean')
+    native = manifest.get('native_exit')
+    if native is not None and (
+        not isinstance(native, dict) or set(native) != {'awg', 'config'} or
+        any(not isinstance(path, str) or not re.fullmatch(r'/[A-Za-z0-9._/-]+', path)
+            or '..' in path.split('/') for path in native.values())
+    ):
+        raise ValueError('native_exit needs absolute Linux paths for awg and config')
+    unit, keyfile = (PILOT_SPA, PILOT_KEYS) if pilot else ('coldwire-spa.service', SPA)
+    return legacy or native is not None, native, unit, keyfile
+
+
 def manage(args):
     folder = args.folder.resolve()
     registry = folder / 'devices.json'
@@ -324,43 +350,51 @@ def manage(args):
         raise ValueError('Use the same character set for user and device names')
     manifest = json.loads((folder / 'operator.json').read_text())
     first = manifest['ssh'][0]
+    existing, native, unit, keyfile = panel_backends(manifest)
     with authorized(manifest, folder) as (a, b):
-        legacy = manifest.get('legacy_exit')
-        keyfile = CONFIG + '/pilot-keys.json' if legacy else SPA
-        unit = 'coldwire-spa-pilot.service' if legacy else 'coldwire-spa.service'
         config = json.loads(a.run(f'cat {keyfile}'))
         if action == 'add':
-            if name in devices or (folder / (name + '.vpn')).exists():
+            output = folder / (name + '.vpn')
+            if name in devices or output.exists():
                 raise ValueError('Device name or output profile already exists')
             device = secrets.token_hex(32)
             config['devices'].append(device)
-            if legacy:
-                profile, public = legacy_profiles.add(b, put, (folder / 'legacy-template.vpn').read_bytes())
+            if existing:
+                profile, public = legacy_profiles.add(b, put, (folder / 'legacy-template.vpn').read_bytes(), native=native)
             else:
                 b.run(f'{NATIVE} add-client --name {name}')
                 profile = decode(b.run(f'cat /root/awg-relay-kit-clients/{name}/client.vpn'))
                 public = client_config(awg_section(profile))['client_pub_key']
+            written = False
             try:
                 profile['description'] = name
                 result = encode(convert(profile, first['host'], manifest['awg_port'], spa_key=device, spa_port=manifest['spa_port']))
                 register_file(a, config, unit, keyfile)
-                write_private(folder / (name + '.vpn'), result)
+                write_private(output, result)
+                written = True
+                devices[name] = {'user': user, 'spa': device, 'peer': public}
+                replace_private(registry, json.dumps(devices, indent=2) + '\n')
             except BaseException:
-                if legacy:
-                    legacy_profiles.revoke(b, put, public)
-                else:
-                    b.run(f'{NATIVE} remove-client --name {name}')
-                config['devices'].remove(device)
-                register_file(a, config, unit, keyfile)
+                try:
+                    if existing:
+                        legacy_profiles.revoke(b, put, public, native=native)
+                    else:
+                        b.run(f'{NATIVE} remove-client --name {name}')
+                finally:
+                    config['devices'].remove(device)
+                    try:
+                        register_file(a, config, unit, keyfile)
+                    finally:
+                        if written:
+                            output.unlink(missing_ok=True)
                 raise
-            devices[name] = {'user': user, 'spa': device, 'peer': public}
         elif action in ('revoke', 'revoke-user'):
             names = [name] if action == 'revoke' else [device for device, record in devices.items() if record['user'] == name]
             if not names or any(device not in devices for device in names):
                 raise ValueError('No such device or user')
             for device in names:
-                if legacy:
-                    legacy_profiles.revoke(b, put, devices[device]['peer'])
+                if existing:
+                    legacy_profiles.revoke(b, put, devices[device]['peer'], native=native)
                 else:
                     peer_name = devices[device].get('native_name', device)
                     b.run(f'{NATIVE} remove-client --name {shlex.quote(peer_name)}')
@@ -370,7 +404,7 @@ def manage(args):
             for device in names:
                 (folder / (device + '.vpn')).unlink(missing_ok=True)
                 del devices[device]
-        replace_private(registry, json.dumps(devices, indent=2) + '\n')
+            replace_private(registry, json.dumps(devices, indent=2) + '\n')
     print(action, name)
 
 
@@ -401,10 +435,8 @@ def import_profile(args):
         tunnel = f'{ipaddress.IPv4Address(client["client_ip"])}/32'
     except (ValueError, TypeError, AttributeError, KeyError, zlib.error):
         raise ValueError('Unsupported AmneziaWG profile. An administrator export without client data needs its matching client .vpn.') from None
-    legacy = manifest.get('legacy_exit')
-    backend = legacy_profiles.AWG if legacy else NATIVE_AWG
-    unit = 'coldwire-spa-pilot.service' if legacy else 'coldwire-spa.service'
-    keyfile = CONFIG + '/pilot-keys.json' if legacy else SPA
+    existing, native, unit, keyfile = panel_backends(manifest)
+    backend = legacy_profiles.awg_command(native) if existing else NATIVE_AWG
     with authorized(manifest, folder) as (a, b):
         if b.run(f'{backend} show awg0 public-key').decode().strip() != server_key:
             raise ValueError('The profile belongs to a different exit server')
@@ -412,7 +444,11 @@ def import_profile(args):
         if tunnel not in allowed.get(public, '').replace(',', ' ').split():
             raise ValueError('The profile peer or its tunnel IP is missing from the exit server')
         native_name = None
-        if not legacy:
+        if native:
+            _, peers = legacy_profiles.blocks(legacy_profiles.read_config(b, native))
+            if not any(legacy_profiles.fields(peer)['PublicKey'] == public for peer in peers):
+                raise ValueError('The exit has no persistent registration for this peer')
+        elif not existing:
             script = ('import json; s=json.load(open("/etc/awg-relay-kit-exit/server.json")); '
                       'print(json.dumps({v["public_key"]:n for n,v in s["clients"].items()}))')
             native_name = json.loads(b.run('python3 -c ' + shlex.quote(script))).get(public)
@@ -489,15 +525,140 @@ def status(args):
     print('Operator files:', folder)
 
 
-def panel(args):
-    if not (args.folder / 'operator.json').is_file():
-        args.entry = args.exit = args.entry_user = args.exit_user = None
-        args.allow_private_endpoint = args.strict_host_keys = False
-        install(args)
+def migrate_exit(args):
+    folder = args.folder.resolve()
+    operator = folder / 'operator.json'
+    manifest = json.loads(operator.read_text())
+    existing, native, unit, _ = panel_backends(manifest)
+    if not existing or unit != PILOT_SPA:
+        raise ValueError('This migration is for a Docker exit with pilot SPA on A')
+    if args.action == 'stage' and (native is not None or not 60 <= args.timeout <= 3600):
+        raise ValueError('Stage needs a Docker operator configuration and a timeout of 60–3600 seconds')
+    with authorized(manifest, folder) as (a, b):
+        if args.action == 'stage':
+            entry = ipaddress.IPv4Address(manifest['ssh'][0]['host'])
+            a.run(f'systemctl is-active --quiet {PILOT_SPA}')
+            exit_migration.stage(entry, b, folder, args.timeout, put)
+            return
+        current = exit_migration.state(b)
+        if args.action == 'status':
+            print(f'B: {current}. Panel: {"native" if native else "docker"}.')
+        elif args.action == 'rollback':
+            if current != 'pending':
+                raise ValueError('Only a pending migration can be rolled back')
+            b.run(f'{exit_migration.DRIVER} rollback', timeout=150)
+            print('B restored the original Docker service. The panel still uses Docker.')
+        else:
+            if current == 'pending':
+                b.run(f'{exit_migration.DRIVER} confirm', timeout=50)
+            elif current != 'native':
+                raise ValueError('B has no native migration to confirm')
+            b.run('systemctl is-active --quiet awg-relay-kit-exit.service')
+            updated = manifest | {'legacy_exit': False, 'pilot_spa': True, 'native_exit': exit_migration.NATIVE_EXIT}
+            if updated != manifest:
+                replace_private(operator, json.dumps(updated, indent=2) + '\n')
+            print('Native B confirmed. The panel uses native peers through pilot SPA on A.')
+
+
+def migration_menu(folder):
+    actions = {
+        '1': ('status', None),
+        '2': ('stage', 'Switch B to native AmneziaWG and arm the 10-minute rollback? [y/N] '),
+        '3': ('confirm', 'Have you verified SSH and your existing VPN profile? [y/N] '),
+        '4': ('rollback', 'Restore the Docker exit now? [y/N] '),
+    }
     while True:
+        print('\nExit migration\n1 Migration status\n2 Start migration\n3 Confirm migration\n4 Roll back\n0 Back')
+        try:
+            choice = input('> ').strip()
+            if choice == '0':
+                return
+            if choice in actions:
+                action, question = actions[choice]
+                if question is None or input(question).strip().lower() in {'y', 'yes'}:
+                    migrate_exit(argparse.Namespace(folder=folder, action=action, timeout=600))
+        except EOFError:
+            return
+        except PANEL_ERRORS as error:
+            print(f'COLDWIRE: {error}', file=sys.stderr)
+
+
+def restore_action(args):
+    if args.action == 'operator' and args.to is None:
+        args.to = args.folder
+    if args.action != 'check' and args.to is None:
+        raise ValueError('Use --to to choose a new destination')
+    return restore_backup.recover(args)
+
+
+def backup_action(args):
+    archive, key = create_backup.create(args.folder.resolve(), args.to, args.portable_key, authorized)
+    print(f'Backup verified and saved to {archive}')
+    print(f'Recovery key saved to {key}')
+
+
+def recovery_menu():
+    actions = {'1': 'check', '2': 'operator', '3': 'export-nodes', '4': 'portable-key'}
+    base = restore_backup.data_home()
+    while True:
+        print('\nRestore from backup\n1 Check backup\n2 Restore operator folder\n'
+              '3 Export A and B for recovery\n4 Save a portable recovery key\n0 Back')
+        try:
+            choice = input('> ').strip()
+            if choice == '0':
+                return
+            if choice not in actions:
+                continue
+            archive = input('Backup file (Enter for most recent local backup): ').strip().strip('"')
+            if archive:
+                backup = Path(archive).expanduser()
+            else:
+                backup = max((base / 'backups').glob('*.cwbackup'), key=lambda p: p.stat().st_mtime_ns, default=None)
+                if backup is None:
+                    raise ValueError('No local .cwbackup file found. Enter its path')
+                print(f'Using {backup}')
+            key = input('Key file (Enter for the matching local key): ').strip().strip('"')
+            action = actions[choice]
+            destination = None
+            if action != 'check':
+                if action in ('operator', 'export-nodes'):
+                    print('Recovery files contain private keys. Choose a new folder on a private local disk.')
+                path = input('New destination path: ').strip().strip('"')
+                if not path:
+                    continue
+                destination = Path(path)
+            restore_action(argparse.Namespace(action=action, backup=backup, to=destination,
+                                              key=Path(key).expanduser() if key else None))
+        except (EOFError, KeyboardInterrupt):
+            return
+        except RECOVERY_ERRORS as error:
+            print(f'COLDWIRE: {error}', file=sys.stderr)
+
+
+def panel(args):
+    operator = args.folder / 'operator.json'
+    while not operator.is_file():
+        print('\nCOLDWIRE\n1 Install COLDWIRE\n10 Restore from backup\n0 Exit')
+        try:
+            choice = input('> ').strip()
+        except EOFError:
+            return
+        if choice == '0':
+            return
+        if choice == '1':
+            args.entry = args.exit = args.entry_user = args.exit_user = None
+            args.strict_host_keys = False
+            install(args)
+        elif choice == '10':
+            recovery_menu()
+
+    while True:
+        existing, _, unit, _ = panel_backends(json.loads(operator.read_text()))
+        migration = existing and unit == PILOT_SPA
         print('\nCOLDWIRE\n1 Status\n2 List users and devices\n3 Add device and export profile\n'
               '4 Revoke device\n5 SSH to entry\n6 SSH to exit\n7 Revoke user and all their devices\n'
-              '8 Import an AmneziaVPN profile\n0 Exit')
+              '8 Import an AmneziaVPN profile' + ('\n9 Exit migration' if migration else '') +
+              '\n10 Restore from backup\n11 Create backup\n0 Exit')
         try:
             choice = input('> ').strip()
         except EOFError:
@@ -518,17 +679,33 @@ def panel(args):
             elif choice == '8':
                 args.source = args.name = args.user = args.output = args.client_profile = None
                 import_profile(args)
-        except (OSError, ValueError, DeployError, KeyError, paramiko.SSHException) as error:
+            elif choice == '9' and migration:
+                migration_menu(args.folder)
+            elif choice == '10':
+                recovery_menu()
+            elif choice == '11':
+                path = input('Backup folder (Enter for the local backup folder): ').strip().strip('"')
+                portable = os.name == 'nt' and input('Use a portable recovery key? [y/N] ').strip().lower() in ('y', 'yes')
+                backup_action(argparse.Namespace(folder=args.folder, to=Path(path) if path else None,
+                                                  portable_key=portable))
+        except (EOFError, KeyboardInterrupt):
+            return
+        except (*PANEL_ERRORS, *RECOVERY_ERRORS) as error:
             print(f'COLDWIRE: {error}', file=sys.stderr)
 
 
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--folder', type=Path, default=ROOT / 'private/coldwire-installation')
+    default = ROOT / 'private/coldwire-installation'
+    installed = restore_backup.data_home() / 'access-panel'
+    if not (default / 'operator.json').is_file() and (installed / 'operator.json').is_file():
+        default = installed
+    parser.add_argument('--folder', type=Path, default=default)
+    parser.add_argument('--allow-private-endpoint', action='store_true', help='Allow local VM/LAN addresses for setup')
     commands = parser.add_subparsers(dest='command')
     setup = commands.add_parser('install')
-    setup.add_argument('--allow-private-endpoint', action='store_true')
+    setup.add_argument('--allow-private-endpoint', action='store_true', default=argparse.SUPPRESS)
     setup.add_argument('--strict-host-keys', action='store_true')
     for role in ('entry', 'exit'):
         setup.add_argument('--' + role)
@@ -547,11 +724,19 @@ def main():
     migration.add_argument('--client-profile', type=Path)
     migration.add_argument('--output', type=Path)
     migration.add_argument('--user')
+    cutover = commands.add_parser('migrate-exit', help='Move B from Docker to systemd')
+    cutover.add_argument('action', choices=('stage', 'status', 'confirm', 'rollback'))
+    cutover.add_argument('--timeout', type=int, default=600, help='Rollback timeout in seconds (stage only)')
+    restore_backup.parser_options(commands.add_parser('restore', help='Check a backup or recover an installation'))
+    backup = commands.add_parser('backup', help='Back up A, B and the operator folder')
+    backup.add_argument('--to', type=Path, help='Destination folder for the encrypted archive')
+    backup.add_argument('--portable-key', action='store_true', help='Protect the recovery key with a passphrase instead of Windows DPAPI')
     args = parser.parse_args()
     try:
         return {None: panel, 'install': install, 'manage': manage, 'ssh': ssh, 'status': status,
-                'import-profile': import_profile}[args.command](args)
-    except (OSError, ValueError, DeployError, KeyError, paramiko.SSHException, subprocess.CalledProcessError) as error:
+                'import-profile': import_profile, 'migrate-exit': migrate_exit,
+                'restore': restore_action, 'backup': backup_action}[args.command](args)
+    except (*PANEL_ERRORS, *RECOVERY_ERRORS, subprocess.CalledProcessError) as error:
         parser.exit(1, f'COLDWIRE: {type(error).__name__}: {error}\n')
 
 

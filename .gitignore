@@ -11,6 +11,9 @@ __pycache__/
 *.etl
 *.zip
 *.bundle
+*.cwbackup
+*.cwkey
+*.key.dpapi
 *.tar
 *.tar.gz
 private/
