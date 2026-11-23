@@ -13,7 +13,7 @@ The shorter list covers addresses associated with 86 service families, including
 
 ## Import a list
 
-In the app’s website split-tunneling settings, choose the mode that sends listed destinations outside the VPN. Import one JSON file with **Replace list**. With the VPN on, verify that a listed destination sees your ISP’s IP and a destination routed through the VPN sees B’s IP. If the app stops connecting after import, disable website split tunneling and try again. The `ru-direct` list was tested on a phone with a working VPN connection.
+In the app’s site-based split-tunneling settings, choose **Directly** and import one JSON file with **Replace site list**. With the VPN on, verify that a listed destination sees your ISP’s IP and a destination routed through the VPN sees B’s IP. If the app stops connecting after import, disable site-based split tunneling and try again. The `ru-direct` list was tested on a phone with a working VPN connection.
 
 ## Refresh both files
 
@@ -63,3 +63,13 @@ The live runs used the November 22, 2026 RIPE snapshot and service catalog commi
 | Live `ru-direct.amnezia.json` | 2,004 | `ae337cab00517c0a37bce32b095d1899fafc6d4763dd423ee4676bedd5fd168b` |
 | Live `ru-services.amnezia.json` | 736 | `7cbda80775ec6f945f54f3f0499007cc5051212e5f9eb43edd7be549ab36f735` |
 | Live `ru-services.amnezia.json`, standalone on Ubuntu 24.04 | 740 | `58f740a111a56a3fd0e6ecd6a88f4cb438cd936669084004c638964aae16e2b8` |
+
+### Source selection and offline recovery
+
+We repeated the five-VM matrix with the new menu. Each guest ran the standalone generator with live data and with bundled snapshots, then repeated both modes in the panel. A blocked connection to RIPEstat triggered the offline prompt. After confirmation, the panel wrote a new pair that matched the bundled files. It also reported zero prefix changes when comparing the two offline pairs. The baseline files kept their original checksums.
+
+GitHub Actions built one pair of ZIPs. The Windows and Linux jobs each unpacked the archives and ran the launchers to reproduce both bundled lists. [GitHub Actions run](https://github.com/bgunn9in/coldwire/actions/runs/45282319496)
+
+## Android import test
+
+We imported both fresh lists in AmneziaVPN 5.1.1.10 on an Android 10 x86-64 emulator connected to a local AmneziaWG 3.1 guest. Each time we chose **Directly** and used **Replace site list**. A local HTTP server returned the source IP of each request. For both lists, it saw the direct path on the excluded address and the VPN peer address on the control address.
