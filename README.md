@@ -24,6 +24,6 @@ The installer also serves as the administration panel. Run it on Windows or one 
 2. Open `COLDWIRE-Admin.cmd` on Windows or run `bash COLDWIRE-Admin.sh` on Linux. For a new installation, choose **Install COLDWIRE** and enter each VPS’s IPv4 address, SSH username and password. Append `:port` if SSH uses a port other than 22.
 3. Import the generated `client1.vpn` in [COLDWIRE Amnezia VPN](https://github.com/bgunn9in/COLDWIRE-amnezia-client/releases/latest). Connect and check that a site reached through the VPN sees B’s IPv4.
 
-The [tutorial](docs/access-panel.md) covers setup, profile import, device management and moving a Docker-based exit to systemd from the same panel.
+Use the same panel to issue profiles, manage access and back up the relay. The guide explains how to run features from `main` when your release does not include them. [Panel guide](docs/access-panel.md)
 
 Use [the split-tunneling lists](docs/lists.md) to send selected destinations directly. See [sources](docs/sources.md) for address data and upstream software and [third-party notices](THIRD_PARTY_NOTICES.md) for licenses.
