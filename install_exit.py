@@ -193,7 +193,9 @@ def activate(state):
         run('systemctl', 'is-active', '--quiet', SERVICE)
         if run(str(BIN / 'awg'), 'show', 'awg0', 'public-key') != state['public_key']:
             raise RuntimeError('Unexpected server key after activation')
-        if set(run(str(BIN / 'awg'), 'show', 'awg0', 'peers').split()) != {c['public_key'] for c in state['clients'].values()}:
+        if set(run(str(BIN / 'awg'), 'show', 'awg0', 'peers').split()) != {
+            client['public_key'] for client in state['clients'].values() if not client.get('paused', False)
+        }:
             raise RuntimeError('Peer registration verification failed')
     except BaseException:
         try:
@@ -293,6 +295,39 @@ def remove_client(args):
     print('Peer revoked without restarting AWG')
 
 
+def set_client_pause(args):
+    import fcntl
+    with (STATE / 'lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = load_owned()
+        peer = state['clients'].get(args.name)
+        if peer is None:
+            raise ValueError('Unknown native peer')
+        awg = str(BIN / 'awg')
+        if run(awg, 'show', 'awg0', 'public-key') != state['public_key']:
+            raise ValueError('Runtime server key differs from saved state')
+
+        if args.paused:
+            peer['paused'] = True
+        else:
+            peer.pop('paused', None)
+        save_state(STATE, state)
+        public = peer['public_key']
+        if args.paused:
+            run(awg, 'set', 'awg0', 'peer', public, 'remove')
+        else:
+            try:
+                run(awg, 'set', 'awg0', 'peer', public, 'preshared-key', '/dev/stdin',
+                    'allowed-ips', peer['address'] + '/32', data=state['psk'] + '\n')
+            except RuntimeError:
+                peer['paused'] = True
+                save_state(STATE, state)
+                run(awg, 'set', 'awg0', 'peer', public, 'remove')
+                raise
+        if (public in run(awg, 'show', 'awg0', 'peers').split()) == args.paused:
+            raise RuntimeError('Kernel peer state did not change')
+
+
 def backup(args):
     import fcntl
     if not STATE.is_dir():
@@ -349,6 +384,10 @@ def main():
     sub = commands.add_parser('remove-client')
     sub.add_argument('--name', required=True)
     sub.set_defaults(action=remove_client)
+    for name, paused in (('pause-client', True), ('resume-client', False)):
+        sub = commands.add_parser(name)
+        sub.add_argument('--name', required=True)
+        sub.set_defaults(action=set_client_pause, paused=paused)
     sub = commands.add_parser('backup')
     sub.add_argument('--output', type=Path, required=True)
     sub.set_defaults(action=backup)

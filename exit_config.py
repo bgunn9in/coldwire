@@ -37,6 +37,8 @@ def server_config(state):
     lines += [f"{k} = {v}" for k, v in state["parameters"].items()]
     lines += [f"# I1 = {I1}"]
     for client in state["clients"].values():
+        if client.get("paused", False):
+            continue
         lines += ["", "[Peer]", f"PublicKey = {client['public_key']}",
                   f"PresharedKey = {state['psk']}", f"AllowedIPs = {client['address']}/32"]
     return "\n".join(lines) + "\n"

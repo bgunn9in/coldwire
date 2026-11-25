@@ -46,7 +46,7 @@ NATIVE_AWG = '/usr/local/libexec/awg-relay-kit/awg'
 DEFAULT_PORT = 32497
 SPA_PORT = 62201
 NAME = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,47}')
-PANEL_ERRORS = (OSError, ValueError, DeployError, KeyError, paramiko.SSHException, zlib.error)
+PANEL_ERRORS = (OSError, ValueError, DeployError, KeyError, EOFError, paramiko.SSHException, zlib.error)
 RECOVERY_ERRORS = (OSError, ValueError, KeyError, EOFError, tarfile.TarError)
 
 
@@ -56,12 +56,18 @@ def read_server(role, args):
     address = validate_address(address, args.allow_private_endpoint)
     port = int(port or '22')
     user = getattr(args, role + '_user') or input(f'{role} SSH login [root]: ').strip() or 'root'
-    password = os.environ.get('AWG_' + role.upper() + '_PASSWORD')
+    password = getattr(args, role + '_password', None)
+    key_path = getattr(args, role + '_key_path', None)
+    if password is None and not key_path:
+        password = os.environ.get('AWG_' + role.upper() + '_PASSWORD')
     if password is None:
-        password = getpass(f'{role} SSH password: ')
-    if not 1 <= port <= 65535 or not NAME.fullmatch(user) or not password or any(c in password for c in '\r\n\0'):
+        password = '' if key_path else getpass(f'{role} SSH password: ')
+    if not 1 <= port <= 65535 or not NAME.fullmatch(user) or not (password or key_path) or any(c in password for c in '\r\n\0'):
         raise ValueError('Invalid address, port, SSH login or password')
-    return Server(role, address, address, port, user, password, password)
+    return Server(role, address, address, port, user, password, password,
+                  fingerprint=getattr(args, role + '_fingerprint', ''),
+                  key_path=Path(key_path) if key_path else None,
+                  key_passphrase=(getattr(args, role + '_key_passphrase', '') or '').encode() or None)
 
 
 def put(remote, filename, body, mode=0o600):
@@ -265,8 +271,17 @@ def install(args):
     first, second = (read_server(role, args) for role in ('entry', 'exit'))
     if first.address == second.address:
         raise ValueError('Use two different servers')
+    routing = {}
+    if getattr(args, 'routing', None):
+        add_routing_policy(routing, args.routing, {'ssh': [{'host': first.host}, {'host': second.host}]})
     folder.mkdir(parents=True, mode=0o700)
-    subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(folder / 'ssh')], check=True)
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    owner_key = Ed25519PrivateKey.generate()
+    write_private(folder / 'ssh', owner_key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption()))
+    write_private(folder / 'ssh.pub', owner_key.public_key().public_bytes(
+        serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH) + b'\n')
     admin = secrets.token_hex(32)
     device = secrets.token_hex(32)
     write_private(folder / 'admin.key', admin + '\n')
@@ -277,6 +292,8 @@ def install(args):
         stack.callback(a.close)
         b = Remote(second, known, not args.strict_host_keys)
         stack.callback(b.close)
+        if getattr(args, 'unattended_owner', False) and (a.needs_sudo_password or b.needs_sudo_password):
+            raise DeployError('Client administration needs root or non-interactive sudo')
         if a.run('cat /etc/machine-id') == b.run('cat /etc/machine-id'):
             raise DeployError('Both addresses resolve to the same server')
         a_path, b_path = route(a, second.address), route(b, first.address)
@@ -298,6 +315,7 @@ def install(args):
              'port': port, 'fingerprint': fingerprint(remote)} for remote, port in ((a, first_port), (b, second_port))]}
         write_private(folder / 'operator.json', json.dumps(manifest, indent=2) + '\n')
         profile = decode((folder / 'native/client.vpn').read_bytes())
+        profile.update(routing)
         write_private(folder / 'client1.vpn', encode(convert(profile, first.address, DEFAULT_PORT, spa_key=device)))
         write_private(folder / 'devices.json', json.dumps({'client1': {'user': 'client1', 'spa': device}}) + '\n')
         install_file(b, 'spa_access.py', TOOLS)
@@ -331,19 +349,71 @@ def panel_backends(manifest):
     return legacy or native is not None, native, unit, keyfile
 
 
+def add_routing_policy(profile, mode, manifest):
+    if mode not in ('all', 'ru-direct', 'ru-services'):
+        raise ValueError('Unknown routing policy')
+    networks = []
+    if mode != 'all':
+        rows = json.loads((ROOT / f'{mode}.amnezia.json').read_bytes())
+        networks = [ipaddress.IPv4Network(row['ip']) for row in rows]
+        for node in manifest['ssh']:
+            host = ipaddress.IPv4Network(node['host'])
+            networks = [part for network in networks
+                        for part in (network.address_exclude(host) if host.subnet_of(network) else (network,))]
+        networks = list(ipaddress.collapse_addresses(networks))
+        if not networks or len(networks) > 2048 or update_lists.legacy_routes(networks) > 2010:
+            raise ValueError('Routing policy exceeds the Android route budget')
+    profile['format_version'] = 2
+    profile['coldwireRouting'] = {'version': 1, 'mode': mode, 'ipv4': [str(network) for network in networks]}
+
+
+@contextmanager
+def operator_lock(path):
+    with path.open('ab') as lock:
+        if os.name == 'nt':
+            import msvcrt
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def manage(args):
     folder = args.folder.resolve()
+    with operator_lock(folder / '.manage.lock'):
+        manage_locked(args, folder)
+
+
+def manage_locked(args, folder):
     registry = folder / 'devices.json'
     command = args.action or input('1 Add device, 2 revoke device, 3 list devices, 4 revoke user: ').strip()
     action = {'1': 'add', '2': 'revoke', '3': 'list', '4': 'revoke-user'}.get(command, command)
     devices = load_devices(registry)
+
+    def save_registry():
+        replace_private(registry, json.dumps(devices, indent=2) + '\n')
+        checkpoint = getattr(args, 'checkpoint', None)
+        if checkpoint is not None:
+            checkpoint()
+
     if action == 'list':
+        rows = []
         for name, record in sorted(devices.items(), key=lambda pair: (pair[1]['user'], pair[0])):
-            print(record['user'], name)
+            paused = bool(record.get('paused') or record.get('user_paused'))
+            state = 'pending' if record.get('pending') else 'paused' if paused else 'active'
+            rows.append(dict(id=name, user=record['user'], state=state, pendingOn=record.get('pending', '')))
+        if getattr(args, 'json', False):
+            print(json.dumps(rows, ensure_ascii=False))
+        else:
+            for row in rows:
+                print(row['user'], row['id'], row['state'])
         return
-    if action not in ('add', 'revoke', 'revoke-user'):
-        raise ValueError('Choose add, revoke, revoke-user or list')
-    name = args.name or input('User name: ' if action == 'revoke-user' else 'Device name: ').strip()
+    user_action = action in ('revoke-user', 'pause-user', 'resume-user')
+    pause_action = action in ('pause', 'resume', 'pause-user', 'resume-user')
+    if action not in ('add', 'revoke', 'revoke-user') and not pause_action:
+        raise ValueError('Choose add, revoke, pause, resume or list')
+    name = args.name or input('User name: ' if user_action else 'Device name: ').strip()
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,47}', name):
         raise ValueError('Use 1–48 ASCII letters, digits, _ or -')
     user = getattr(args, 'user', None) or name
@@ -358,6 +428,11 @@ def manage(args):
             output = folder / (name + '.vpn')
             if name in devices or output.exists():
                 raise ValueError('Device name or output profile already exists')
+            if any(record['user'] == user and record.get('user_paused') for record in devices.values()):
+                raise ValueError('Resume the user before adding a device')
+            routing = {}
+            if getattr(args, 'routing', None):
+                add_routing_policy(routing, args.routing, manifest)
             device = secrets.token_hex(32)
             config['devices'].append(device)
             if existing:
@@ -369,12 +444,13 @@ def manage(args):
             written = False
             try:
                 profile['description'] = name
+                profile.update(routing)
                 result = encode(convert(profile, first['host'], manifest['awg_port'], spa_key=device, spa_port=manifest['spa_port']))
                 register_file(a, config, unit, keyfile)
                 write_private(output, result)
                 written = True
                 devices[name] = {'user': user, 'spa': device, 'peer': public}
-                replace_private(registry, json.dumps(devices, indent=2) + '\n')
+                save_registry()
             except BaseException:
                 try:
                     if existing:
@@ -388,11 +464,62 @@ def manage(args):
                     finally:
                         if written:
                             output.unlink(missing_ok=True)
+                    if devices.pop(name, None) is not None:
+                        save_registry()
                 raise
-        elif action in ('revoke', 'revoke-user'):
-            names = [name] if action == 'revoke' else [device for device, record in devices.items() if record['user'] == name]
+        else:
+            names = ([device for device, record in devices.items() if record['user'] == name]
+                     if user_action else [name])
             if not names or any(device not in devices for device in names):
                 raise ValueError('No such device or user')
+            if pause_action:
+                if any(devices[device].get('pendingAction') == 'revoke' for device in names):
+                    raise ValueError('Finish revoking the device before changing its pause state')
+                if existing and not native:
+                    raise ValueError('Pause requires a COLDWIRE-managed systemd exit')
+                def update_exit(device, suspended):
+                    record = devices[device]
+                    if native:
+                        legacy_profiles.set_pause(b, put, record['peer'], suspended, native=native)
+                    else:
+                        peer_name = record.get('native_name', device)
+                        command = 'pause-client' if suspended else 'resume-client'
+                        b.run(f'{NATIVE} {command} --name {shlex.quote(peer_name)}')
+
+                field = 'user_paused' if user_action else 'paused'
+                for device in names:
+                    devices[device][field] = action.startswith('pause')
+                    devices[device]['pending'] = 'exit'
+                save_registry()
+                paused = {device for device in names if devices[device].get('paused') or devices[device].get('user_paused')}
+                for device in sorted(paused):
+                    update_exit(device, True)
+                denied = {devices[device]['spa'] for device in paused}
+                keys = [key for key in config['devices'] if key not in denied]
+                for device in names:
+                    if device not in paused and devices[device]['spa'] not in keys:
+                        keys.append(devices[device]['spa'])
+                if keys != config['devices']:
+                    for device in names:
+                        devices[device]['pending'] = 'entry'
+                    save_registry()
+                    config['devices'] = keys
+                    register_file(a, config, unit, keyfile)
+                for device in names:
+                    if device not in paused:
+                        devices[device]['pending'] = 'exit'
+                save_registry()
+                for device in names:
+                    if device not in paused:
+                        update_exit(device, False)
+                    devices[device].pop('pending', None)
+                save_registry()
+                print(action, name)
+                return
+            for device in names:
+                devices[device]['pendingAction'] = 'revoke'
+                devices[device]['pending'] = 'exit'
+            save_registry()
             for device in names:
                 if existing:
                     legacy_profiles.revoke(b, put, devices[device]['peer'], native=native)
@@ -400,12 +527,16 @@ def manage(args):
                     peer_name = devices[device].get('native_name', device)
                     b.run(f'{NATIVE} remove-client --name {shlex.quote(peer_name)}')
             keys = {devices[device]['spa'] for device in names}
-            config['devices'] = [key for key in config['devices'] if key not in keys]
-            register_file(a, config, unit, keyfile)
+            for device in names:
+                devices[device]['pending'] = 'entry'
+            save_registry()
+            if keys.intersection(config['devices']):
+                config['devices'] = [key for key in config['devices'] if key not in keys]
+                register_file(a, config, unit, keyfile)
             for device in names:
                 (folder / (device + '.vpn')).unlink(missing_ok=True)
                 del devices[device]
-            replace_private(registry, json.dumps(devices, indent=2) + '\n')
+            save_registry()
     print(action, name)
 
 
@@ -735,9 +866,12 @@ def main():
         setup.add_argument('--' + role)
         setup.add_argument('--' + role + '-user')
     users = commands.add_parser('manage')
-    users.add_argument('action', nargs='?', choices=('add', 'revoke', 'revoke-user', 'list'))
+    users.add_argument('action', nargs='?', choices=('add', 'revoke', 'revoke-user', 'list',
+                                                   'pause', 'resume', 'pause-user', 'resume-user'))
     users.add_argument('name', nargs='?')
     users.add_argument('--user')
+    users.add_argument('--routing', choices=('all', 'ru-services', 'ru-direct'))
+    users.add_argument('--json', action='store_true')
     login = commands.add_parser('ssh')
     login.add_argument('node', choices=('entry', 'exit'))
     login.add_argument('remote_command', nargs=argparse.REMAINDER)

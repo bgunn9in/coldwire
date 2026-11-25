@@ -1,5 +1,6 @@
 """Edit peer blocks in an existing Docker or migrated native AWG configuration."""
 
+import base64
 import hashlib
 from ipaddress import IPv4Interface, ip_network
 import json
@@ -14,6 +15,7 @@ from exit_config import valid_key
 CONTAINER = 'amnezia-awg2'
 AWG = f'docker exec -i {CONTAINER} awg'
 CONFIG = '/opt/amnezia/awg/awg0.conf'
+PAUSE_MARKER = '# COLDWIRE-PAUSED '
 
 
 def blocks(text):
@@ -25,6 +27,17 @@ def blocks(text):
 
 def fields(text):
     return dict((name.strip(), value.strip()) for name, value in re.findall(r'^([^#=\r\n]+)=(.*)$', text, re.MULTILINE))
+
+
+def paused_peers(header):
+    for line in header.splitlines(keepends=True):
+        if line.startswith(PAUSE_MARKER):
+            public, encoded = line.removeprefix(PAUSE_MARKER).split()
+            peer = base64.b64decode(encoded, validate=True).decode()
+            if (not peer.startswith('[Peer]\n') or fields(peer).get('PublicKey') != valid_key(public)
+                    or len(blocks('[Interface]\n' + peer)[1]) != 1):
+                raise ValueError('Invalid persisted paused peer')
+            yield public, peer, line
 
 
 def awg_command(native):
@@ -113,7 +126,8 @@ def add(remote, upload, template, *, native=None):
     else:
         interface = IPv4Interface(fields(header)['Address'])
     used = {interface.ip}
-    configured = [network.strip() for peer in peers for network in fields(peer)['AllowedIPs'].split(',')]
+    reserved = peers + [peer for _, peer, _ in paused_peers(header)]
+    configured = [network.strip() for peer in reserved for network in fields(peer)['AllowedIPs'].split(',')]
     running = remote.run(command + ' show awg0 allowed-ips').decode().splitlines()
     live = [network for line in running for network in line.replace(',', ' ').split()[1:] if network != '(none)']
     for network in configured + live:
@@ -150,8 +164,43 @@ def revoke(remote, upload, public, *, native=None):
     valid_key(public)
     previous = read_config(remote, native)
     header, peers = blocks(previous)
+    for key, _, marker in paused_peers(header):
+        if key == public:
+            header = header.replace(marker, '', 1)
     remaining = [peer for peer in peers if fields(peer)['PublicKey'] != public]
-    if len(remaining) != len(peers):
+    if header + ''.join(remaining) != previous:
         apply(remote, upload, previous, header + ''.join(remaining), public, native=native)
     else:
         remote.run(f'{awg_command(native)} set awg0 peer {public} remove')
+
+
+def set_pause(remote, upload, public, paused, *, native):
+    valid_key(public)
+    previous = read_config(remote, native)
+    header, peers = blocks(previous)
+    marker = next(((peer, line) for key, peer, line in paused_peers(header) if key == public), None)
+    active = next((peer for peer in peers if fields(peer)['PublicKey'] == public), None)
+    if paused:
+        if marker and active is None:
+            remote.run(f'{awg_command(native)} set awg0 peer {public} remove')
+            return
+        if marker or active is None:
+            raise ValueError('Unexpected state for this peer')
+        encoded = base64.b64encode(active.replace('\r\n', '\n').encode()).decode()
+        header = header.rstrip('\r\n') + '\n' + PAUSE_MARKER + public + ' ' + encoded + '\n\n'
+        apply(remote, upload, previous, header + ''.join(p for p in peers if p != active), public, native=native)
+        return
+    if active and marker is None:
+        return
+    if active or marker is None:
+        raise ValueError('Unexpected state for this peer')
+    peer, line = marker
+    configuration = fields(peer)
+    address = IPv4Interface(configuration['AllowedIPs'])
+    if address.network.prefixlen != 32 or any(
+            address.ip in ip_network(network.strip())
+            for entry in peers for network in fields(entry)['AllowedIPs'].split(',')):
+        raise ValueError('Paused address is no longer available')
+    desired = header.replace(line, '', 1) + ''.join(peers)
+    apply(remote, upload, previous, desired.rstrip() + '\n\n' + peer, public, str(address),
+          configuration['PresharedKey'], native=native)
