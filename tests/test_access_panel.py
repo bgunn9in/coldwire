@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from convert_profile import awg_section, client_config, decode, encode
 from exit_config import client_profile
@@ -60,7 +60,8 @@ class AccessPanelTests(unittest.TestCase):
             yield Entry(), Exit()
 
         self.addCleanup(patch.stopall)
-        patch.object(panel, 'authorized', authorized).start()
+        self.fake_authorized = patch.object(panel, 'authorized', authorized)
+        self.fake_authorized.start()
         self.register = patch.object(panel, 'register_file', side_effect=self.register_service).start()
 
     def register_service(self, _, config, *_args):
@@ -162,6 +163,58 @@ class AccessPanelTests(unittest.TestCase):
                          (False, None, panel.PILOT_SPA, panel.PILOT_KEYS))
         self.assertEqual(panel.panel_backends({'legacy_exit': True}),
                          (True, None, panel.PILOT_SPA, panel.PILOT_KEYS))
+
+    def test_status_reports_health_without_copying_identifiers(self):
+        nodes = [Mock(server=Namespace(**endpoint)) for endpoint in self.manifest['ssh']]
+
+        def run(command, **options):
+            self.assertIs(options['check'], False)
+            if 'statistics/' in command:
+                return 0, b'5\n0\n2\n1\n'
+            if command.startswith('python3 -c '):
+                return 0, b'320\n-\n470\n'
+            if 'latest-handshakes' in command:
+                self.assertIn('show awg0 latest-handshakes | awk', command)
+                return 0, b'1760000000\n'
+            if command == f'systemctl is-active {panel.EXIT_SERVICE}':
+                return 3, b'inactive\n'
+            if command == f'systemctl is-active {panel.PILOT_SPA}':
+                return 0, b'active\n'
+            return 0, b'active\n'
+
+        for node in nodes:
+            node.run.side_effect = run
+
+        @contextmanager
+        def authorized(*_):
+            yield nodes
+
+        (self.folder / 'operator.json').write_text(json.dumps(self.manifest | {'pilot_spa': True}))
+        output = self.folder / 'report.json'
+        with patch.object(panel, 'authorized', authorized), patch('builtins.print'):
+            panel.status(Namespace(folder=self.folder, report=output))
+        raw = output.read_text()
+        self.assertNotIn('192.0.2.', raw)
+        self.assertNotIn('22222', raw)
+        self.assertNotIn('root', raw)
+        report = json.loads(raw)
+        self.assertEqual(report['access'], 'ok')
+        self.assertEqual(report['A']['spa'], 'active')
+        self.assertEqual(report['A']['wan_counters']['rx_dropped'], 2)
+        self.assertEqual(report['B']['amneziawg'], 'inactive')
+        self.assertEqual(report['B']['last_handshake_unix'], 1760000000)
+        self.assertEqual(report['a_to_b_ssh_tcp_us'], [320, None, 470])
+
+    def test_status_exports_spa_failure_without_exception_details(self):
+        self.fake_authorized.stop()
+        for endpoint in self.manifest['ssh']:
+            endpoint['fingerprint'] = 'test'
+        (self.folder / 'operator.json').write_text(json.dumps(self.manifest))
+        output = self.folder / 'report.json'
+        with patch.object(panel, 'admit', side_effect=TimeoutError('192.0.2.10')):
+            with self.assertRaisesRegex(panel.AdmissionError, 'A: administrative SPA admission failed'):
+                panel.status(Namespace(folder=self.folder, report=output))
+        self.assertEqual(json.loads(output.read_text()), {'access': 'spa_failed'})
 
     def test_install_menu_transitions_to_device_management(self):
         manifest = self.folder / 'operator.json'

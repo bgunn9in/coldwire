@@ -2,7 +2,7 @@
 
 [Русский](ru/access-panel.md) · [Project home](../README.md)
 
-This guide follows the panel in `main`. If a menu item is missing, download the latest release or use the current source.
+The diagnostics preview adds the service checks and the report described under **Status**. The rest of this guide applies to the stable panel and the preview.
 
 ## 1. Prepare both servers
 
@@ -59,7 +59,7 @@ Run the same launcher again to open the panel.
 
 | Menu item | What it does |
 | --- | --- |
-| `1 Status` | Checks both nodes and shows their SSH endpoints and firewall status. |
+| `1 Status` | Checks SSH and the firewall. The preview also checks SPA on A and AmneziaWG on B, shows the last handshake and interface counters, and measures TCP setup time from A to B. |
 | `2 List users and devices` | Lists profiles and their assigned users. |
 | `3 Add device and export profile` | Registers the AmneziaWG peer on B and its SPA key on A, then writes `<device>.vpn` into the operator folder. |
 | `4 Revoke device` | Removes that device’s VPN peer and SPA key. |
@@ -74,6 +74,10 @@ Run the same launcher again to open the panel.
 In **12**, choose a data source and optionally give the panel a folder of earlier lists for comparison. The panel prints the path to both new JSON files. Import the list you want in AmneziaVPN. [Split-tunneling guide](lists.md)
 
 Give each device a unique name. Use the same user name for several devices when you want to manage them together. To rotate a device key, add a replacement, test its profile, then revoke the old device. Send users only their own device profiles. The operator folder also holds administrative keys and pinned SSH host keys.
+
+### Save a diagnostic report
+
+In the diagnostics preview, run `python coldwire_access.py --folder "PATH" status --report relay-health.json` with the Python environment used by the panel. Pick an unused filename. The panel opens three TCP connections from A to B’s SSH port and records their setup times in microseconds. The report also includes service states. Addresses, device names and keys are omitted. [Download the diagnostics preview](https://github.com/bgunn9in/coldwire/releases/tag/preview-panel-diagnostics-20261128)
 
 ### Import an AmneziaVPN export
 

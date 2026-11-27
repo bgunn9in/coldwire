@@ -24,6 +24,7 @@ import paramiko
 from convert_profile import awg_section, client_config, convert, decode, encode
 from deploy import ROOT, DeployError, Remote, Server, deploy, probe_relay, validate_address
 from exit_config import replace_private, valid_key, write_private
+from install_exit import SERVICE as EXIT_SERVICE
 import create_backup
 import exit_migration
 import legacy_profiles
@@ -48,6 +49,10 @@ SPA_PORT = 62201
 NAME = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,47}')
 PANEL_ERRORS = (OSError, ValueError, DeployError, KeyError, paramiko.SSHException, zlib.error)
 RECOVERY_ERRORS = (OSError, ValueError, KeyError, EOFError, tarfile.TarError)
+
+
+class AdmissionError(DeployError):
+    pass
 
 
 def read_server(role, args):
@@ -222,7 +227,11 @@ def authorized(manifest, folder, bootstrap=None):
     endpoints = [Server(item['role'], item['host'], item['host'], item['port'], item['user'],
                         bootstrap[index].password if bootstrap else '', bootstrap[index].sudo_password if bootstrap else '',
                         item['fingerprint'], folder / 'ssh') for index, item in enumerate(manifest['ssh'])]
-    admit(endpoints[0].host, manifest['spa_port'], (folder / 'admin.key').read_text().strip())
+    secret = (folder / 'admin.key').read_text().strip()
+    try:
+        admit(endpoints[0].host, manifest['spa_port'], secret)
+    except (OSError, ValueError) as error:
+        raise AdmissionError('A: administrative SPA admission failed') from error
     a, b, stack = connect(*endpoints, folder / 'known_hosts', True)
     with stack:
         if not bootstrap:
@@ -512,17 +521,87 @@ def ssh(args):
                                 node['role'], *args.remote_command], cwd=folder)
 
 
+def service_state(node, command):
+    _, output = node.run(command, check=False, timeout=5, output_limit=1024)
+    state = output.decode('ascii', errors='replace').strip()
+    return state if state in {'active', 'inactive', 'failed', 'activating', 'deactivating',
+                              'running', 'exited', 'restarting', 'paused', 'dead', 'created'} else 'unknown'
+
+
+def interface_counters(node, peer):
+    destination = str(ipaddress.IPv4Address(peer.host))
+    code, output = node.run(f'''dev=$(ip -o -4 route get {destination} | awk 'NR == 1 {{
+        for (i=1; i<NF; i++) if ($i == "dev") {{print $(i+1); break}}
+    }}')
+    test -n "$dev"
+    cat /sys/class/net/"$dev"/statistics/{{rx_errors,tx_errors,rx_dropped,tx_dropped}}''',
+                            check=False, timeout=5, output_limit=1024)
+    values = output.split()
+    names = ('rx_errors', 'tx_errors', 'rx_dropped', 'tx_dropped')
+    return dict(zip(names, map(int, values))) if not code and len(values) == len(names) and all(
+        value.isdigit() and len(value) <= 20 for value in values) else None
+
+
+def entry_exit_timing(entry, exit_server):
+    destination = str(ipaddress.IPv4Address(exit_server.host))
+    port = int(exit_server.port)
+    if not 1 <= port <= 65535:
+        raise ValueError('Invalid B SSH port')
+    probe = f'''import socket
+import time
+
+for _ in range(3):
+    started = time.perf_counter_ns()
+    try:
+        with socket.create_connection(({destination!r}, {port}), timeout=1):
+            print((time.perf_counter_ns() - started) // 1000)
+    except OSError:
+        print('-')'''
+    code, output = entry.run('python3 -c ' + shlex.quote(probe), check=False, timeout=6, output_limit=1024)
+    values = output.split()
+    if code or len(values) != 3 or any(value != b'-' and (not value.isdigit() or len(value) > 10) for value in values):
+        return None
+    return [None if value == b'-' else int(value) for value in values]
+
+
 def status(args):
     folder = args.folder.resolve()
     manifest = json.loads((folder / 'operator.json').read_text())
-    with authorized(manifest, folder) as nodes:
-        for node in nodes:
-            running = node.run('systemctl is-active coldwire-lockdown-ssh.service').decode().strip()
-            loaded, _ = node.run(LIVE_TABLE, check=False)
-            code, _ = node.run(f'test ! -e {CONFIG}/pending.nft; cmp -s {CONFIG}/active.nft {CONFIG}/final.nft', check=False)
-            firewall_state = 'missing' if loaded else ('confirmed' if code == 0 else 'staged')
-            print(f'{node.server.role.upper()} {node.server.host}:{node.server.port} | SSH {running} | '
-                  f'firewall {firewall_state}')
+    existing, native, spa_unit, _ = panel_backends(manifest)
+    destination = getattr(args, 'report', None)
+    report = {'access': 'ssh_failed'}
+    try:
+        with authorized(manifest, folder) as (entry, exit_node):
+            report = {'access': 'inspection_failed'}
+            for role, node, peer in (('A', entry, exit_node), ('B', exit_node, entry)):
+                running = service_state(node, 'systemctl is-active coldwire-lockdown-ssh.service')
+                loaded, _ = node.run(LIVE_TABLE + ' >/dev/null', check=False, timeout=5)
+                code, _ = node.run(f'test ! -e {CONFIG}/pending.nft; cmp -s {CONFIG}/active.nft {CONFIG}/final.nft',
+                                   check=False, timeout=5)
+                firewall_state = 'missing' if loaded else ('confirmed' if code == 0 else 'staged')
+                report[role] = {'ssh': running, 'firewall': firewall_state, 'wan_counters': interface_counters(node, peer.server)}
+                print(f'{node.server.role.upper()} {node.server.host}:{node.server.port} | SSH {running} | '
+                      f'firewall {firewall_state}')
+            report['A']['spa'] = service_state(entry, f'systemctl is-active {spa_unit}')
+            legacy = existing and native is None
+            exit_check = (f"docker inspect -f '{{{{.State.Status}}}}' {legacy_profiles.CONTAINER}" if legacy
+                          else f'systemctl is-active {EXIT_SERVICE}')
+            report['B']['amneziawg'] = service_state(exit_node, exit_check)
+            backend = legacy_profiles.awg_command(native) if existing else NATIVE_AWG
+            command = (f'{backend} show awg0 latest-handshakes | '
+                       "awk '$NF ~ /^[0-9]+$/ && $NF > latest {latest = $NF} END {print latest + 0}'")
+            code, output = exit_node.run(command, check=False, timeout=5, output_limit=1024)
+            stamp = output.strip()
+            report['B']['last_handshake_unix'] = (int(stamp) or None) if not code and stamp.isdigit() and len(stamp) <= 12 else None
+            report['a_to_b_ssh_tcp_us'] = entry_exit_timing(entry, exit_node.server)
+            report['access'] = 'ok'
+    except AdmissionError:
+        report['access'] = 'spa_failed'
+        raise
+    finally:
+        if destination is not None:
+            write_private(destination, json.dumps(report, indent=2) + '\n')
+    print(json.dumps(report, indent=2))
     print('Operator files:', folder)
 
 
@@ -741,7 +820,8 @@ def main():
     login = commands.add_parser('ssh')
     login.add_argument('node', choices=('entry', 'exit'))
     login.add_argument('remote_command', nargs=argparse.REMAINDER)
-    commands.add_parser('status')
+    health = commands.add_parser('status')
+    health.add_argument('--report', type=Path, help='Save a JSON report without addresses, device names or keys')
     migration = commands.add_parser('import-profile', help='Enroll an existing AmneziaWG peer and export its COLDWIRE profile')
     migration.add_argument('source', type=Path)
     migration.add_argument('name')
