@@ -6,6 +6,8 @@ COLDWIRE sets up an AmneziaWG 3.1 VPN across two servers. The client asks the en
 
 [Download the access panel](https://github.com/bgunn9in/coldwire/releases/latest) · [Set up the servers](docs/access-panel.md) · [Install the VPN client](https://github.com/bgunn9in/COLDWIRE-amnezia-client/blob/feature/spa-admission/docs/spa.md)
 
+The panel diagnostics preview adds a relay health report for A and B. [Download the preview](https://github.com/bgunn9in/coldwire/releases/tag/preview-panel-diagnostics-20261128) · [Save a report](docs/access-panel.md#save-a-diagnostic-report)
+
 ## How it works
 
 ![The client requests access at A. A forwards encrypted VPN traffic to B. Optional split routes go directly to the ISP.](assets/coldwire-topology.svg)
@@ -24,7 +26,7 @@ The installer also serves as the administration panel. Run it on Windows or one 
 2. Open `COLDWIRE-Admin.cmd` on Windows or run `bash COLDWIRE-Admin.sh` on Linux. For a new installation, choose **Install COLDWIRE** and enter each VPS’s IPv4 address, SSH username and password. Append `:port` if SSH uses a port other than 22.
 3. Import the generated `client1.vpn` in [COLDWIRE Amnezia VPN](https://github.com/bgunn9in/COLDWIRE-amnezia-client/releases/latest). Connect and check that a site reached through the VPN sees B’s IPv4.
 
-Use the same panel to issue profiles, manage access and back up the relay. The guide explains how to run features from `main` when your release does not include them. [Panel guide](docs/access-panel.md)
+Use the same panel to issue profiles, manage access and back up the relay. [Panel guide](docs/access-panel.md)
 
 Choose **12 Update split-tunneling lists** in the panel to refresh the two AmneziaVPN exclusion files. You can also run the generator on Windows or Linux. [Split-tunneling guide](docs/lists.md)
 

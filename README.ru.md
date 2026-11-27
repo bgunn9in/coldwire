@@ -6,6 +6,8 @@ COLDWIRE разворачивает VPN AmneziaWG 3.1 на двух сервер
 
 [Скачать панель](https://github.com/bgunn9in/coldwire/releases/latest) · [Установить серверы](docs/ru/access-panel.md) · [Установить VPN-клиент](https://github.com/bgunn9in/COLDWIRE-amnezia-client/blob/feature/spa-admission/docs/spa.ru.md)
 
+В предварительной версии панели появился отчёт о работе узлов A и B. [Скачать сборку](https://github.com/bgunn9in/coldwire/releases/tag/preview-panel-diagnostics-20261128) · [Сохранить отчёт](docs/ru/access-panel.md#отчёт-о-работе-реле)
+
 ## Как это устроено
 
 ![Клиент запрашивает допуск на A. Узел A пересылает зашифрованный VPN-трафик на B. Прямые маршруты идут через провайдера.](assets/coldwire-topology.ru.svg)
@@ -24,7 +26,7 @@ COLDWIRE разворачивает VPN AmneziaWG 3.1 на двух сервер
 2. Откройте `COLDWIRE-Admin.cmd` в Windows или выполните `bash COLDWIRE-Admin.sh` в Linux. Для новой установки выберите **Install COLDWIRE** и введите IPv4, логин и пароль SSH для каждого VPS. Если SSH работает на другом порту, добавьте к адресу `:порт`.
 3. Импортируйте созданный `client1.vpn` в [COLDWIRE Amnezia VPN](https://github.com/bgunn9in/COLDWIRE-amnezia-client/releases/latest). Подключитесь и проверьте, что сайт, открытый через VPN, видит IPv4 узла B.
 
-Из той же панели можно выдавать профили, управлять доступом и делать резервные копии реле. В инструкции описано, как запустить панель из `main`, если нужной функции пока нет в релизе. [Руководство по панели](docs/ru/access-panel.md)
+Из той же панели можно выдавать профили, управлять доступом и делать резервные копии реле. [Руководство по панели](docs/ru/access-panel.md)
 
 Пункт **12 Update split-tunneling lists** обновляет оба файла исключений AmneziaVPN. Генератор можно запустить отдельно на Windows и Linux. [Руководство по спискам исключений](docs/ru/lists.md)
 
