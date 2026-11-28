@@ -638,16 +638,19 @@ def recovery_menu():
 
 def lists_menu():
     try:
-        choice = input('1 Fetch current data (default)\n2 Use bundled snapshots\n0 Back\n> ').strip()
+        choice = input('1 Fetch current data (default)\n2 Use bundled snapshots\n'
+                       '3 Russian services and dedicated CDNs (current data)\n0 Back\n> ').strip()
         if choice == '0':
             return
-        if choice not in ('', '1', '2'):
-            print('Choose 1, 2 or 0.')
+        if choice not in ('', '1', '2', '3'):
+            print('Choose 1, 2, 3 or 0.')
             return
         previous = input('Folder with previous lists (Enter to skip comparison): ').strip().strip('"')
         arguments = ['--compare-with', previous] if previous else []
         if choice == '2':
             arguments.append('--offline')
+        elif choice == '3':
+            arguments.append('--include-dedicated-cdn')
         if update_lists.main(arguments) == update_lists.ONLINE_SOURCE_FAILED and choice != '2':
             if input('Use bundled snapshots instead? [y/N] ').strip().lower() in ('y', 'yes'):
                 update_lists.main([*arguments, '--offline'])
@@ -755,7 +758,7 @@ def main():
     backup = commands.add_parser('backup', help='Back up A, B and the operator folder')
     backup.add_argument('--to', type=Path, help='Destination folder for the encrypted archive')
     backup.add_argument('--portable-key', action='store_true', help='Protect the recovery key with a passphrase instead of Windows DPAPI')
-    update_lists.parser_options(commands.add_parser('update-lists', help='Generate the two AmneziaVPN split-tunneling lists'))
+    update_lists.parser_options(commands.add_parser('update-lists', help='Generate AmneziaVPN split-tunneling lists'))
     args = parser.parse_args()
     try:
         return {None: panel, 'install': install, 'manage': manage, 'ssh': ssh, 'status': status,

@@ -69,7 +69,7 @@ Run the same launcher again to open the panel.
 | `9 Exit migration` | Starts, checks, confirms or rolls back a move from Docker to systemd. Shown for installations with pilot SPA and a Docker or migrated exit. |
 | `10 Restore from backup` | Checks a `.cwbackup`, restores an operator folder or exports the files needed to recover A and B. Available before installation too. |
 | `11 Create backup` | Reads both nodes over administrative SSH and saves an encrypted copy with the operator folder. |
-| `12 Update split-tunneling lists` | Writes two AmneziaVPN exclusion lists locally. Available before installation, with no SSH credentials required. |
+| `12 Update split-tunneling lists` | Writes the standard exclusion lists locally. Option 3 also checks for dedicated CDN addresses. Available before installation, with no SSH credentials required. |
 
 In **12**, choose a data source and optionally give the panel a folder of earlier lists for comparison. The panel prints the path to both new JSON files. Import the list you want in AmneziaVPN. [Split-tunneling guide](lists.md)
 

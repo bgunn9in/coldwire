@@ -22,6 +22,7 @@ SNAPSHOTS = ("ru-direct.amnezia.json", "ru-services.amnezia.json")
 LIST_FILES = (
     "COLDWIRE-Lists.cmd", "COLDWIRE-Lists.sh", "update_lists.py", "LICENSE", "THIRD_PARTY_NOTICES.md",
     "data/ru-networks.txt", "data/protected-vpn-networks.txt", "data/service-roots.txt", "data/service-addresses.txt",
+    "data/verified-cdn-ipv4.json",
     "docs/lists.md", "docs/ru/lists.md", "docs/sources.md", "docs/ru/sources.md", *SNAPSHOTS,
 )
 READMES = {

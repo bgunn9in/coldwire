@@ -28,6 +28,6 @@ The installer also serves as the administration panel. Run it on Windows or one 
 
 Use the same panel to issue profiles, manage access and back up the relay. [Panel guide](docs/access-panel.md)
 
-Choose **12 Update split-tunneling lists** in the panel to refresh the two AmneziaVPN exclusion files. You can also run the generator on Windows or Linux. [Split-tunneling guide](docs/lists.md)
+Choose **12 Update split-tunneling lists** in the panel to refresh the standard exclusion files or check for dedicated CDN addresses. You can also run the generator on Windows or Linux. [Split-tunneling guide](docs/lists.md)
 
 See [sources](docs/sources.md) for address data and upstream software and [third-party notices](THIRD_PARTY_NOTICES.md) for licenses.

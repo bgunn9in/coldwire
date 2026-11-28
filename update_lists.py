@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build exactly two Amnezia import lists, with bounded old-Android route counts."""
+"""Build Amnezia import lists with bounded old-Android route counts."""
 import argparse
 import bisect
 from concurrent.futures import ThreadPoolExecutor
@@ -26,6 +26,7 @@ RIPE = "https://stat.ripe.net/data/country-resource-list/data.json?resource=RU&v
 BUNDLED_RIPE_DATE = "2026-11-07"
 ONLINE_SOURCE_FAILED = 2
 LIST_NAMES = ("ru-direct", "ru-services")
+DEDICATED_CDN_LIST = "ru-services-cdn"
 CATALOG_REPO = "https://api.github.com/repos/lib4u/amnezia-tunneling-ru/commits/main"
 SOURCES = {
     "telegram": "https://core.telegram.org/resources/cidr.txt",
@@ -128,6 +129,39 @@ def compact(exact, addresses):
     return result
 
 
+def with_dedicated_cdn(services, exact, protected, records, required=()):
+    eligible = {}
+    for record in records:
+        hostname = record["hostname"].lower().rstrip(".")
+        address = ip.IPv4Address(record["ipv4"])
+        evidence = urllib.parse.urlsplit(record["evidence"])
+        if (not hostname or "." not in hostname or not address.is_global or address.is_multicast
+                or evidence.scheme != "https" or not evidence.hostname):
+            raise ValueError("Invalid verified CDN record")
+        network = ip.IPv4Network((address, 32))
+        if address in required or contains(exact, network) or contains(protected, network):
+            continue
+        eligible.setdefault(hostname, set()).add(network)
+
+    additions = set()
+    for hostname, networks in eligible.items():
+        try:
+            observed = set(dns_lookup(hostname))
+        except SourceError as error:
+            print(f"Skipping dedicated CDN hostname {hostname}: {error}", file=sys.stderr)
+            continue
+        additions.update(n for n in networks if str(n.network_address) in observed)
+    if not additions:
+        print("No verified dedicated CDN addresses are currently available.")
+        return None
+    result = collapse([*services, *additions])
+    # Android also installs the route to its own AmneziaWG interface address.
+    if legacy_routes(result) + 1 > DIRECT_ROUTE_BUDGET:
+        print(f"Dedicated CDN list exceeds {DIRECT_ROUTE_BUDGET} legacy Android routes. Skipping that list.")
+        return None
+    return result
+
+
 def encode(networks):
     entries = [{"hostname": f"direct-{str(n.network_address).replace('.', '-')}-{n.prefixlen}.invalid", "ip": str(n)} for n in networks]
     return (json.dumps(entries, indent=2) + "\n").encode()
@@ -200,10 +234,13 @@ def live_sources():
     return exact, collapse(protected), sorted(addresses)
 
 
-def previous_prefixes(folder):
+def previous_prefixes(folder, include_dedicated_cdn):
     previous = {}
-    for name in LIST_NAMES:
+    names = (*LIST_NAMES, DEDICATED_CDN_LIST) if include_dedicated_cdn else LIST_NAMES
+    for name in names:
         path = folder.expanduser() / f"{name}.amnezia.json"
+        if name == DEDICATED_CDN_LIST and not path.exists():
+            continue
         try:
             entries = json.loads(path.read_bytes())
             if not isinstance(entries, list):
@@ -214,7 +251,7 @@ def previous_prefixes(folder):
     return previous
 
 
-def publish(output, full, services, previous=None):
+def publish(output, full, services, previous=None, dedicated_cdn=None):
     # Publish into a NEW directory: failure never replaces either known working list.
     output = output.resolve()
     if output.exists():
@@ -222,13 +259,17 @@ def publish(output, full, services, previous=None):
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".awg-lists-", dir=output.parent))
     try:
-        for name, networks in zip(LIST_NAMES, (full, services)):
+        lists = [(LIST_NAMES[0], full), (LIST_NAMES[1], services)]
+        if dedicated_cdn is not None:
+            lists.append((DEDICATED_CDN_LIST, dedicated_cdn))
+        for name, networks in lists:
             raw = encode(networks)
             (staging / f"{name}.amnezia.json").write_bytes(raw)
             print(f"{name}: {len(networks)} entries, {legacy_routes(networks)} legacy routes, SHA256 {hashlib.sha256(raw).hexdigest()}")
             if previous is not None:
                 current = set(networks)
-                print(f"{name}: {len(current - previous[name])} added, {len(previous[name] - current)} removed IPv4 prefixes")
+                before = previous.get(name, set())
+                print(f"{name}: {len(current - before)} added, {len(before - current)} removed IPv4 prefixes")
         staging.rename(output)
     finally:
         if staging.exists():
@@ -239,12 +280,14 @@ def parser_options(parser):
     parser.add_argument("--output", type=Path,
                         help="New output directory (default: generated/ru-lists-<UTC timestamp>)")
     parser.add_argument("--offline", action="store_true", help="Use the bundled source snapshots without network access")
+    parser.add_argument("--include-dedicated-cdn", action="store_true",
+                        help="Also build ru-services-cdn when verified CDN addresses pass current DNS checks")
     parser.add_argument("--compare-with", type=Path, metavar="DIRECTORY",
-                        help="Compare IPv4 prefixes with the two previous JSON files in this directory")
+                        help="Compare IPv4 prefixes with earlier JSON files in this directory")
     parser.add_argument("--entry", help="Optional entry IPv4 to keep outside the bypass list")
     parser.add_argument("--exit", help="Optional exit IPv4 to keep outside the bypass list")
     parser.add_argument("--vpn-only", action="append", default=[], metavar="IPV4",
-                        help="Keep an additional destination IPv4 outside both bypass lists; repeat for more addresses")
+                        help="Keep an additional destination IPv4 outside the bypass lists; repeat for more addresses")
 
 
 def generate(args):
@@ -252,7 +295,8 @@ def generate(args):
     try:
         if output.exists():
             raise FileExistsError("Output directory already exists")
-        previous = previous_prefixes(args.compare_with) if args.compare_with is not None else None
+        previous = (previous_prefixes(args.compare_with, args.include_dedicated_cdn)
+                    if args.compare_with is not None else None)
         required = tuple(ip.IPv4Address(a) for a in (args.entry, args.exit, *args.vpn_only,
                                                     "1.1.1.1", "1.0.0.1", "8.8.8.8") if a is not None)
         if args.offline:
@@ -272,10 +316,19 @@ def generate(args):
             raise ValueError(f"Expanded list exceeds {DIRECT_ROUTE_BUDGET} legacy Android routes")
         if any(contains(services, ip.IPv4Network(f"{a}/32")) for a in required):
             raise ValueError("Protected address in compact list")
+        dedicated_cdn = None
+        if args.include_dedicated_cdn:
+            if args.offline:
+                print("The dedicated CDN list requires current DNS data. Writing the two standard lists.")
+            else:
+                records = json.loads((ROOT / "data/verified-cdn-ipv4.json").read_bytes())
+                if not isinstance(records, list):
+                    raise ValueError("Expected an array of verified CDN records")
+                dedicated_cdn = with_dedicated_cdn(services, exact, protected, records, required)
         print(f"All {len(exact)} RU/local prefixes preserved; additionally {added:,} foreign addresses ({100 * added / 2**32:.3f}% of IPv4) bypass VPN in ru-direct")
-        publish(output, full, services, previous)
+        publish(output, full, services, previous, dedicated_cdn)
         print(f"Lists saved to {output.resolve()}")
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"Update failed: {error}. Existing lists were not replaced.", file=sys.stderr)
         return ONLINE_SOURCE_FAILED if isinstance(error, SourceError) else 1
     return 0

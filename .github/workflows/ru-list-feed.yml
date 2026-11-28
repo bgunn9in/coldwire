@@ -21,11 +21,11 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
-      - name: Generate both lists
+      - name: Generate lists
         env:
           COLDWIRE_LISTS_GITHUB_TOKEN: ${{ github.token }}
-        run: python update_lists.py --output "$RUNNER_TEMP/ru-lists-generated"
-      - name: Publish the pair
+        run: python update_lists.py --include-dedicated-cdn --output "$RUNNER_TEMP/ru-lists-generated"
+      - name: Publish the generated lists
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/ru-lists-generated"
@@ -39,6 +39,12 @@ jobs:
           fi
           cp "$output/ru-direct.amnezia.json" "$output/ru-services.amnezia.json" "$feed/"
           git -C "$feed" add -- ru-direct.amnezia.json ru-services.amnezia.json
+          if [[ -f "$output/ru-services-cdn.amnezia.json" ]]; then
+            cp "$output/ru-services-cdn.amnezia.json" "$feed/"
+            git -C "$feed" add -- ru-services-cdn.amnezia.json
+          else
+            git -C "$feed" rm --ignore-unmatch -- ru-services-cdn.amnezia.json
+          fi
           if git -C "$feed" diff --cached --quiet; then
             exit 0
           fi

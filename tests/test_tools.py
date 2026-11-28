@@ -229,6 +229,35 @@ class ListTests(unittest.TestCase):
                 self.assertFalse(lists.contains(nets, ip.IPv4Network(f"{a}/32")), (name, a))
             self.assertTrue(lists.contains(nets, ip.IPv4Network("77.88.55.88/32")))
 
+    def test_dedicated_cdn_adds_only_confirmed_foreign_addresses(self):
+        services = [ip.IPv4Network("77.88.0.0/18")]
+        exact = [*services, ip.IPv4Network("95.108.0.0/16")]
+        protected = [ip.IPv4Network("1.1.1.0/24")]
+        records = [
+            {"hostname": "cdn.example.invalid", "ipv4": address, "evidence": "https://cdn.example.invalid/assignment"}
+            for address in ("2.56.0.0", "2.56.0.1", "2.56.0.3", "1.1.1.1", "95.108.0.1")
+        ]
+        required = (ip.IPv4Address("2.56.0.3"),)
+        observed = ["2.56.0.0", "2.56.0.2", "2.56.0.3", "1.1.1.1", "95.108.0.1"]
+        with patch.object(lists, "dns_lookup", return_value=observed) as lookup:
+            result = lists.with_dedicated_cdn(services, exact, protected, records, required)
+        lookup.assert_called_once_with("cdn.example.invalid")
+        self.assertEqual(set(result), {*services, ip.IPv4Network("2.56.0.0/32")})
+        self.assertLessEqual(lists.legacy_routes(result) + 1, 2004)
+
+        with (patch.object(lists, "dns_lookup", return_value=observed),
+              patch.object(lists, "DIRECT_ROUTE_BUDGET", lists.legacy_routes(result)),
+              redirect_stdout(StringIO())):
+            self.assertIsNone(lists.with_dedicated_cdn(services, exact, protected, records, required))
+
+    def test_dedicated_cdn_offline_output_keeps_standard_pair(self):
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(StringIO()):
+            output = Path(directory) / "lists"
+            self.assertEqual(lists.main(["--offline", "--include-dedicated-cdn", "--output", str(output)]), 0)
+            self.assertEqual({f.name for f in output.iterdir()},
+                             {"ru-direct.amnezia.json", "ru-services.amnezia.json"})
+            self.assertEqual(lists.previous_prefixes(output, True), lists.previous_prefixes(output, False))
+
     def test_vpn_only_addresses_are_kept_in_tunnel(self):
         exact = lists.read_networks(ROOT / "data/ru-networks.txt")
         bundled = [ip.IPv4Network(e["ip"]) for e in json.loads((ROOT / "ru-direct.amnezia.json").read_bytes())]

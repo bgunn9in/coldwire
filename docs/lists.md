@@ -8,24 +8,25 @@ Import one of these files to send selected IPv4 traffic through your ISP.
 | --- | --- | ---: |
 | [`ru-direct.amnezia.json`](../ru-direct.amnezia.json) | All Russian IPv4 allocations from the RIPE snapshot, local networks and some addresses outside those ranges. | 1,097 |
 | [`ru-services.amnezia.json`](../ru-services.amnezia.json) | Local networks and Russian allocations that contain addresses of selected services. | 77 |
+| `ru-services-cdn.amnezia.json` | The short list plus verified, dedicated IPv4 addresses for selected services on foreign CDNs. | Available when at least one address qualifies |
 
 The shorter list covers addresses associated with 86 service families, including Yandex, VK, banks and public services. It omits their addresses outside Russian allocations. The full list adds about 111 million other IPv4 addresses to keep the route count down on older Android clients. Use the short list when you want fewer destinations outside the VPN.
 
 ## Import a list
 
-In builds of COLDWIRE with the in-app list menu, disconnect the VPN and open **Connection → Site-based split tunneling → ⋯**. Choose **Russian services** or **Russian IPv4 ranges**, then confirm the replacement. The app offers its bundled copy if the download fails. [Client guide](https://github.com/bgunn9in/COLDWIRE-amnezia-client/blob/feature/spa-admission/docs/spa.md)
+Disconnect the VPN and open **Connection → Site-based split tunneling → ⋯**. Choose **Russian services**, **Russian IPv4 ranges** or **Russian services and dedicated CDNs**, then confirm the replacement. The first two options have bundled copies. If the CDN list is unavailable, your current rules stay in place. [Client guide](https://github.com/bgunn9in/COLDWIRE-amnezia-client/blob/feature/spa-admission/docs/spa.md)
 
 In the app’s site-based split-tunneling settings, choose **Directly** and import one JSON file with **Replace site list**. With the VPN on, verify that a listed destination sees your ISP’s IP and a destination routed through the VPN sees B’s IP. If the app stops connecting after import, disable site-based split tunneling and try again. The `ru-direct` list was tested on a phone with a working VPN connection.
 
 ## Refresh both files
 
-The GitHub Actions workflow **Refresh Russian site lists for COLDWIRE** runs weekly and can also be run manually. It publishes both JSON files together to the `ru-lists` branch. If a source fails, the previous pair remains available.
+The GitHub Actions workflow **Refresh Russian site lists for COLDWIRE** runs weekly and can also be run manually. It publishes the two standard lists and includes the CDN list when there are qualifying addresses. The next successful refresh removes the CDN file if no addresses still qualify. If a standard data source fails, the last publication stays available.
 
-Install Python 3.10 or newer. For the interactive panel on Ubuntu or Debian, install `python3-venv` too. Open the panel and choose **12 Update split-tunneling lists**. Use **1** for current data or **2** for the bundled snapshots. You can do this before you set up your servers.
+Install Python 3.10 or newer. For the interactive panel on Ubuntu or Debian, install `python3-venv` too. Open **12 Update split-tunneling lists** and choose **1** for current data, **2** for the bundled snapshots or **3** to include dedicated CDNs. The command-line equivalent of option **3** is `--include-dedicated-cdn`. You can generate the lists before setting up any servers.
 
 To run the generator on its own, download `COLDWIRE-RU-Lists.zip` and extract it. On Windows, open `COLDWIRE-Lists.cmd`. On Linux, open a terminal in the extracted folder and run `bash COLDWIRE-Lists.sh`. [GitHub Releases](https://github.com/bgunn9in/coldwire/releases/latest)
 
-The generator fetches current data, writes both JSON files to a new timestamped folder under `generated/` and prints the path. Add `--output` to choose a new folder. With `--offline`, the generator uses the snapshots in `data/` and reproduces the bundled files.
+The generator fetches current data, writes the JSON files to a new timestamped folder under `generated/` and prints the path. Add `--output` to choose a new folder. With `--offline`, the generator uses the snapshots in `data/` and writes only the two bundled lists.
 
 If an online source fails, the panel names it and offers to try again with the bundled snapshots. At the command line, rerun with `--offline`. Earlier output folders are kept for reuse.
 
@@ -38,9 +39,15 @@ If an online source fails, the panel names it and offers to try again with the b
 
 ### Compare with earlier lists
 
-When the panel asks for a comparison folder, enter the folder containing both previous JSON files. Press Enter to skip. At the command line, pass `--compare-with DIRECTORY`. The generator prints the RIPE snapshot date and, for each list, the number of IPv4 prefixes added and removed and the total route count for older versions of Android. Check the summary before importing the JSON you want.
+When the panel asks for a comparison folder, enter the folder containing the two standard JSON files and the CDN file if you have one. Press Enter to skip. At the command line, pass `--compare-with DIRECTORY`. The generator prints the RIPE snapshot date and, for each list, the number of IPv4 prefixes added and removed and the total route count for older versions of Android.
 
 Use `--vpn-only IPV4` for an individual address you need to keep in the tunnel. Repeat the option for additional addresses. `--entry IPV4` and `--exit IPV4` protect the relay addresses in the same way. The generator stops if an address conflicts with the exact Russian or local source ranges. [Data sources and route counts](sources.md)
+
+### Which CDN addresses qualify
+
+Each catalog entry needs a hostname, a specific IPv4 address and an HTTPS source from the service or its CDN that confirms the address is dedicated to that service. DNS must still return that exact address. The generator keeps protected ranges and `--vpn-only` addresses in the VPN. It adds each eligible IPv4 individually and checks the Android 10 budget of 2,004 routes, including the route to the VPN interface address.
+
+The catalog is currently empty. A CDN hostname or a DNS answer alone does not establish that an address is dedicated. [CDN catalog](../data/verified-cdn-ipv4.json)
 
 ## Linux test results
 

@@ -210,6 +210,12 @@ class AccessPanelTests(unittest.TestCase):
                     arguments.append(['--compare-with', 'Previous lists', '--offline'])
                 self.assertEqual([call.args[0] for call in update.call_args_list], arguments)
 
+    def test_list_menu_can_include_dedicated_cdn(self):
+        with (patch('builtins.input', side_effect=['3', '']),
+              patch.object(panel.update_lists, 'main', return_value=0) as update):
+            panel.lists_menu()
+        update.assert_called_once_with(['--include-dedicated-cdn'])
+
     def test_migration_menu_requires_confirmation_for_changes(self):
         (self.folder / 'operator.json').write_text(json.dumps(self.manifest | {'legacy_exit': True}))
         choices = ['9', '2', 'n', '1', '4', 'y', '0', '0']
