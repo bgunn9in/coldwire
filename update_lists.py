@@ -9,6 +9,8 @@ import hashlib
 from http.client import HTTPException
 import ipaddress as ip
 import json
+from operator import attrgetter
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -18,6 +20,8 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parent
 LOCAL = tuple(map(ip.IPv4Network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10")))
+LOOPBACK = ip.IPv4Network("127.0.0.0/8")
+DIRECT_ROUTE_BUDGET = 2004
 RIPE = "https://stat.ripe.net/data/country-resource-list/data.json?resource=RU&v4_format=prefix"
 BUNDLED_RIPE_DATE = "2026-11-07"
 ONLINE_SOURCE_FAILED = 2
@@ -44,6 +48,10 @@ def source(name):
 
 def fetch(url):
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 awg-relay-kit", "Accept": "application/json,text/plain,*/*"})
+    if url == CATALOG_REPO:
+        token = os.environ.get("COLDWIRE_LISTS_GITHUB_TOKEN")
+        if token:
+            request.add_unredirected_header("Authorization", f"Bearer {token}")
     with urllib.request.urlopen(request, timeout=30) as response:
         raw = response.read(8_000_001)
     if len(raw) > 8_000_000:
@@ -70,29 +78,32 @@ def complement(networks):
 
 
 def contains(networks, network):
-    starts = [int(n.network_address) for n in networks]
-    index = bisect.bisect_right(starts, int(network.network_address)) - 1
+    index = bisect.bisect_right(networks, network.network_address, key=attrgetter("network_address")) - 1
     return index >= 0 and network.subnet_of(networks[index])
 
 
 def legacy_routes(networks):
     # Android <13 excludes loopback before computing positive VPN routes; add IPv6 default.
-    return len(complement(collapse(networks + [ip.IPv4Network("127.0.0.0/8")]))) + 1
+    return len(complement(collapse(networks + [LOOPBACK]))) + 1
 
 
-def optimize(exact, protected, addresses, budget=2000):
-    vpn = complement(exact)
-    required = {n for n in vpn if any(a in n for a in addresses) or any(n.overlaps(p) for p in protected)}
-    if len(required) > budget:
+def optimize(exact, protected, addresses, budget=DIRECT_ROUTE_BUDGET):
+    vpn = complement(collapse(exact + [LOOPBACK]))
+    protected = collapse([*protected, *(ip.IPv4Network((address, 32)) for address in addresses)])
+    required = set()
+    for network in vpn:
+        index = bisect.bisect_right(protected, network.broadcast_address, key=attrgetter("network_address")) - 1
+        if index >= 0 and protected[index].broadcast_address >= network.network_address:
+            required.add(network)
+    slots = budget - 1 - len(required)  # Reserve one route for IPv6.
+    if slots < 0:
         raise ValueError("Protected VPN prefixes exceed the route budget; previous lists preserved")
     ranked = sorted(set(vpn) - required, key=lambda n: (-n.num_addresses, int(n.network_address)))
-    kept = required | set(ranked[:max(0, budget - len(required))])
+    kept = required | set(ranked[:slots])
     # shortcut: all RU is retained by also bypassing small foreign gaps; exact policy needs a capable router/client.
-    bypass = complement(kept)
+    bypass = complement(collapse([*kept, LOOPBACK]))
     if not all(contains(bypass, n) for n in exact):
         raise ValueError("Lost RU coverage")
-    if any(n.overlaps(p) for n in vpn if n not in kept for p in protected):
-        raise ValueError("Protected foreign network bypassed")
     added = sum(n.num_addresses for n in bypass) - sum(n.num_addresses for n in exact)
     return bypass, added
 
@@ -253,12 +264,12 @@ def generate(args):
             exact, protected, addresses = live_sources()
         if exact != collapse(exact) or not exact or not protected or not addresses:
             raise ValueError("Invalid source snapshot")
-        if any(contains(exact, ip.IPv4Network(f"{a}/32")) for a in required):
-            raise ValueError("A protected address overlaps the RU/local source; resolve the policy conflict explicitly")
+        if any(a in LOOPBACK or contains(exact, ip.IPv4Network((a, 32))) for a in required):
+            raise ValueError("A protected address overlaps the RU/local or loopback ranges; resolve the policy conflict")
         full, added = optimize(exact, protected, required)
         services = compact(exact, addresses)
-        if legacy_routes(full) > 2010:
-            raise ValueError("Expanded list exceeds 2010 legacy Android routes")
+        if legacy_routes(full) > DIRECT_ROUTE_BUDGET:
+            raise ValueError(f"Expanded list exceeds {DIRECT_ROUTE_BUDGET} legacy Android routes")
         if any(contains(services, ip.IPv4Network(f"{a}/32")) for a in required):
             raise ValueError("Protected address in compact list")
         print(f"All {len(exact)} RU/local prefixes preserved; additionally {added:,} foreign addresses ({100 * added / 2**32:.3f}% of IPv4) bypass VPN in ru-direct")

@@ -3,6 +3,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 from io import StringIO
 import ipaddress as ip
+from itertools import combinations
 import json
 from pathlib import Path
 import struct
@@ -150,6 +151,24 @@ class ListTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             lists.optimize(exact, protected, required, budget=0)
 
+    def test_optimization_matches_exhaustive_search_after_loopback_split(self):
+        loopback_parent = ip.IPv4Network("112.0.0.0/4")
+        required = ip.IPv4Network("198.51.100.0/24")
+        optional = ip.IPv4Network("192.0.2.0/24")
+        exact = lists.complement([loopback_parent, required, optional])
+        optional_vpn = [*loopback_parent.address_exclude(lists.LOOPBACK), optional]
+        for budget in range(2, 7):
+            with self.subTest(budget=budget):
+                result, _ = lists.optimize(exact, [], (required.network_address,), budget=budget)
+                self.assertEqual(lists.legacy_routes(result), budget)
+                self.assertTrue(all(lists.contains(result, net) for net in exact))
+                self.assertFalse(any(net.overlaps(required) for net in result))
+                best = max(sum(net.num_addresses for net in subset)
+                           for subset in combinations(optional_vpn, budget - 2))
+                bypassed = sum(net.num_addresses for net in result)
+                retained = 2**32 - bypassed - lists.LOOPBACK.num_addresses
+                self.assertEqual(retained, required.num_addresses + best)
+
     def test_reproduces_both_bundled_snapshots(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "lists"
@@ -228,7 +247,7 @@ class ListTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual({p.name for p in output.iterdir()},
                              {"ru-direct.amnezia.json", "ru-services.amnezia.json"})
-            for name, budget in (("ru-direct", 2010), ("ru-services", 1000)):
+            for name, budget in (("ru-direct", lists.DIRECT_ROUTE_BUDGET), ("ru-services", 1000)):
                 networks = [ip.IPv4Network(e["ip"]) for e in
                             json.loads((output / f"{name}.amnezia.json").read_bytes())]
                 for address in candidates + [ip.IPv4Address("198.51.100.10"), ip.IPv4Address("203.0.113.20")]:
@@ -240,7 +259,7 @@ class ListTests(unittest.TestCase):
     def test_vpn_only_rejects_invalid_or_ru_addresses_without_output(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "refused"
-            for address in ("not-an-ip", "::1", "1.1.1.0/24", "77.88.55.88", "192.168.1.1"):
+            for address in ("not-an-ip", "::1", "127.0.0.1", "1.1.1.0/24", "77.88.55.88", "192.168.1.1"):
                 with self.subTest(address=address):
                     result = subprocess.run([sys.executable, str(ROOT / "update_lists.py"), "--offline",
                                              "--output", str(output), "--vpn-only", address], capture_output=True)

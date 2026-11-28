@@ -13,9 +13,13 @@ The shorter list covers addresses associated with 86 service families, including
 
 ## Import a list
 
+In builds of COLDWIRE with the in-app list menu, disconnect the VPN and open **Connection → Site-based split tunneling → ⋯**. Choose **Russian services** or **Russian IPv4 ranges**, then confirm the replacement. The app offers its bundled copy if the download fails. [Client guide](https://github.com/bgunn9in/COLDWIRE-amnezia-client/blob/feature/spa-admission/docs/spa.md)
+
 In the app’s site-based split-tunneling settings, choose **Directly** and import one JSON file with **Replace site list**. With the VPN on, verify that a listed destination sees your ISP’s IP and a destination routed through the VPN sees B’s IP. If the app stops connecting after import, disable site-based split tunneling and try again. The `ru-direct` list was tested on a phone with a working VPN connection.
 
 ## Refresh both files
+
+The GitHub Actions workflow **Refresh Russian site lists for COLDWIRE** runs weekly and can also be run manually. It publishes both JSON files together to the `ru-lists` branch. If a source fails, the previous pair remains available.
 
 Install Python 3.10 or newer. For the interactive panel on Ubuntu or Debian, install `python3-venv` too. Open the panel and choose **12 Update split-tunneling lists**. Use **1** for current data or **2** for the bundled snapshots. You can do this before you set up your servers.
 

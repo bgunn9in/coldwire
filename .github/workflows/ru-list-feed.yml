@@ -1,0 +1,48 @@
+name: Refresh Russian site lists for COLDWIRE
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '35 3 * * 1'
+
+concurrency:
+  group: ru-list-feed
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Generate both lists
+        env:
+          COLDWIRE_LISTS_GITHUB_TOKEN: ${{ github.token }}
+        run: python update_lists.py --output "$RUNNER_TEMP/ru-lists-generated"
+      - name: Publish the pair
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/ru-lists-generated"
+          feed="$RUNNER_TEMP/ru-list-feed"
+          if [[ -n "$(git ls-remote --heads origin refs/heads/ru-lists)" ]]; then
+            git fetch --depth=1 origin refs/heads/ru-lists
+            git worktree add --detach "$feed" FETCH_HEAD
+          else
+            git worktree add --detach "$feed" HEAD
+            git -C "$feed" switch --orphan ru-lists-bootstrap
+          fi
+          cp "$output/ru-direct.amnezia.json" "$output/ru-services.amnezia.json" "$feed/"
+          git -C "$feed" add -- ru-direct.amnezia.json ru-services.amnezia.json
+          if git -C "$feed" diff --cached --quiet; then
+            exit 0
+          fi
+          git -C "$feed" -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m 'Refresh Russian site lists'
+          git -C "$feed" push origin HEAD:refs/heads/ru-lists

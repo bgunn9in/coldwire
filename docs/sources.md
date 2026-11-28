@@ -10,6 +10,8 @@
 
 The source snapshots are in [`data/`](../data/). The generator collapses overlapping ranges and keeps all Russian and local prefixes in `ru-direct`. To reduce the complement route table, it includes some other IP ranges in the bypass list. The supplied snapshot adds 111,284,160 IPv4 addresses and yields 2,004 routes in the older Android route model. `ru-services` yields 751 routes in the same model. These counts describe the generated configurations. [List options and update commands](lists.md)
 
+The `ru-direct` budget is 2,004 routes for Android 10–12, including one for IPv6. The generator removes IPv4 loopback before counting routes. It reserves the VPN prefixes that carry protected addresses, then fills the remaining slots with the largest eligible IPv4 prefixes. Each prefix costs one route, so this keeps the most addresses in the VPN within the budget. `ru-services` merges adjacent ranges wherever they can share a CIDR without expanding coverage.
+
 ## AmneziaWG 3.1 and SPA
 
 The native bundle includes [amneziawg-go at `1b86b2a`](https://github.com/amnezia-vpn/amneziawg-go/tree/1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1) and [amneziawg-tools at `ee0f0a9`](https://github.com/amnezia-vpn/amneziawg-tools/tree/ee0f0a9aa34ff0a0da4b3433b9512781cfe02843). The version manifest, licenses and corresponding source for amneziawg-tools are inside the bundle under `dist/`. [Build script](../servers/build-native.sh) · [Third-party notices](../THIRD_PARTY_NOTICES.md)
